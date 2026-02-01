@@ -1,0 +1,30 @@
+export declare class CreateRunnerDto {
+    eventId: string;
+    bib: string;
+    firstName: string;
+    lastName: string;
+    firstNameTh?: string;
+    lastNameTh?: string;
+    gender: string;
+    ageGroup?: string;
+    age?: number;
+    box?: string;
+    team?: string;
+    category: string;
+    status?: string;
+    rfidTag?: string;
+    chipCode?: string;
+    nationality?: string;
+    birthDate?: Date;
+    idNo?: string;
+    shirtSize?: string;
+    teamName?: string;
+    registerDate?: Date;
+    isStarted?: boolean;
+    allowRFIDSync?: boolean;
+    email?: string;
+    phone?: string;
+    emergencyContact?: string;
+    emergencyPhone?: string;
+    medicalInfo?: string;
+}

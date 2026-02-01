@@ -1,0 +1,660 @@
+{
+    "info": {
+        "name": "RFID Race Timing API",
+        "description": "API Collection for RFID Race Timing System",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+        {
+            "key": "baseUrl",
+            "value": "http://localhost:3001",
+            "type": "string"
+        },
+        {
+            "key": "token",
+            "value": "",
+            "type": "string"
+        }
+    ],
+    "item": [
+        {
+            "name": "Auth",
+            "item": [
+                {
+                    "name": "Register User",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"email\": \"admin@test.com\",\n    \"password\": \"123456\",\n    \"firstName\": \"Admin\",\n    \"lastName\": \"User\",\n    \"role\": \"admin\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/public-api/register",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "public-api",
+                                "register"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Login",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "var jsonData = pm.response.json();",
+                                    "if (jsonData.access_token) {",
+                                    "    pm.collectionVariables.set('token', jsonData.access_token);",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"email\": \"admin@test.com\",\n    \"password\": \"123456\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/auth/login",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "auth",
+                                "login"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Profile",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{token}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/auth/profile",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "auth",
+                                "profile"
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Campaigns",
+            "item": [
+                {
+                    "name": "Create Campaign",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"name\": \"Bangkok Marathon 2026\",\n    \"shortName\": \"BKK26\",\n    \"eventDate\": \"2026-03-15T06:00:00.000Z\",\n    \"location\": \"Sanam Luang, Bangkok\",\n    \"description\": \"Annual Bangkok Marathon Event\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/campaigns",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "campaigns"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get All Campaigns",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/campaigns",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "campaigns"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Campaign By ID",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/campaigns/:id",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "campaigns",
+                                ":id"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "id",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Campaigns By Date",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/campaigns/by-date?type=upcoming",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "campaigns",
+                                "by-date"
+                            ],
+                            "query": [
+                                {
+                                    "key": "type",
+                                    "value": "upcoming"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Events",
+            "item": [
+                {
+                    "name": "Create Event",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"name\": \"Full Marathon 42K\",\n    \"date\": \"2026-03-15T06:00:00.000Z\",\n    \"category\": \"42K\",\n    \"distance\": 42.195,\n    \"timeLimit\": 420,\n    \"location\": \"Sanam Luang, Bangkok\",\n    \"checkpoints\": [\"START\", \"10K\", \"21K\", \"30K\", \"FINISH\"]\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/events",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "events"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get All Events",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/events",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "events"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Event By ID",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/events/:id",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "events",
+                                ":id"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "id",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Update Event Status",
+                    "request": {
+                        "method": "PUT",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"status\": \"live\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/events/:id/status",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "events",
+                                ":id",
+                                "status"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "id",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Runners",
+            "item": [
+                {
+                    "name": "Create Runner",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"eventId\": \"\",\n    \"bib\": \"0001\",\n    \"firstName\": \"Somchai\",\n    \"lastName\": \"Jaidee\",\n    \"gender\": \"M\",\n    \"category\": \"42K\",\n    \"ageGroup\": \"30-39\",\n    \"rfidTag\": \"RFID001\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/runners",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "runners"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Create Runners Bulk",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "[\n    {\n        \"eventId\": \"\",\n        \"bib\": \"0002\",\n        \"firstName\": \"Somsri\",\n        \"lastName\": \"Sawasdee\",\n        \"gender\": \"F\",\n        \"category\": \"42K\",\n        \"ageGroup\": \"25-29\",\n        \"rfidTag\": \"RFID002\"\n    },\n    {\n        \"eventId\": \"\",\n        \"bib\": \"0003\",\n        \"firstName\": \"Prasert\",\n        \"lastName\": \"Mongkol\",\n        \"gender\": \"M\",\n        \"category\": \"42K\",\n        \"ageGroup\": \"40-49\",\n        \"rfidTag\": \"RFID003\"\n    }\n]"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/runners/bulk",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "runners",
+                                "bulk"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Runners By Event",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/runners?eventId=",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "runners"
+                            ],
+                            "query": [
+                                {
+                                    "key": "eventId",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Runner Statistics",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/runners/statistics/:eventId",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "runners",
+                                "statistics",
+                                ":eventId"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "eventId",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Runner By Bib",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/runners/bib/:eventId/:bib",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "runners",
+                                "bib",
+                                ":eventId",
+                                ":bib"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "eventId",
+                                    "value": ""
+                                },
+                                {
+                                    "key": "bib",
+                                    "value": "0001"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Checkpoints",
+            "item": [
+                {
+                    "name": "Create Checkpoint",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"campaignId\": \"\",\n    \"name\": \"START\",\n    \"type\": \"start\",\n    \"orderNum\": 1\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/checkpoints",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "checkpoints"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Create Checkpoints Bulk",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "[\n    {\"campaignId\": \"\", \"name\": \"START\", \"type\": \"start\", \"orderNum\": 1},\n    {\"campaignId\": \"\", \"name\": \"10K\", \"type\": \"checkpoint\", \"orderNum\": 2},\n    {\"campaignId\": \"\", \"name\": \"21K\", \"type\": \"checkpoint\", \"orderNum\": 3},\n    {\"campaignId\": \"\", \"name\": \"30K\", \"type\": \"checkpoint\", \"orderNum\": 4},\n    {\"campaignId\": \"\", \"name\": \"FINISH\", \"type\": \"finish\", \"orderNum\": 5}\n]"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/checkpoints/bulk",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "checkpoints",
+                                "bulk"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Checkpoints By Campaign",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/checkpoints/campaign/:campaignId",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "checkpoints",
+                                "campaign",
+                                ":campaignId"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "campaignId",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Timing",
+            "item": [
+                {
+                    "name": "Process RFID Scan",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"eventId\": \"\",\n    \"bib\": \"0001\",\n    \"checkpoint\": \"START\",\n    \"scanTime\": \"2026-03-15T06:00:00.000Z\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/timing/scan",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "timing",
+                                "scan"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Timing Records",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/timing/event/:eventId",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "timing",
+                                "event",
+                                ":eventId"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "eventId",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Users",
+            "item": [
+                {
+                    "name": "Get All Users",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/users",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "users"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Create User",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"email\": \"organizer@test.com\",\n    \"password\": \"123456\",\n    \"firstName\": \"Event\",\n    \"lastName\": \"Organizer\",\n    \"role\": \"organizer\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/users",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "users"
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Sync",
+            "item": [
+                {
+                    "name": "Check Last Sync Error",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/sync/last-sync-error?campaignId=",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "sync",
+                                "last-sync-error"
+                            ],
+                            "query": [
+                                {
+                                    "key": "campaignId",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Sync Data",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/sync/sync-data?id=",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "sync",
+                                "sync-data"
+                            ],
+                            "query": [
+                                {
+                                    "key": "id",
+                                    "value": ""
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ]
+}
