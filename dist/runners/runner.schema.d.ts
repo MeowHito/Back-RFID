@@ -38,6 +38,9 @@ export declare class Runner {
     emergencyContact: string;
     emergencyPhone: string;
     medicalInfo: string;
+    bloodType: string;
+    chronicDiseases: string;
+    address: string;
     categoryRank: number;
 }
 export declare const RunnerSchema: import("mongoose").Schema<Runner, import("mongoose").Model<Runner, any, any, any, (Document<unknown, any, Runner, any, import("mongoose").DefaultSchemaOptions> & Runner & {
@@ -384,6 +387,33 @@ export declare const RunnerSchema: import("mongoose").Schema<Runner, import("mon
         id: string;
     }> | undefined;
     medicalInfo?: import("mongoose").SchemaDefinitionProperty<string, Runner, Document<unknown, {}, Runner, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Runner & {
+        _id: Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    bloodType?: import("mongoose").SchemaDefinitionProperty<string, Runner, Document<unknown, {}, Runner, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Runner & {
+        _id: Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    chronicDiseases?: import("mongoose").SchemaDefinitionProperty<string, Runner, Document<unknown, {}, Runner, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Runner & {
+        _id: Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    address?: import("mongoose").SchemaDefinitionProperty<string, Runner, Document<unknown, {}, Runner, {
         id: string;
     }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Runner & {
         _id: Types.ObjectId;

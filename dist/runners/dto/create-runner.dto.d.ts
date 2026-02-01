@@ -27,4 +27,7 @@ export declare class CreateRunnerDto {
     emergencyContact?: string;
     emergencyPhone?: string;
     medicalInfo?: string;
+    bloodType?: string;
+    chronicDiseases?: string;
+    address?: string;
 }

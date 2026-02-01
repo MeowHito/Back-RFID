@@ -18,4 +18,7 @@ export declare class EventsController {
     updateAutoFix(id: string, isAutoFix: boolean): Promise<import("./event.schema").EventDocument | null>;
     updateFinished(id: string, isFinished: boolean): Promise<import("./event.schema").EventDocument | null>;
     delete(id: string): Promise<void>;
+    getUpcomingEvents(): Promise<import("./event.schema").EventDocument[]>;
+    getActiveEvents(): Promise<import("./event.schema").EventDocument[]>;
+    getPublicEventDetail(id: string): Promise<any>;
 }

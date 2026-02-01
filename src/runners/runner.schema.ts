@@ -117,6 +117,15 @@ export class Runner {
     @Prop()
     medicalInfo: string;
 
+    @Prop()
+    bloodType: string; // A, B, AB, O, A+, A-, B+, B-, AB+, AB-, O+, O-
+
+    @Prop()
+    chronicDiseases: string; // โรคประจำตัว
+
+    @Prop()
+    address: string; // ที่อยู่
+
     // Category ranking
     @Prop({ default: 0 })
     categoryRank: number;

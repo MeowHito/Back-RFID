@@ -34,4 +34,8 @@ export declare class RunnersController {
     updateStatus(id: string, status: string): Promise<import("./runner.schema").RunnerDocument | null>;
     delete(id: string): Promise<void>;
     deleteByEvent(eventId: string): Promise<void>;
+    publicRegister(registrationData: CreateRunnerDto): Promise<import("./runner.schema").RunnerDocument>;
+    getRegistrationCount(eventId: string): Promise<{
+        count: number;
+    }>;
 }

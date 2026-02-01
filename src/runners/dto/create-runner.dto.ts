@@ -110,4 +110,16 @@ export class CreateRunnerDto {
     @IsOptional()
     @IsString()
     medicalInfo?: string;
+
+    @IsOptional()
+    @IsString()
+    bloodType?: string;
+
+    @IsOptional()
+    @IsString()
+    chronicDiseases?: string;
+
+    @IsOptional()
+    @IsString()
+    address?: string;
 }

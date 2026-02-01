@@ -77,6 +77,18 @@ let RunnersController = class RunnersController {
     deleteByEvent(eventId) {
         return this.runnersService.deleteByEvent(eventId);
     }
+    async publicRegister(registrationData) {
+        if (!registrationData.bib) {
+            const count = await this.runnersService.findByEvent({ eventId: registrationData.eventId });
+            registrationData.bib = `REG${(count.length + 1).toString().padStart(4, '0')}`;
+        }
+        registrationData.registerDate = new Date();
+        return this.runnersService.create(registrationData);
+    }
+    async getRegistrationCount(eventId) {
+        const runners = await this.runnersService.findByEvent({ eventId });
+        return { count: runners.length };
+    }
 };
 exports.RunnersController = RunnersController;
 __decorate([
@@ -205,6 +217,20 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], RunnersController.prototype, "deleteByEvent", null);
+__decorate([
+    (0, common_1.Post)('public/register'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [create_runner_dto_1.CreateRunnerDto]),
+    __metadata("design:returntype", Promise)
+], RunnersController.prototype, "publicRegister", null);
+__decorate([
+    (0, common_1.Get)('public/count/:eventId'),
+    __param(0, (0, common_1.Param)('eventId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", Promise)
+], RunnersController.prototype, "getRegistrationCount", null);
 exports.RunnersController = RunnersController = __decorate([
     (0, common_1.Controller)('runners'),
     __metadata("design:paramtypes", [runners_service_1.RunnersService])

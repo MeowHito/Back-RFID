@@ -41,6 +41,9 @@ class CreateRunnerDto {
     emergencyContact;
     emergencyPhone;
     medicalInfo;
+    bloodType;
+    chronicDiseases;
+    address;
 }
 exports.CreateRunnerDto = CreateRunnerDto;
 __decorate([
@@ -179,4 +182,19 @@ __decorate([
     (0, class_validator_1.IsString)(),
     __metadata("design:type", String)
 ], CreateRunnerDto.prototype, "medicalInfo", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], CreateRunnerDto.prototype, "bloodType", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], CreateRunnerDto.prototype, "chronicDiseases", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], CreateRunnerDto.prototype, "address", void 0);
 //# sourceMappingURL=create-runner.dto.js.map

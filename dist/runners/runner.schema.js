@@ -50,6 +50,9 @@ let Runner = class Runner {
     emergencyContact;
     emergencyPhone;
     medicalInfo;
+    bloodType;
+    chronicDiseases;
+    address;
     categoryRank;
 };
 exports.Runner = Runner;
@@ -201,6 +204,18 @@ __decorate([
     (0, mongoose_1.Prop)(),
     __metadata("design:type", String)
 ], Runner.prototype, "medicalInfo", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Runner.prototype, "bloodType", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Runner.prototype, "chronicDiseases", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Runner.prototype, "address", void 0);
 __decorate([
     (0, mongoose_1.Prop)({ default: 0 }),
     __metadata("design:type", Number)

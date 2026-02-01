@@ -76,4 +76,23 @@ export class EventsController {
     delete(@Param('id') id: string) {
         return this.eventsService.delete(id);
     }
+
+    // Public endpoints (no auth required)
+    @Get('public/upcoming')
+    async getUpcomingEvents() {
+        const events = await this.eventsService.findByFilter({ status: 'upcoming' });
+        return events;
+    }
+
+    @Get('public/active')
+    async getActiveEvents() {
+        const allEvents = await this.eventsService.findAll();
+        // Return events that are upcoming or live
+        return allEvents.filter(e => e.status === 'upcoming' || e.status === 'live');
+    }
+
+    @Get('public/:id')
+    getPublicEventDetail(@Param('id') id: string) {
+        return this.eventsService.getEventDetailById(id);
+    }
 }

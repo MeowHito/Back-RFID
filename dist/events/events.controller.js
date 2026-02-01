@@ -63,6 +63,17 @@ let EventsController = class EventsController {
     delete(id) {
         return this.eventsService.delete(id);
     }
+    async getUpcomingEvents() {
+        const events = await this.eventsService.findByFilter({ status: 'upcoming' });
+        return events;
+    }
+    async getActiveEvents() {
+        const allEvents = await this.eventsService.findAll();
+        return allEvents.filter(e => e.status === 'upcoming' || e.status === 'live');
+    }
+    getPublicEventDetail(id) {
+        return this.eventsService.getEventDetailById(id);
+    }
 };
 exports.EventsController = EventsController;
 __decorate([
@@ -167,6 +178,25 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], EventsController.prototype, "delete", null);
+__decorate([
+    (0, common_1.Get)('public/upcoming'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], EventsController.prototype, "getUpcomingEvents", null);
+__decorate([
+    (0, common_1.Get)('public/active'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], EventsController.prototype, "getActiveEvents", null);
+__decorate([
+    (0, common_1.Get)('public/:id'),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], EventsController.prototype, "getPublicEventDetail", null);
 exports.EventsController = EventsController = __decorate([
     (0, common_1.Controller)('events'),
     __metadata("design:paramtypes", [events_service_1.EventsService])
