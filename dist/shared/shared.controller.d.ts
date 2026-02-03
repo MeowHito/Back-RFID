@@ -6,15 +6,16 @@ export declare class SharedController {
     private readonly runnersService;
     private readonly timingService;
     constructor(eventsService: EventsService, runnersService: RunnersService, timingService: TimingService);
-    getSharedResults(token: string, category?: string, gender?: string, ageGroup?: string, box?: string, status?: string, search?: string, checkpoint?: string): Promise<{
+    getSharedResults(token?: string, eventId?: string, category?: string, gender?: string, ageGroup?: string, box?: string, status?: string, search?: string, checkpoint?: string): Promise<{
         event: {
-            id: any;
-            name: string;
-            date: Date;
-            status: string;
-            categories: string[];
-            checkpoints: string[];
-            startTime: Date;
+            _id: any;
+            name: any;
+            date: any;
+            status: any;
+            location: any;
+            categories: any;
+            checkpoints: any;
+            startTime: any;
         };
         runners: import("../runners/runner.schema").RunnerDocument[];
         totalRunners: number;

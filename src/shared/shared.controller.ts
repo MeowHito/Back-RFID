@@ -13,7 +13,8 @@ export class SharedController {
 
     @Get('results')
     async getSharedResults(
-        @Query('token') token: string,
+        @Query('token') token?: string,
+        @Query('eventId') eventId?: string,
         @Query('category') category?: string,
         @Query('gender') gender?: string,
         @Query('ageGroup') ageGroup?: string,
@@ -22,11 +23,18 @@ export class SharedController {
         @Query('search') search?: string,
         @Query('checkpoint') checkpoint?: string,
     ) {
-        if (!token) {
-            throw new NotFoundException('Token is required');
+        let event;
+
+        if (token) {
+            // Find by share token
+            event = await this.eventsService.findByShareToken(token);
+        } else if (eventId) {
+            // Find by event ID
+            event = await this.eventsService.findOne(eventId);
+        } else {
+            throw new NotFoundException('Token or eventId is required');
         }
 
-        const event = await this.eventsService.findByShareToken(token);
         if (!event) {
             throw new NotFoundException('Event not found');
         }
@@ -44,10 +52,11 @@ export class SharedController {
 
         return {
             event: {
-                id: (event as any)._id,
+                _id: (event as any)._id,
                 name: event.name,
                 date: event.date,
                 status: event.status,
+                location: event.location,
                 categories: event.categories,
                 checkpoints: event.checkpoints,
                 startTime: event.startTime,

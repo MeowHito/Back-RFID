@@ -26,11 +26,17 @@ let SharedController = class SharedController {
         this.runnersService = runnersService;
         this.timingService = timingService;
     }
-    async getSharedResults(token, category, gender, ageGroup, box, status, search, checkpoint) {
-        if (!token) {
-            throw new common_1.NotFoundException('Token is required');
+    async getSharedResults(token, eventId, category, gender, ageGroup, box, status, search, checkpoint) {
+        let event;
+        if (token) {
+            event = await this.eventsService.findByShareToken(token);
         }
-        const event = await this.eventsService.findByShareToken(token);
+        else if (eventId) {
+            event = await this.eventsService.findOne(eventId);
+        }
+        else {
+            throw new common_1.NotFoundException('Token or eventId is required');
+        }
         if (!event) {
             throw new common_1.NotFoundException('Event not found');
         }
@@ -46,10 +52,11 @@ let SharedController = class SharedController {
         });
         return {
             event: {
-                id: event._id,
+                _id: event._id,
                 name: event.name,
                 date: event.date,
                 status: event.status,
+                location: event.location,
                 categories: event.categories,
                 checkpoints: event.checkpoints,
                 startTime: event.startTime,
@@ -78,15 +85,16 @@ exports.SharedController = SharedController;
 __decorate([
     (0, common_1.Get)('results'),
     __param(0, (0, common_1.Query)('token')),
-    __param(1, (0, common_1.Query)('category')),
-    __param(2, (0, common_1.Query)('gender')),
-    __param(3, (0, common_1.Query)('ageGroup')),
-    __param(4, (0, common_1.Query)('box')),
-    __param(5, (0, common_1.Query)('status')),
-    __param(6, (0, common_1.Query)('search')),
-    __param(7, (0, common_1.Query)('checkpoint')),
+    __param(1, (0, common_1.Query)('eventId')),
+    __param(2, (0, common_1.Query)('category')),
+    __param(3, (0, common_1.Query)('gender')),
+    __param(4, (0, common_1.Query)('ageGroup')),
+    __param(5, (0, common_1.Query)('box')),
+    __param(6, (0, common_1.Query)('status')),
+    __param(7, (0, common_1.Query)('search')),
+    __param(8, (0, common_1.Query)('checkpoint')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, String, String, String, String, String, String]),
+    __metadata("design:paramtypes", [String, String, String, String, String, String, String, String, String]),
     __metadata("design:returntype", Promise)
 ], SharedController.prototype, "getSharedResults", null);
 __decorate([
