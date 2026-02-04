@@ -6,6 +6,10 @@ export declare class CreateEventDto {
     status?: string;
     location?: string;
     bannerImage?: string;
+    coverImage?: string;
+    shortCode?: string;
+    organizer?: string;
+    organizerName?: string;
     checkpoints?: string[];
     startTime?: Date;
     campaignId?: string;

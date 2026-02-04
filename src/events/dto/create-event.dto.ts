@@ -31,6 +31,22 @@ export class CreateEventDto {
     bannerImage?: string;
 
     @IsOptional()
+    @IsString()
+    coverImage?: string;
+
+    @IsOptional()
+    @IsString()
+    shortCode?: string;
+
+    @IsOptional()
+    @IsString()
+    organizer?: string;
+
+    @IsOptional()
+    @IsString()
+    organizerName?: string;
+
+    @IsOptional()
     @IsArray()
     @IsString({ each: true })
     checkpoints?: string[];

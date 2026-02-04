@@ -32,6 +32,18 @@ export class Event {
   @Prop()
   bannerImage: string;
 
+  @Prop()
+  coverImage: string;
+
+  @Prop()
+  shortCode: string;
+
+  @Prop()
+  organizer: string;
+
+  @Prop()
+  organizerName: string;
+
   @Prop({ type: [String], default: [] })
   checkpoints: string[]; // Checkpoint names in order
 

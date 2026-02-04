@@ -10,6 +10,10 @@ export declare class Event {
     status: string;
     location: string;
     bannerImage: string;
+    coverImage: string;
+    shortCode: string;
+    organizer: string;
+    organizerName: string;
     checkpoints: string[];
     startTime: Date;
     shareToken: string;
@@ -133,6 +137,42 @@ export declare const EventSchema: import("mongoose").Schema<Event, import("mongo
         id: string;
     }> | undefined;
     bannerImage?: import("mongoose").SchemaDefinitionProperty<string, Event, Document<unknown, {}, Event, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Event & {
+        _id: Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    coverImage?: import("mongoose").SchemaDefinitionProperty<string, Event, Document<unknown, {}, Event, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Event & {
+        _id: Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    shortCode?: import("mongoose").SchemaDefinitionProperty<string, Event, Document<unknown, {}, Event, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Event & {
+        _id: Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    organizer?: import("mongoose").SchemaDefinitionProperty<string, Event, Document<unknown, {}, Event, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Event & {
+        _id: Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    organizerName?: import("mongoose").SchemaDefinitionProperty<string, Event, Document<unknown, {}, Event, {
         id: string;
     }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Event & {
         _id: Types.ObjectId;

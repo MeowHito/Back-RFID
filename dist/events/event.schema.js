@@ -22,6 +22,10 @@ let Event = class Event {
     status;
     location;
     bannerImage;
+    coverImage;
+    shortCode;
+    organizer;
+    organizerName;
     checkpoints;
     startTime;
     shareToken;
@@ -85,6 +89,22 @@ __decorate([
     (0, mongoose_1.Prop)(),
     __metadata("design:type", String)
 ], Event.prototype, "bannerImage", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Event.prototype, "coverImage", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Event.prototype, "shortCode", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Event.prototype, "organizer", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Event.prototype, "organizerName", void 0);
 __decorate([
     (0, mongoose_1.Prop)({ type: [String], default: [] }),
     __metadata("design:type", Array)
