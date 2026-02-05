@@ -82,52 +82,74 @@ export class SeedService implements OnModuleInit {
         );
         console.log('📍 Created 5 checkpoints');
 
-        // Create events
+        // Create events matching homepage display
         const events = await this.eventModel.insertMany([
             {
-                uuid: uuidv4(),
+                uuid: 'doi-inthanon',
                 campaignId: campaign._id,
-                name: 'Full Marathon 42K',
-                date: new Date('2026-03-15T06:00:00'),
-                category: '42K',
-                categories: ['42K'],
-                distance: 42.195,
-                timeLimit: 420,
-                status: 'upcoming',
-                location: 'Sanam Luang, Bangkok',
-                checkpoints: checkpointNames.map(cp => cp.name),
+                name: 'DOI INTHANON BY UTMB',
+                description: 'Thailand\'s most challenging ultra-trail race at Doi Inthanon National Park',
+                date: new Date('2025-12-06T10:00:00'),
+                category: 'Trail Running',
+                categories: ['100M', '100K', '50K', '20K', '10K'],
+                distance: 175,
+                timeLimit: 2880, // 48 hours
+                status: 'live',
+                location: 'อุทยานแห่งชาติดอยอินทนนท์, เชียงใหม่',
+                bannerImage: 'https://images.unsplash.com/photo-1516214104703-d870798883c5?auto=format&fit=crop&w=600&q=80',
+                checkpoints: ['START', '50K', '100K', 'FINISH'],
                 shareToken: uuidv4(),
             },
             {
-                uuid: uuidv4(),
+                uuid: 'tanaosri-trail',
                 campaignId: campaign._id,
-                name: 'Half Marathon 21K',
-                date: new Date('2026-03-15T06:30:00'),
-                category: '21K',
-                categories: ['21K'],
-                distance: 21.0975,
-                timeLimit: 240,
+                name: 'TANAOSRI TRAIL (TNT)',
+                description: 'Beautiful trail race through the forests of Ratchaburi',
+                date: new Date('2025-12-10T04:00:00'),
+                category: 'Trail Running',
+                categories: ['100K', '50K', '30K', '15K', '5K'],
+                distance: 102,
+                timeLimit: 1920, // 32 hours
                 status: 'upcoming',
-                location: 'Sanam Luang, Bangkok',
+                location: 'สวนพฤกษศาสตร์วรรณคดี, ราชบุรี',
+                bannerImage: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=600&q=80',
+                checkpoints: ['START', '30K', '50K', 'FINISH'],
+                shareToken: uuidv4(),
+            },
+            {
+                uuid: 'buriram-marathon',
+                campaignId: campaign._id,
+                name: 'BURIRAM MARATHON',
+                description: 'Night marathon at Chang International Circuit',
+                date: new Date('2026-01-25T18:30:00'),
+                category: 'Road Running',
+                categories: ['Full Marathon', 'Half Marathon', 'Mini Marathon', 'Fun Run'],
+                distance: 42.195,
+                timeLimit: 420, // 7 hours
+                status: 'upcoming',
+                location: 'สนามช้าง อินเตอร์เนชั่นแนล เซอร์กิต',
+                bannerImage: 'https://images.unsplash.com/photo-1549488497-6d602330a3e6?q=80&w=600&auto=format&fit=crop',
+                checkpoints: ['START', '10K', '21K', '30K', 'FINISH'],
+                shareToken: uuidv4(),
+            },
+            {
+                uuid: 'bangsaen-21',
+                campaignId: campaign._id,
+                name: 'BANGSAEN 21',
+                description: 'Scenic half marathon along Bangsaen Beach',
+                date: new Date('2025-12-16T03:30:00'),
+                category: 'Road Running',
+                categories: ['Half Marathon', 'Mini Marathon', 'Micro Marathon'],
+                distance: 21.1,
+                timeLimit: 240, // 4 hours
+                status: 'finished',
+                location: 'ชายหาดบางแสน, ชลบุรี',
+                bannerImage: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?q=80&w=400&h=300&auto=format&fit=crop',
                 checkpoints: ['START', '10K', 'FINISH'],
                 shareToken: uuidv4(),
             },
-            {
-                uuid: uuidv4(),
-                campaignId: campaign._id,
-                name: 'Fun Run 5K',
-                date: new Date('2026-03-15T07:00:00'),
-                category: '5K',
-                categories: ['5K'],
-                distance: 5,
-                timeLimit: 90,
-                status: 'upcoming',
-                location: 'Sanam Luang, Bangkok',
-                checkpoints: ['START', 'FINISH'],
-                shareToken: uuidv4(),
-            },
         ]);
-        console.log('🎽 Created 3 events: 42K, 21K, 5K');
+        console.log('🎽 Created 4 events: DOI INTHANON, TANAOSRI TRAIL, BURIRAM MARATHON, BANGSAEN 21');
 
         // Create sample runners for 42K event
         const firstNames = ['Somchai', 'Somsri', 'Prasert', 'Malee', 'Wichai', 'Sombat', 'Narin', 'Jiraporn', 'Kittisak', 'Sumalee'];
@@ -175,7 +197,7 @@ export class SeedService implements OnModuleInit {
         console.log('   - 1 Admin User (admin@rfidtiming.com / admin123)');
         console.log('   - 1 Campaign (Bangkok Marathon 2026)');
         console.log('   - 5 Checkpoints (START, 10K, 21K, 30K, FINISH)');
-        console.log('   - 3 Events (42K, 21K, 5K)');
-        console.log('   - 30 Runners (20 for 42K, 10 for 21K)');
+        console.log('   - 4 Events (DOI INTHANON, TANAOSRI, BURIRAM, BANGSAEN)');
+        console.log('   - 30 Runners (20 for DOI INTHANON, 10 for TANAOSRI)');
     }
 }
