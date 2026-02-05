@@ -61,3 +61,25 @@ export class UpdatePasswordDto {
     @MinLength(6)
     npw: string; // new password
 }
+
+export class UpdateProfileDto {
+    @IsOptional()
+    @IsString()
+    firstName?: string;
+
+    @IsOptional()
+    @IsString()
+    lastName?: string;
+
+    @IsOptional()
+    @IsString()
+    username?: string;
+
+    @IsOptional()
+    @IsString()
+    phone?: string;
+
+    @IsOptional()
+    @IsString()
+    avatarUrl?: string;
+}

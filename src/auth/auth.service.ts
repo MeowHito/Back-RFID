@@ -2,7 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../users/users.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
-import { LoginDto, LoginStationDto } from '../users/dto/user.dto';
+import { LoginDto, LoginStationDto, CreateUserDto } from '../users/dto/user.dto';
 
 export interface JwtPayload {
     sub: string; // user uuid
@@ -32,6 +32,30 @@ export class AuthService {
         private campaignsService: CampaignsService,
         private jwtService: JwtService,
     ) { }
+
+    async register(createUserDto: CreateUserDto): Promise<AuthResponse> {
+        // Force role to 'user' for public registration
+        const userDto = { ...createUserDto, role: 'user' };
+        const user = await this.usersService.create(userDto);
+
+        const payload: JwtPayload = {
+            sub: user.uuid,
+            email: user.email,
+            role: user.role,
+        };
+
+        return {
+            access_token: this.jwtService.sign(payload),
+            user: {
+                uuid: user.uuid,
+                email: user.email,
+                username: user.username,
+                firstName: user.firstName,
+                lastName: user.lastName,
+                role: user.role,
+            },
+        };
+    }
 
     async login(loginDto: LoginDto): Promise<AuthResponse> {
         const user = await this.usersService.validatePassword(loginDto.email, loginDto.password);

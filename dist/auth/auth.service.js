@@ -23,6 +23,26 @@ let AuthService = class AuthService {
         this.campaignsService = campaignsService;
         this.jwtService = jwtService;
     }
+    async register(createUserDto) {
+        const userDto = { ...createUserDto, role: 'user' };
+        const user = await this.usersService.create(userDto);
+        const payload = {
+            sub: user.uuid,
+            email: user.email,
+            role: user.role,
+        };
+        return {
+            access_token: this.jwtService.sign(payload),
+            user: {
+                uuid: user.uuid,
+                email: user.email,
+                username: user.username,
+                firstName: user.firstName,
+                lastName: user.lastName,
+                role: user.role,
+            },
+        };
+    }
     async login(loginDto) {
         const user = await this.usersService.validatePassword(loginDto.email, loginDto.password);
         if (!user) {

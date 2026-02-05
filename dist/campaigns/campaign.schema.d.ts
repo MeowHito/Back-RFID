@@ -1,12 +1,29 @@
 import { Document } from 'mongoose';
 export type CampaignDocument = Campaign & Document;
+export interface RaceCategory {
+    name: string;
+    distance: string;
+    startTime: string;
+    cutoff: string;
+    elevation?: string;
+    raceType?: string;
+    badgeColor: string;
+    status: string;
+    itra?: number;
+    utmbIndex?: string;
+}
 export declare class Campaign {
     uuid: string;
     name: string;
+    nameTh: string;
+    nameEn: string;
     shortName: string;
     description: string;
     eventDate: Date;
+    eventEndDate: Date;
     location: string;
+    locationTh: string;
+    locationEn: string;
     logoUrl: string;
     pictureUrl: string;
     bgUrl: string;
@@ -28,6 +45,8 @@ export declare class Campaign {
     chipSecondaryColor: string;
     chipModeColor: string;
     certTextColor: string;
+    categories: RaceCategory[];
+    countdownDate: Date;
 }
 export declare const CampaignSchema: import("mongoose").Schema<Campaign, import("mongoose").Model<Campaign, any, any, any, (Document<unknown, any, Campaign, any, import("mongoose").DefaultSchemaOptions> & Campaign & {
     _id: import("mongoose").Types.ObjectId;
@@ -66,6 +85,24 @@ export declare const CampaignSchema: import("mongoose").Schema<Campaign, import(
     }, "id"> & {
         id: string;
     }> | undefined;
+    nameTh?: import("mongoose").SchemaDefinitionProperty<string, Campaign, Document<unknown, {}, Campaign, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
+        _id: import("mongoose").Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    nameEn?: import("mongoose").SchemaDefinitionProperty<string, Campaign, Document<unknown, {}, Campaign, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
+        _id: import("mongoose").Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
     shortName?: import("mongoose").SchemaDefinitionProperty<string, Campaign, Document<unknown, {}, Campaign, {
         id: string;
     }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
@@ -93,7 +130,34 @@ export declare const CampaignSchema: import("mongoose").Schema<Campaign, import(
     }, "id"> & {
         id: string;
     }> | undefined;
+    eventEndDate?: import("mongoose").SchemaDefinitionProperty<Date, Campaign, Document<unknown, {}, Campaign, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
+        _id: import("mongoose").Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
     location?: import("mongoose").SchemaDefinitionProperty<string, Campaign, Document<unknown, {}, Campaign, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
+        _id: import("mongoose").Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    locationTh?: import("mongoose").SchemaDefinitionProperty<string, Campaign, Document<unknown, {}, Campaign, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
+        _id: import("mongoose").Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    locationEn?: import("mongoose").SchemaDefinitionProperty<string, Campaign, Document<unknown, {}, Campaign, {
         id: string;
     }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
         _id: import("mongoose").Types.ObjectId;
@@ -283,6 +347,24 @@ export declare const CampaignSchema: import("mongoose").Schema<Campaign, import(
         id: string;
     }> | undefined;
     certTextColor?: import("mongoose").SchemaDefinitionProperty<string, Campaign, Document<unknown, {}, Campaign, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
+        _id: import("mongoose").Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    categories?: import("mongoose").SchemaDefinitionProperty<RaceCategory[], Campaign, Document<unknown, {}, Campaign, {
+        id: string;
+    }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
+        _id: import("mongoose").Types.ObjectId;
+    } & {
+        __v: number;
+    }, "id"> & {
+        id: string;
+    }> | undefined;
+    countdownDate?: import("mongoose").SchemaDefinitionProperty<Date, Campaign, Document<unknown, {}, Campaign, {
         id: string;
     }, import("mongoose").ResolveSchemaOptions<import("mongoose").DefaultSchemaOptions>> & Omit<Campaign & {
         _id: import("mongoose").Types.ObjectId;

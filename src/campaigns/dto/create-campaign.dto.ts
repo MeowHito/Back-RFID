@@ -1,5 +1,43 @@
-import { IsString, IsOptional, IsDate, IsBoolean, IsEmail } from 'class-validator';
+import { IsString, IsOptional, IsDate, IsBoolean, IsEmail, IsArray, ValidateNested, IsNumber } from 'class-validator';
 import { Type } from 'class-transformer';
+
+// DTO for race category inside a campaign
+export class RaceCategoryDto {
+    @IsString()
+    name: string;
+
+    @IsString()
+    distance: string;
+
+    @IsString()
+    startTime: string;
+
+    @IsString()
+    cutoff: string;
+
+    @IsOptional()
+    @IsString()
+    elevation?: string;
+
+    @IsOptional()
+    @IsString()
+    raceType?: string;
+
+    @IsString()
+    badgeColor: string;
+
+    @IsOptional()
+    @IsString()
+    status?: string;
+
+    @IsOptional()
+    @IsNumber()
+    itra?: number;
+
+    @IsOptional()
+    @IsString()
+    utmbIndex?: string;
+}
 
 export class CreateCampaignDto {
     @IsString()
@@ -16,6 +54,11 @@ export class CreateCampaignDto {
     @Type(() => Date)
     @IsDate()
     eventDate: Date;
+
+    @IsOptional()
+    @Type(() => Date)
+    @IsDate()
+    eventEndDate?: Date;
 
     @IsOptional()
     @IsString()
@@ -56,4 +99,19 @@ export class CreateCampaignDto {
     @IsOptional()
     @IsBoolean()
     allowRFIDSync?: boolean;
+
+    @IsOptional()
+    @IsString()
+    status?: string;
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => RaceCategoryDto)
+    categories?: RaceCategoryDto[];
+
+    @IsOptional()
+    @Type(() => Date)
+    @IsDate()
+    countdownDate?: Date;
 }

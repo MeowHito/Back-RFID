@@ -162,6 +162,34 @@ let UsersService = class UsersService {
     async updateLastLogin(id) {
         await this.userModel.findByIdAndUpdate(id, { lastLogin: new Date() }).exec();
     }
+    async updateProfile(uuid, updateData) {
+        const user = await this.findByUuid(uuid);
+        if (!user)
+            throw new common_1.NotFoundException('User not found');
+        if (updateData.username && updateData.username !== user.username) {
+            const existingUser = await this.findByUsername(updateData.username);
+            if (existingUser)
+                throw new common_1.ConflictException('Username already exists');
+        }
+        const updated = await this.userModel.findByIdAndUpdate(user._id, updateData, { new: true }).select('-password').exec();
+        if (!updated)
+            throw new common_1.NotFoundException('User not found');
+        return updated;
+    }
+    async updateAvatar(uuid, file) {
+        const user = await this.findByUuid(uuid);
+        if (!user)
+            throw new common_1.NotFoundException('User not found');
+        if (!file)
+            throw new common_1.NotFoundException('No file uploaded');
+        const base64 = file.buffer.toString('base64');
+        const mimeType = file.mimetype;
+        const avatarUrl = `data:${mimeType};base64,${base64}`;
+        const updated = await this.userModel.findByIdAndUpdate(user._id, { avatarUrl }, { new: true }).select('-password').exec();
+        if (!updated)
+            throw new common_1.NotFoundException('User not found');
+        return updated;
+    }
     async delete(id) {
         const result = await this.userModel.findByIdAndDelete(id).exec();
         if (!result)

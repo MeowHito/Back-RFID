@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { UsersService } from './users.service';
-import { CreateUserDto, UpdatePasswordDto } from './dto/user.dto';
+import { CreateUserDto, UpdatePasswordDto, UpdateProfileDto } from './dto/user.dto';
 
 @Controller('users')
 export class UsersController {
@@ -39,6 +40,17 @@ export class UsersController {
     @Post('update-password')
     updatePassword(@Body() data: UpdatePasswordDto) {
         return this.usersService.updatePassword(data);
+    }
+
+    @Put('profile/:uuid')
+    updateProfile(@Param('uuid') uuid: string, @Body() updateData: UpdateProfileDto) {
+        return this.usersService.updateProfile(uuid, updateData);
+    }
+
+    @Post('avatar/:uuid')
+    @UseInterceptors(FileInterceptor('avatar'))
+    async uploadAvatar(@Param('uuid') uuid: string, @UploadedFile() file: any) {
+        return this.usersService.updateAvatar(uuid, file);
     }
 
     @Delete(':id')

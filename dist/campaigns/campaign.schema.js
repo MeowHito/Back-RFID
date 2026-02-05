@@ -14,10 +14,15 @@ const mongoose_1 = require("@nestjs/mongoose");
 let Campaign = class Campaign {
     uuid;
     name;
+    nameTh;
+    nameEn;
     shortName;
     description;
     eventDate;
+    eventEndDate;
     location;
+    locationTh;
+    locationEn;
     logoUrl;
     pictureUrl;
     bgUrl;
@@ -39,6 +44,8 @@ let Campaign = class Campaign {
     chipSecondaryColor;
     chipModeColor;
     certTextColor;
+    categories;
+    countdownDate;
 };
 exports.Campaign = Campaign;
 __decorate([
@@ -49,6 +56,14 @@ __decorate([
     (0, mongoose_1.Prop)({ required: true }),
     __metadata("design:type", String)
 ], Campaign.prototype, "name", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Campaign.prototype, "nameTh", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Campaign.prototype, "nameEn", void 0);
 __decorate([
     (0, mongoose_1.Prop)(),
     __metadata("design:type", String)
@@ -63,8 +78,20 @@ __decorate([
 ], Campaign.prototype, "eventDate", void 0);
 __decorate([
     (0, mongoose_1.Prop)(),
+    __metadata("design:type", Date)
+], Campaign.prototype, "eventEndDate", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
     __metadata("design:type", String)
 ], Campaign.prototype, "location", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Campaign.prototype, "locationTh", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", String)
+], Campaign.prototype, "locationEn", void 0);
 __decorate([
     (0, mongoose_1.Prop)(),
     __metadata("design:type", String)
@@ -149,6 +176,14 @@ __decorate([
     (0, mongoose_1.Prop)(),
     __metadata("design:type", String)
 ], Campaign.prototype, "certTextColor", void 0);
+__decorate([
+    (0, mongoose_1.Prop)({ type: [Object], default: [] }),
+    __metadata("design:type", Array)
+], Campaign.prototype, "categories", void 0);
+__decorate([
+    (0, mongoose_1.Prop)(),
+    __metadata("design:type", Date)
+], Campaign.prototype, "countdownDate", void 0);
 exports.Campaign = Campaign = __decorate([
     (0, mongoose_1.Schema)({ timestamps: true })
 ], Campaign);

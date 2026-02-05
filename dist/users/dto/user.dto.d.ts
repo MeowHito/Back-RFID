@@ -21,3 +21,10 @@ export declare class UpdatePasswordDto {
     opw?: string;
     npw: string;
 }
+export declare class UpdateProfileDto {
+    firstName?: string;
+    lastName?: string;
+    username?: string;
+    phone?: string;
+    avatarUrl?: string;
+}

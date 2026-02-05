@@ -1,7 +1,7 @@
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../users/users.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
-import { LoginDto, LoginStationDto } from '../users/dto/user.dto';
+import { LoginDto, LoginStationDto, CreateUserDto } from '../users/dto/user.dto';
 export interface JwtPayload {
     sub: string;
     email: string;
@@ -26,6 +26,7 @@ export declare class AuthService {
     private campaignsService;
     private jwtService;
     constructor(usersService: UsersService, campaignsService: CampaignsService, jwtService: JwtService);
+    register(createUserDto: CreateUserDto): Promise<AuthResponse>;
     login(loginDto: LoginDto): Promise<AuthResponse>;
     loginStation(loginDto: LoginStationDto): Promise<AuthResponse>;
     validateToken(token: string): Promise<JwtPayload | null>;

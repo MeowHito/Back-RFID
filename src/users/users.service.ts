@@ -139,6 +139,37 @@ export class UsersService {
         await this.userModel.findByIdAndUpdate(id, { lastLogin: new Date() }).exec();
     }
 
+    async updateProfile(uuid: string, updateData: { firstName?: string; lastName?: string; username?: string; phone?: string; avatarUrl?: string }): Promise<UserDocument> {
+        const user = await this.findByUuid(uuid);
+        if (!user) throw new NotFoundException('User not found');
+
+        // Check username uniqueness if updating
+        if (updateData.username && updateData.username !== user.username) {
+            const existingUser = await this.findByUsername(updateData.username);
+            if (existingUser) throw new ConflictException('Username already exists');
+        }
+
+        const updated = await this.userModel.findByIdAndUpdate(user._id, updateData, { new: true }).select('-password').exec();
+        if (!updated) throw new NotFoundException('User not found');
+        return updated;
+    }
+
+    async updateAvatar(uuid: string, file: any): Promise<UserDocument> {
+        const user = await this.findByUuid(uuid);
+        if (!user) throw new NotFoundException('User not found');
+
+        if (!file) throw new NotFoundException('No file uploaded');
+
+        // Convert file to base64 data URL for simple storage
+        const base64 = file.buffer.toString('base64');
+        const mimeType = file.mimetype;
+        const avatarUrl = `data:${mimeType};base64,${base64}`;
+
+        const updated = await this.userModel.findByIdAndUpdate(user._id, { avatarUrl }, { new: true }).select('-password').exec();
+        if (!updated) throw new NotFoundException('User not found');
+        return updated;
+    }
+
     async delete(id: string): Promise<void> {
         const result = await this.userModel.findByIdAndDelete(id).exec();
         if (!result) throw new NotFoundException('User not found');

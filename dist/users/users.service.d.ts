@@ -24,5 +24,13 @@ export declare class UsersService {
     validateResetToken(token: string): Promise<boolean>;
     resetPasswordByToken(token: string, newPassword: string): Promise<void>;
     updateLastLogin(id: string): Promise<void>;
+    updateProfile(uuid: string, updateData: {
+        firstName?: string;
+        lastName?: string;
+        username?: string;
+        phone?: string;
+        avatarUrl?: string;
+    }): Promise<UserDocument>;
+    updateAvatar(uuid: string, file: any): Promise<UserDocument>;
     delete(id: string): Promise<void>;
 }

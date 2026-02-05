@@ -3,6 +3,20 @@ import { Document } from 'mongoose';
 
 export type CampaignDocument = Campaign & Document;
 
+// Race category/type embedded in Campaign
+export interface RaceCategory {
+    name: string;       // e.g., "100M", "50K", "Full"
+    distance: string;   // e.g., "175 KM"
+    startTime: string;  // e.g., "10:00"
+    cutoff: string;     // e.g., "48 ชม."
+    elevation?: string; // e.g., "10,400 m+" (for trail races)
+    raceType?: string;  // e.g., "Marathon", "Half Marathon" (for road races)
+    badgeColor: string; // e.g., "#e60000"
+    status: string;     // "live", "wait", "finished"
+    itra?: number;      // ITRA points
+    utmbIndex?: string; // UTMB Index
+}
+
 @Schema({ timestamps: true })
 export class Campaign {
     @Prop({ required: true, unique: true })
@@ -10,6 +24,12 @@ export class Campaign {
 
     @Prop({ required: true })
     name: string;
+
+    @Prop()
+    nameTh: string; // Thai name
+
+    @Prop()
+    nameEn: string; // English name
 
     @Prop()
     shortName: string;
@@ -21,7 +41,16 @@ export class Campaign {
     eventDate: Date;
 
     @Prop()
+    eventEndDate: Date; // For multi-day events
+
+    @Prop()
     location: string;
+
+    @Prop()
+    locationTh: string; // Thai location
+
+    @Prop()
+    locationEn: string; // English location
 
     @Prop()
     logoUrl: string;
@@ -48,7 +77,7 @@ export class Campaign {
     contactTel: string;
 
     @Prop({ default: 'draft' })
-    status: string; // draft, active, finished
+    status: string; // draft, active, live, finished
 
     @Prop({ default: true })
     isDraft: boolean;
@@ -86,6 +115,14 @@ export class Campaign {
 
     @Prop()
     certTextColor: string;
+
+    // Race categories (100K, 50K, etc.)
+    @Prop({ type: [Object], default: [] })
+    categories: RaceCategory[];
+
+    // Countdown settings
+    @Prop()
+    countdownDate: Date;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);

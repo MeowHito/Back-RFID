@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UsersController = void 0;
 const common_1 = require("@nestjs/common");
+const platform_express_1 = require("@nestjs/platform-express");
 const users_service_1 = require("./users.service");
 const user_dto_1 = require("./dto/user.dto");
 let UsersController = class UsersController {
@@ -41,6 +42,12 @@ let UsersController = class UsersController {
     }
     updatePassword(data) {
         return this.usersService.updatePassword(data);
+    }
+    updateProfile(uuid, updateData) {
+        return this.usersService.updateProfile(uuid, updateData);
+    }
+    async uploadAvatar(uuid, file) {
+        return this.usersService.updateAvatar(uuid, file);
     }
     delete(id) {
         return this.usersService.delete(id);
@@ -99,6 +106,23 @@ __decorate([
     __metadata("design:paramtypes", [user_dto_1.UpdatePasswordDto]),
     __metadata("design:returntype", void 0)
 ], UsersController.prototype, "updatePassword", null);
+__decorate([
+    (0, common_1.Put)('profile/:uuid'),
+    __param(0, (0, common_1.Param)('uuid')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, user_dto_1.UpdateProfileDto]),
+    __metadata("design:returntype", void 0)
+], UsersController.prototype, "updateProfile", null);
+__decorate([
+    (0, common_1.Post)('avatar/:uuid'),
+    (0, common_1.UseInterceptors)((0, platform_express_1.FileInterceptor)('avatar')),
+    __param(0, (0, common_1.Param)('uuid')),
+    __param(1, (0, common_1.UploadedFile)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "uploadAvatar", null);
 __decorate([
     (0, common_1.Delete)(':id'),
     __param(0, (0, common_1.Param)('id')),
