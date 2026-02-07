@@ -7,13 +7,8 @@ async function bootstrap() {
 
   // Enable CORS for frontend
   app.enableCors({
-    origin: [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      'https://master.d37vbtq6l0ud98.amplifyapp.com',
-      'https://d37vbtq6l0ud98.amplifyapp.com',
-    ],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    origin: true, // Allow all origins for production
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     credentials: true,
   });
 
