@@ -155,6 +155,18 @@ export class PublicApiController {
 
     // ========== Participant Endpoints ==========
 
+    // Get all runners (no filter - for debugging)
+    @Get('runners/all')
+    async getAllRunners() {
+        try {
+            // Get all runners without filter
+            const data = await this.runnersService.findAll(50);
+            return this.successResponse({ data, total: data.length });
+        } catch (error) {
+            return this.errorResponse('500', error.message);
+        }
+    }
+
     @Get('campaign/getAllParticipantByEvent')
     async getAllParticipantByEvent(
         @Query('id') id: string,
@@ -300,5 +312,107 @@ export class PublicApiController {
         // This would need to fetch participants across all events in a campaign
         // For now, return empty array
         return this.successResponse([]);
+    }
+
+    // ========== Public Runner Registration ==========
+
+    @Post('runner/register')
+    async registerRunner(@Body() body: {
+        eventId: string;
+        firstName: string;
+        lastName: string;
+        gender: string;
+        nationality?: string;
+        ageGroup?: string;
+        category?: string;
+    }) {
+        try {
+            // Auto-generate BIB
+            const runners = await this.runnersService.findByEvent({ eventId: body.eventId });
+            const bib = `R${(runners.length + 1).toString().padStart(4, '0')}`;
+
+            const runner = await this.runnersService.create({
+                ...body,
+                bib,
+                status: 'registered',
+                registerDate: new Date(),
+            } as any);
+            return this.successResponse(runner);
+        } catch (error) {
+            return this.errorResponse('400', error.message);
+        }
+    }
+
+    // ========== Dev/Testing: Seed Sample Runners ==========
+
+    @Post('seed/runners')
+    async seedRunners(@Body() body: { eventId: string }) {
+        try {
+            const eventId = body.eventId;
+            const sampleRunners = [
+                { bib: 'R0001', firstName: 'สมชาย', lastName: 'ใจดี', gender: 'M', nationality: 'TH', ageGroup: '30-39', category: '50K', status: 'finished', netTime: 18000000, latestCheckpoint: 'Finish' },
+                { bib: 'R0002', firstName: 'สมหญิง', lastName: 'รักวิ่ง', gender: 'F', nationality: 'TH', ageGroup: '25-29', category: '25K', status: 'in_progress', netTime: 7200000, latestCheckpoint: 'CP3' },
+                { bib: 'R0003', firstName: 'John', lastName: 'Smith', gender: 'M', nationality: 'US', ageGroup: '40-49', category: '100K', status: 'in_progress', netTime: 28800000, latestCheckpoint: 'CP5' },
+                { bib: 'R0004', firstName: 'Maria', lastName: 'Garcia', gender: 'F', nationality: 'ES', ageGroup: '35-39', category: '50K', status: 'finished', netTime: 21600000, latestCheckpoint: 'Finish' },
+                { bib: 'R0005', firstName: 'วิทยา', lastName: 'มาราธอน', gender: 'M', nationality: 'TH', ageGroup: '45-49', category: '100K', status: 'dns', latestCheckpoint: 'Start' },
+                { bib: 'R0006', firstName: 'อรุณ', lastName: 'พัฒนา', gender: 'M', nationality: 'TH', ageGroup: '20-24', category: '25K', status: 'in_progress', netTime: 5400000, latestCheckpoint: 'CP2' },
+                { bib: 'R0007', firstName: 'Emma', lastName: 'Wilson', gender: 'F', nationality: 'UK', ageGroup: '30-34', category: '50K', status: 'in_progress', netTime: 14400000, latestCheckpoint: 'CP4' },
+                { bib: 'R0008', firstName: 'ประยุทธ์', lastName: 'นักวิ่ง', gender: 'M', nationality: 'TH', ageGroup: '50-54', category: '100K', status: 'dnf', latestCheckpoint: 'CP6' },
+                { bib: 'R0009', firstName: 'Lisa', lastName: 'Brown', gender: 'F', nationality: 'AU', ageGroup: '25-29', category: '25K', status: 'finished', netTime: 9000000, latestCheckpoint: 'Finish' },
+                { bib: 'R0010', firstName: 'ธีรศักดิ์', lastName: 'วิ่งเร็ว', gender: 'M', nationality: 'TH', ageGroup: '35-39', category: '50K', status: 'in_progress', netTime: 16200000, latestCheckpoint: 'CP4' },
+            ];
+
+            const createdRunners: any[] = [];
+            for (const runner of sampleRunners) {
+                const existing = await this.runnersService.findByBib(eventId, runner.bib);
+                if (!existing) {
+                    const created = await this.runnersService.create({
+                        eventId,
+                        ...runner,
+                        registerDate: new Date(),
+                    } as any);
+                    createdRunners.push(created);
+                }
+            }
+            return this.successResponse({ created: createdRunners.length, total: sampleRunners.length });
+        } catch (error) {
+            return this.errorResponse('500', error.message);
+        }
+    }
+
+    // Delete sample runners (BIB starting with R00)
+    @Post('seed/delete-samples')
+    async deleteSampleRunners(@Body() body: { eventId: string }) {
+        try {
+            const runners = await this.runnersService.findByEvent({ eventId: body.eventId });
+            let deletedCount = 0;
+            for (const runner of runners) {
+                if (runner.bib.startsWith('R00')) {
+                    await this.runnersService.delete(runner._id.toString());
+                    deletedCount++;
+                }
+            }
+            return this.successResponse({ deleted: deletedCount });
+        } catch (error) {
+            return this.errorResponse('500', error.message);
+        }
+    }
+
+    // Update runners eventId (reassign to different campaign)
+    @Post('runners/update-event')
+    async updateRunnersEvent(@Body() body: { fromEventId: string; toEventId: string }) {
+        try {
+            const runners = await this.runnersService.findByEvent({ eventId: body.fromEventId });
+            let updatedCount = 0;
+            for (const runner of runners) {
+                await this.runnersService.update(runner._id.toString(), {
+                    eventId: body.toEventId
+                });
+                updatedCount++;
+            }
+            return this.successResponse({ updated: updatedCount });
+        } catch (error) {
+            return this.errorResponse('500', error.message);
+        }
     }
 }

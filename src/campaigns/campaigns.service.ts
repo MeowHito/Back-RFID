@@ -54,9 +54,27 @@ export class CampaignsService {
         return { data, total };
     }
 
+    /**
+     * Find campaign by ID - handles both MongoDB ObjectId and UUID formats
+     * First tries _id lookup, then falls back to uuid lookup
+     */
     async findById(id: string): Promise<CampaignDocument> {
-        const campaign = await this.campaignModel.findById(id).exec();
-        if (!campaign) throw new NotFoundException('Campaign not found');
+        let campaign: CampaignDocument | null = null;
+
+        // Try MongoDB ObjectId first (24 hex characters)
+        if (/^[0-9a-fA-F]{24}$/.test(id)) {
+            campaign = await this.campaignModel.findById(id).exec();
+        }
+
+        // If not found by _id, try uuid lookup
+        if (!campaign) {
+            campaign = await this.campaignModel.findOne({ uuid: id }).exec();
+        }
+
+        if (!campaign) {
+            throw new NotFoundException('Campaign not found');
+        }
+
         return campaign;
     }
 

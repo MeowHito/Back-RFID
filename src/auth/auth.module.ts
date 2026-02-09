@@ -16,10 +16,16 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
         PassportModule.register({ defaultStrategy: 'jwt' }),
         JwtModule.registerAsync({
             imports: [ConfigModule],
-            useFactory: async (configService: ConfigService) => ({
-                secret: configService.get<string>('JWT_SECRET') || 'rfid-timing-secret-key',
-                signOptions: { expiresIn: '7d' },
-            }),
+            useFactory: async (configService: ConfigService) => {
+                const secret = configService.get<string>('JWT_SECRET');
+                if (!secret && process.env.NODE_ENV === 'production') {
+                    throw new Error('JWT_SECRET must be set in production environment');
+                }
+                return {
+                    secret: secret || 'dev-only-secret-change-in-production',
+                    signOptions: { expiresIn: '7d' },
+                };
+            },
             inject: [ConfigService],
         }),
     ],

@@ -1,9 +1,11 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { RunnersService } from './runners.service';
 import type { RunnerFilter, PagingData } from './runners.service';
 import { CreateRunnerDto } from './dto/create-runner.dto';
 
 @Controller('runners')
+@UseGuards(AuthGuard('jwt'))
 export class RunnersController {
     constructor(private readonly runnersService: RunnersService) { }
 

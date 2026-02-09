@@ -27,6 +27,11 @@ export class RunnersService {
         @InjectModel(Runner.name) private runnerModel: Model<RunnerDocument>,
     ) { }
 
+    // Get all runners without filter (for debugging/checking data)
+    async findAll(limit: number = 100): Promise<RunnerDocument[]> {
+        return this.runnerModel.find().limit(limit).sort({ createdAt: -1 }).exec();
+    }
+
     async create(createRunnerDto: CreateRunnerDto): Promise<RunnerDocument> {
         const runner = new this.runnerModel({
             ...createRunnerDto,
@@ -44,7 +49,13 @@ export class RunnersService {
     }
 
     async findByEvent(filter: RunnerFilter): Promise<RunnerDocument[]> {
-        const query: any = { eventId: new Types.ObjectId(filter.eventId) };
+        // Query both ObjectId and string formats for eventId (for backward compatibility)
+        const query: any = {
+            $or: [
+                { eventId: new Types.ObjectId(filter.eventId) },
+                { eventId: filter.eventId }
+            ]
+        };
 
         if (filter.category) query.category = filter.category;
         if (filter.gender) query.gender = filter.gender;
@@ -54,13 +65,15 @@ export class RunnersService {
         if (filter.checkpoint) query.latestCheckpoint = filter.checkpoint;
 
         if (filter.search) {
-            query.$or = [
-                { bib: { $regex: filter.search, $options: 'i' } },
-                { firstName: { $regex: filter.search, $options: 'i' } },
-                { lastName: { $regex: filter.search, $options: 'i' } },
-                { firstNameTh: { $regex: filter.search, $options: 'i' } },
-                { lastNameTh: { $regex: filter.search, $options: 'i' } },
-            ];
+            query.$and = [{
+                $or: [
+                    { bib: { $regex: filter.search, $options: 'i' } },
+                    { firstName: { $regex: filter.search, $options: 'i' } },
+                    { lastName: { $regex: filter.search, $options: 'i' } },
+                    { firstNameTh: { $regex: filter.search, $options: 'i' } },
+                    { lastNameTh: { $regex: filter.search, $options: 'i' } },
+                ]
+            }];
         }
 
         return this.runnerModel.find(query).sort({ overallRank: 1, bib: 1 }).exec();

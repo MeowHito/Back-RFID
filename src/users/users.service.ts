@@ -160,6 +160,18 @@ export class UsersService {
 
         if (!file) throw new NotFoundException('No file uploaded');
 
+        // Security: Validate file type
+        const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        if (!allowedMimeTypes.includes(file.mimetype)) {
+            throw new NotFoundException('Invalid file type. Only JPEG, PNG, GIF, and WebP are allowed.');
+        }
+
+        // Security: Validate file size (max 5MB)
+        const maxSize = 5 * 1024 * 1024; // 5MB
+        if (file.size > maxSize) {
+            throw new NotFoundException('File too large. Maximum size is 5MB.');
+        }
+
         // Convert file to base64 data URL for simple storage
         const base64 = file.buffer.toString('base64');
         const mimeType = file.mimetype;

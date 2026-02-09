@@ -1,13 +1,18 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { CampaignsService } from './campaigns.service';
 import type { PagingData, CampaignFilter } from './campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 
 @Controller('campaigns')
 export class CampaignsController {
     constructor(private readonly campaignsService: CampaignsService) { }
 
     @Post()
+    @UseGuards(AuthGuard('jwt'), RolesGuard)
+    @Roles('admin', 'organizer')
     create(@Body() createCampaignDto: CreateCampaignDto) {
         return this.campaignsService.create(createCampaignDto);
     }
@@ -46,16 +51,22 @@ export class CampaignsController {
     }
 
     @Put(':id')
+    @UseGuards(AuthGuard('jwt'), RolesGuard)
+    @Roles('admin', 'organizer')
     update(@Param('id') id: string, @Body() updateData: Partial<CreateCampaignDto>) {
         return this.campaignsService.update(id, updateData);
     }
 
     @Put(':id/status')
+    @UseGuards(AuthGuard('jwt'), RolesGuard)
+    @Roles('admin', 'organizer')
     updateStatus(@Param('id') id: string, @Body('status') status: string) {
         return this.campaignsService.updateStatus(id, status);
     }
 
     @Delete(':id')
+    @UseGuards(AuthGuard('jwt'), RolesGuard)
+    @Roles('admin')
     delete(@Param('id') id: string) {
         return this.campaignsService.delete(id);
     }
