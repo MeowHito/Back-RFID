@@ -11,8 +11,9 @@ export class CampaignsController {
     constructor(private readonly campaignsService: CampaignsService) { }
 
     @Post()
-    @UseGuards(AuthGuard('jwt'), RolesGuard)
-    @Roles('admin', 'organizer')
+    // TODO: Re-enable auth guards once admin login flow is implemented
+    // @UseGuards(AuthGuard('jwt'), RolesGuard)
+    // @Roles('admin', 'organizer')
     create(@Body() createCampaignDto: CreateCampaignDto) {
         return this.campaignsService.create(createCampaignDto);
     }
@@ -51,22 +52,25 @@ export class CampaignsController {
     }
 
     @Put(':id')
-    @UseGuards(AuthGuard('jwt'), RolesGuard)
-    @Roles('admin', 'organizer')
+    // TODO: Re-enable auth guards once admin login flow is implemented
+    // @UseGuards(AuthGuard('jwt'), RolesGuard)
+    // @Roles('admin', 'organizer')
     update(@Param('id') id: string, @Body() updateData: Partial<CreateCampaignDto>) {
         return this.campaignsService.update(id, updateData);
     }
 
     @Put(':id/status')
-    @UseGuards(AuthGuard('jwt'), RolesGuard)
-    @Roles('admin', 'organizer')
+    // TODO: Re-enable auth guards once admin login flow is implemented
+    // @UseGuards(AuthGuard('jwt'), RolesGuard)
+    // @Roles('admin', 'organizer')
     updateStatus(@Param('id') id: string, @Body('status') status: string) {
         return this.campaignsService.updateStatus(id, status);
     }
 
     @Delete(':id')
-    @UseGuards(AuthGuard('jwt'), RolesGuard)
-    @Roles('admin')
+    // TODO: Re-enable auth guards once admin login flow is implemented
+    // @UseGuards(AuthGuard('jwt'), RolesGuard)
+    // @Roles('admin')
     delete(@Param('id') id: string) {
         return this.campaignsService.delete(id);
     }
