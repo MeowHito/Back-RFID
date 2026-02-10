@@ -131,3 +131,6 @@ export const CampaignSchema = SchemaFactory.createForClass(Campaign);
 CampaignSchema.index({ uuid: 1 }, { unique: true });
 CampaignSchema.index({ eventDate: -1 });
 CampaignSchema.index({ status: 1 });
+CampaignSchema.index({ isDraft: 1, status: 1 }); // For filtering published campaigns
+CampaignSchema.index({ isDraft: 1, eventDate: -1 }); // For sorted published campaigns
+

@@ -139,3 +139,8 @@ RunnerSchema.index({ eventId: 1, rfidTag: 1 });
 RunnerSchema.index({ eventId: 1, chipCode: 1 });
 RunnerSchema.index({ eventId: 1, status: 1 });
 RunnerSchema.index({ eventId: 1, category: 1, netTime: 1 });
+// Additional performance indexes
+RunnerSchema.index({ eventId: 1, gender: 1, status: 1 }); // Gender + status filtering
+RunnerSchema.index({ eventId: 1, overallRank: 1 }); // Sorted results by rank
+RunnerSchema.index({ eventId: 1, category: 1, gender: 1, status: 1 }); // Combined filtering
+RunnerSchema.index({ eventId: 1, latestCheckpoint: 1 }); // Checkpoint tracking
