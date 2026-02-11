@@ -85,6 +85,10 @@ export class Campaign {
     @Prop({ default: false })
     isApproveCertificate: boolean;
 
+    /** Only one campaign can be featured (gold trophy); shown in admin header */
+    @Prop({ default: false })
+    isFeatured: boolean;
+
     @Prop({ default: true })
     allowRFIDSync: boolean;
 

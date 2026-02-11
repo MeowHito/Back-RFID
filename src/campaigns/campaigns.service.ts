@@ -122,6 +122,26 @@ export class CampaignsService {
         return campaign;
     }
 
+    /** Get the single featured campaign (for admin header) */
+    async findFeatured(): Promise<CampaignDocument | null> {
+        return this.campaignModel.findOne({ isFeatured: true }).exec();
+    }
+
+    /** Set one campaign as featured; all others are unset. Only one can be featured. */
+    async setFeatured(id: string): Promise<CampaignDocument> {
+        await this.campaignModel.updateMany({}, { isFeatured: false }).exec();
+        const campaign = await this.campaignModel.findByIdAndUpdate(id, { isFeatured: true }, { new: true }).exec();
+        if (!campaign) throw new NotFoundException('Campaign not found');
+        return campaign;
+    }
+
+    /** Unset featured from a campaign (e.g. toggle off) */
+    async unsetFeatured(id: string): Promise<CampaignDocument> {
+        const campaign = await this.campaignModel.findByIdAndUpdate(id, { isFeatured: false }, { new: true }).exec();
+        if (!campaign) throw new NotFoundException('Campaign not found');
+        return campaign;
+    }
+
     async updateStatus(id: string, status: string): Promise<CampaignDocument> {
         const campaign = await this.campaignModel.findByIdAndUpdate(
             id,

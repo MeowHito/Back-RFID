@@ -36,6 +36,19 @@ export class CampaignsController {
         return this.campaignsService.findByDate(filter, paging);
     }
 
+    @Get('featured')
+    getFeatured() {
+        return this.campaignsService.findFeatured();
+    }
+
+    @Put(':id/featured')
+    setFeatured(@Param('id') id: string, @Body('value') value: boolean) {
+        if (value) {
+            return this.campaignsService.setFeatured(id);
+        }
+        return this.campaignsService.unsetFeatured(id);
+    }
+
     @Get(':id')
     findOne(@Param('id') id: string) {
         return this.campaignsService.findById(id);
