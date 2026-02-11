@@ -47,11 +47,11 @@ export class CampaignsService {
         }
 
         const [data, total] = await Promise.all([
-            this.campaignModel.find(query).sort({ eventDate: -1 }).skip(skip).limit(limit).exec(),
+            this.campaignModel.find(query).sort({ eventDate: -1 }).skip(skip).limit(limit).lean().exec(),
             this.campaignModel.countDocuments(query).exec(),
         ]);
 
-        return { data, total };
+        return { data: data as CampaignDocument[], total };
     }
 
     /**
@@ -109,11 +109,11 @@ export class CampaignsService {
         }
 
         const [data, total] = await Promise.all([
-            this.campaignModel.find(query).sort({ eventDate: -1 }).skip(skip).limit(limit).exec(),
+            this.campaignModel.find(query).sort({ eventDate: -1 }).skip(skip).limit(limit).lean().exec(),
             this.campaignModel.countDocuments(query).exec(),
         ]);
 
-        return { data, total };
+        return { data: data as CampaignDocument[], total };
     }
 
     async update(id: string, updateData: Partial<CreateCampaignDto>): Promise<CampaignDocument> {
@@ -124,7 +124,7 @@ export class CampaignsService {
 
     /** Get the single featured campaign (for admin header) */
     async findFeatured(): Promise<CampaignDocument | null> {
-        return this.campaignModel.findOne({ isFeatured: true }).exec();
+        return this.campaignModel.findOne({ isFeatured: true }).lean().exec() as Promise<CampaignDocument | null>;
     }
 
     /** Set one campaign as featured; all others are unset. Only one can be featured. */

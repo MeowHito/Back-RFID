@@ -327,9 +327,9 @@ export class PublicApiController {
         category?: string;
     }) {
         try {
-            // Auto-generate BIB
-            const runners = await this.runnersService.findByEvent({ eventId: body.eventId });
-            const bib = `R${(runners.length + 1).toString().padStart(4, '0')}`;
+            // Auto-generate BIB (use count, no full list load)
+            const count = await this.runnersService.countByEvent(body.eventId);
+            const bib = `R${(count + 1).toString().padStart(4, '0')}`;
 
             const runner = await this.runnersService.create({
                 ...body,

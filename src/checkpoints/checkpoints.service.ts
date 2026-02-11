@@ -47,7 +47,8 @@ export class CheckpointsService {
         return this.checkpointModel
             .find({ campaignId: new Types.ObjectId(campaignId) })
             .sort({ orderNum: 1 })
-            .exec();
+            .lean()
+            .exec() as Promise<CheckpointDocument[]>;
     }
 
     async update(id: string, updateData: Partial<CreateCheckpointDto>): Promise<CheckpointDocument> {
@@ -95,6 +96,7 @@ export class CheckpointsService {
             .find({ eventId: new Types.ObjectId(eventId) })
             .populate('checkpointId')
             .sort({ orderNum: 1 })
+            .lean()
             .exec();
     }
 
@@ -103,11 +105,15 @@ export class CheckpointsService {
         const mappings = await this.findMappingsByEvent(eventId);
 
         return checkpoints.map(cp => {
-            const mapping = mappings.find(m => m.checkpointId.toString() === cp._id.toString());
-            return {
-                ...cp.toObject(),
-                mapping: mapping ? mapping.toObject() : null,
-            };
+            const cpObj = typeof (cp as any).toObject === 'function' ? (cp as any).toObject() : cp;
+            const cpIdStr = cpObj._id?.toString?.();
+            const mapping = mappings.find(m => {
+                const cid = (m as any).checkpointId;
+                const cidStr = cid?._id?.toString?.() ?? cid?.toString?.();
+                return cidStr === cpIdStr;
+            });
+            const mappingObj = mapping && (typeof (mapping as any).toObject === 'function' ? (mapping as any).toObject() : mapping);
+            return { ...cpObj, mapping: mappingObj || null };
         });
     }
 

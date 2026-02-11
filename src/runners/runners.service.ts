@@ -48,14 +48,16 @@ export class RunnersService {
         return this.runnerModel.insertMany(docs);
     }
 
-    async findByEvent(filter: RunnerFilter): Promise<RunnerDocument[]> {
-        // Query both ObjectId and string formats for eventId (for backward compatibility)
-        const query: any = {
-            $or: [
-                { eventId: new Types.ObjectId(filter.eventId) },
-                { eventId: filter.eventId }
-            ]
-        };
+    /** Count runners by event (fast, uses index) – use this instead of findByEvent().length */
+    async countByEvent(eventId: string): Promise<number> {
+        return this.runnerModel.countDocuments({
+            eventId: new Types.ObjectId(eventId),
+        }).exec();
+    }
+
+    /** List runners by event – capped at 2000 to avoid slow responses. Use findByEventWithPaging for large lists. */
+    async findByEvent(filter: RunnerFilter, limitCap: number = 2000): Promise<RunnerDocument[]> {
+        const query: any = { eventId: new Types.ObjectId(filter.eventId) };
 
         if (filter.category) query.category = filter.category;
         if (filter.gender) query.gender = filter.gender;
@@ -65,18 +67,21 @@ export class RunnersService {
         if (filter.checkpoint) query.latestCheckpoint = filter.checkpoint;
 
         if (filter.search) {
-            query.$and = [{
-                $or: [
-                    { bib: { $regex: filter.search, $options: 'i' } },
-                    { firstName: { $regex: filter.search, $options: 'i' } },
-                    { lastName: { $regex: filter.search, $options: 'i' } },
-                    { firstNameTh: { $regex: filter.search, $options: 'i' } },
-                    { lastNameTh: { $regex: filter.search, $options: 'i' } },
-                ]
-            }];
+            query.$or = [
+                { bib: { $regex: filter.search, $options: 'i' } },
+                { firstName: { $regex: filter.search, $options: 'i' } },
+                { lastName: { $regex: filter.search, $options: 'i' } },
+                { firstNameTh: { $regex: filter.search, $options: 'i' } },
+                { lastNameTh: { $regex: filter.search, $options: 'i' } },
+            ];
         }
 
-        return this.runnerModel.find(query).sort({ overallRank: 1, bib: 1 }).exec();
+        return this.runnerModel
+            .find(query)
+            .sort({ overallRank: 1, bib: 1 })
+            .limit(limitCap)
+            .lean()
+            .exec() as Promise<RunnerDocument[]>;
     }
 
     async findByEventWithPaging(filter: RunnerFilter, paging?: PagingData): Promise<{ data: RunnerDocument[]; total: number }> {

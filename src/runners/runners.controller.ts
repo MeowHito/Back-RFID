@@ -114,20 +114,20 @@ export class RunnersController {
     // Public registration endpoint (no auth required)
     @Post('public/register')
     async publicRegister(@Body() registrationData: CreateRunnerDto) {
-        // Auto-generate BIB if not provided
+        // Auto-generate BIB if not provided (use count, no full list load)
         if (!registrationData.bib) {
-            const count = await this.runnersService.findByEvent({ eventId: registrationData.eventId });
-            registrationData.bib = `REG${(count.length + 1).toString().padStart(4, '0')}`;
+            const count = await this.runnersService.countByEvent(registrationData.eventId);
+            registrationData.bib = `REG${(count + 1).toString().padStart(4, '0')}`;
         }
         // Set register date
         registrationData.registerDate = new Date();
         return this.runnersService.create(registrationData);
     }
 
-    // Get registration count for an event (public)
+    // Get registration count for an event (public) – uses countDocuments, not full list
     @Get('public/count/:eventId')
     async getRegistrationCount(@Param('eventId') eventId: string) {
-        const runners = await this.runnersService.findByEvent({ eventId });
-        return { count: runners.length };
+        const count = await this.runnersService.countByEvent(eventId);
+        return { count };
     }
 }

@@ -137,4 +137,5 @@ CampaignSchema.index({ eventDate: -1 });
 CampaignSchema.index({ status: 1 });
 CampaignSchema.index({ isDraft: 1, status: 1 }); // For filtering published campaigns
 CampaignSchema.index({ isDraft: 1, eventDate: -1 }); // For sorted published campaigns
+CampaignSchema.index({ isFeatured: 1 }); // For get-featured query (admin header, mapping, etc.)
 

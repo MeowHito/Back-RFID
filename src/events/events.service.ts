@@ -27,8 +27,8 @@ export class EventsService {
         return event.save();
     }
 
-    async findAll(): Promise<EventDocument[]> {
-        return this.eventModel.find().sort({ date: -1 }).exec();
+    async findAll(limit: number = 500): Promise<EventDocument[]> {
+        return this.eventModel.find().sort({ date: -1 }).limit(limit).lean().exec() as Promise<EventDocument[]>;
     }
 
     async findOne(id: string): Promise<EventDocument | null> {
@@ -61,7 +61,7 @@ export class EventsService {
         if (filter.category) {
             query.category = filter.category;
         }
-        return this.eventModel.find(query).sort({ date: -1 }).exec();
+        return this.eventModel.find(query).sort({ date: -1 }).limit(500).lean().exec() as Promise<EventDocument[]>;
     }
 
     async update(id: string, updateEventDto: Partial<CreateEventDto>): Promise<EventDocument | null> {
