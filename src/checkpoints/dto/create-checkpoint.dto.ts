@@ -19,7 +19,11 @@ export class CreateCheckpointDto {
 
     @IsOptional()
     @IsString()
-    description?: string;
+    description?: string; // timing method (rfid | manual)
+
+    @IsOptional()
+    @IsString()
+    readerId?: string;
 
     @IsOptional()
     @IsString()
@@ -32,6 +36,14 @@ export class CreateCheckpointDto {
     @IsOptional()
     @IsNumber()
     longitude?: number;
+
+    @IsOptional()
+    @IsNumber()
+    kmCumulative?: number;
+
+    @IsOptional()
+    @IsString()
+    cutoffTime?: string;
 }
 
 export class CreateCheckpointMappingDto {

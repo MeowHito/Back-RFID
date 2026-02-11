@@ -24,7 +24,10 @@ export class Checkpoint {
     active?: boolean;
 
     @Prop()
-    description?: string;
+    description?: string; // timing method (e.g. 'rfid' | 'manual')
+
+    @Prop()
+    readerId?: string; // reader ID for RFID timing
 
     @Prop()
     location?: string;
@@ -34,6 +37,12 @@ export class Checkpoint {
 
     @Prop()
     longitude?: number;
+
+    @Prop()
+    kmCumulative?: number;
+
+    @Prop()
+    cutoffTime?: string; // e.g. "10:30" or "-"
 }
 
 export const CheckpointSchema = SchemaFactory.createForClass(Checkpoint);
