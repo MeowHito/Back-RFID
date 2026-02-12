@@ -44,6 +44,9 @@ export class CreateCheckpointDto {
     @IsOptional()
     @IsString()
     cutoffTime?: string;
+
+    @IsOptional()
+    distanceMappings?: string[];
 }
 
 export class CreateCheckpointMappingDto {

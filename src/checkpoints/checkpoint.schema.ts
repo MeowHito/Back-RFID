@@ -42,7 +42,10 @@ export class Checkpoint {
     kmCumulative?: number;
 
     @Prop()
-    cutoffTime?: string; // e.g. "10:30" or "-"
+    cutoffTime?: string; // e.g. "2026-02-15T10:30" or "10:30" or "-"
+
+    @Prop({ type: [String], default: [] })
+    distanceMappings?: string[]; // category names this checkpoint is enabled for
 }
 
 export const CheckpointSchema = SchemaFactory.createForClass(Checkpoint);
