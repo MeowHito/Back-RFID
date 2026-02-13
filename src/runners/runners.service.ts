@@ -40,12 +40,51 @@ export class RunnersService {
         return runner.save();
     }
 
-    async createMany(runners: CreateRunnerDto[]): Promise<any[]> {
-        const docs = runners.map(r => ({
-            ...r,
-            eventId: new Types.ObjectId(r.eventId),
-        }));
-        return this.runnerModel.insertMany(docs);
+    async createMany(runners: CreateRunnerDto[], updateExisting = false): Promise<{ inserted: number; updated: number; errors: string[] }> {
+        const result = { inserted: 0, updated: 0, errors: [] as string[] };
+        if (!runners || runners.length === 0) return result;
+
+        if (updateExisting) {
+            // Use bulkWrite with upsert — update existing runners or insert new ones
+            const bulkOps = runners.map(r => ({
+                updateOne: {
+                    filter: { eventId: new Types.ObjectId(r.eventId), bib: r.bib },
+                    update: {
+                        $set: {
+                            ...r,
+                            eventId: new Types.ObjectId(r.eventId),
+                        },
+                    },
+                    upsert: true,
+                },
+            }));
+            const bulkResult = await this.runnerModel.bulkWrite(bulkOps as any, { ordered: false });
+            result.inserted = bulkResult.upsertedCount || 0;
+            result.updated = bulkResult.modifiedCount || 0;
+        } else {
+            // Insert only, skip duplicates (ordered: false continues past errors)
+            try {
+                const docs = runners.map(r => ({
+                    ...r,
+                    eventId: new Types.ObjectId(r.eventId),
+                }));
+                const inserted = await this.runnerModel.insertMany(docs, { ordered: false });
+                result.inserted = inserted.length;
+            } catch (err: any) {
+                // MongoDB duplicate key errors (code 11000) — partial success
+                if (err.code === 11000 || err.writeErrors) {
+                    const successCount = err.insertedDocs?.length ?? err.result?.nInserted ?? 0;
+                    result.inserted = successCount;
+                    const dupCount = runners.length - successCount;
+                    if (dupCount > 0) {
+                        result.errors.push(`${dupCount} BIB ซ้ำ (duplicate) — ข้ามไป`);
+                    }
+                } else {
+                    throw err;
+                }
+            }
+        }
+        return result;
     }
 
     /** Count runners by event (fast, uses index) – use this instead of findByEvent().length */

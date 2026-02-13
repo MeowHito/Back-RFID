@@ -5,7 +5,8 @@ import type { RunnerFilter, PagingData } from './runners.service';
 import { CreateRunnerDto } from './dto/create-runner.dto';
 
 @Controller('runners')
-@UseGuards(AuthGuard('jwt'))
+// TODO: Re-enable auth guards once admin login flow is implemented
+// @UseGuards(AuthGuard('jwt'))
 export class RunnersController {
     constructor(private readonly runnersService: RunnersService) { }
 
@@ -15,8 +16,8 @@ export class RunnersController {
     }
 
     @Post('bulk')
-    createMany(@Body() runners: CreateRunnerDto[]) {
-        return this.runnersService.createMany(runners);
+    createMany(@Body() runners: CreateRunnerDto[], @Query('updateExisting') updateExisting?: string) {
+        return this.runnersService.createMany(runners, updateExisting === 'true');
     }
 
     @Get()
