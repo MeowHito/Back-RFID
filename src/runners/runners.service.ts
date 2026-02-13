@@ -14,6 +14,7 @@ export interface RunnerFilter {
     search?: string;
     checkpoint?: string;
     chipStatus?: string;
+    runnerStatus?: string; // 'no_bib','dup_bib','no_chip','dup_chip','ready' (comma-separated)
 }
 
 export interface PagingData {
@@ -124,10 +125,37 @@ export class RunnersService {
             .exec() as Promise<RunnerDocument[]>;
     }
 
-    async findByEventWithPaging(filter: RunnerFilter, paging?: PagingData): Promise<{ data: RunnerDocument[]; total: number }> {
-        const query: any = { eventId: new Types.ObjectId(filter.eventId) };
+    async findByEventWithPaging(filter: RunnerFilter, paging?: PagingData): Promise<{ data: RunnerDocument[]; total: number; dupBibs?: string[]; dupChips?: string[] }> {
+        const eventOid = new Types.ObjectId(filter.eventId);
+        const baseMatch: any = { eventId: eventOid };
+        if (filter.category) baseMatch.category = filter.category;
 
-        if (filter.category) query.category = filter.category;
+        // Pre-compute duplicate BIBs and ChipCodes for this event+category
+        const statuses = filter.runnerStatus ? filter.runnerStatus.split(',').map(s => s.trim()) : [];
+        const needDups = statuses.length > 0 || true; // always compute for status badges
+
+        let dupBibs: string[] = [];
+        let dupChips: string[] = [];
+
+        if (needDups) {
+            const [bibDups, chipDups] = await Promise.all([
+                this.runnerModel.aggregate([
+                    { $match: { ...baseMatch, bib: { $exists: true, $nin: ['', null] } } },
+                    { $group: { _id: '$bib', count: { $sum: 1 } } },
+                    { $match: { count: { $gt: 1 } } },
+                ]).exec(),
+                this.runnerModel.aggregate([
+                    { $match: { ...baseMatch, chipCode: { $exists: true, $nin: ['', null] } } },
+                    { $group: { _id: '$chipCode', count: { $sum: 1 } } },
+                    { $match: { count: { $gt: 1 } } },
+                ]).exec(),
+            ]);
+            dupBibs = bibDups.map(d => d._id);
+            dupChips = chipDups.map(d => d._id);
+        }
+
+        // Build main query
+        const query: any = { ...baseMatch };
         if (filter.gender) query.gender = filter.gender;
         if (filter.ageGroup) query.ageGroup = filter.ageGroup;
         if (filter.status) query.status = filter.status;
@@ -149,6 +177,31 @@ export class RunnersService {
             query.$and.push({ $or: searchOr });
         }
 
+        // Apply runnerStatus filters
+        if (statuses.length > 0) {
+            const statusConditions: any[] = [];
+            for (const s of statuses) {
+                if (s === 'no_bib') statusConditions.push({ $or: [{ bib: { $exists: false } }, { bib: '' }, { bib: null }] });
+                if (s === 'dup_bib' && dupBibs.length > 0) statusConditions.push({ bib: { $in: dupBibs } });
+                if (s === 'dup_bib' && dupBibs.length === 0) statusConditions.push({ _id: null }); // no results
+                if (s === 'no_chip') statusConditions.push({ $or: [{ chipCode: { $exists: false } }, { chipCode: '' }, { chipCode: null }] });
+                if (s === 'dup_chip' && dupChips.length > 0) statusConditions.push({ chipCode: { $in: dupChips } });
+                if (s === 'dup_chip' && dupChips.length === 0) statusConditions.push({ _id: null }); // no results
+                if (s === 'ready') {
+                    // Has BIB, has ChipCode, not duplicate BIB, not duplicate ChipCode
+                    const readyCond: any = {
+                        bib: { $exists: true, $nin: ['', null, ...dupBibs] },
+                        chipCode: { $exists: true, $nin: ['', null, ...dupChips] },
+                    };
+                    statusConditions.push(readyCond);
+                }
+            }
+            if (statusConditions.length > 0) {
+                if (!query.$and) query.$and = [];
+                query.$and.push(statusConditions.length === 1 ? statusConditions[0] : { $or: statusConditions });
+            }
+        }
+
         const page = paging?.page || 1;
         const limit = paging?.limit || 50;
         const skip = (page - 1) * limit;
@@ -158,7 +211,7 @@ export class RunnersService {
             this.runnerModel.countDocuments(query).exec(),
         ]);
 
-        return { data: data as RunnerDocument[], total };
+        return { data: data as RunnerDocument[], total, dupBibs, dupChips };
     }
 
     async findOne(id: string): Promise<RunnerDocument> {
