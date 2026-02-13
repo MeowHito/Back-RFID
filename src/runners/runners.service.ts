@@ -13,6 +13,7 @@ export interface RunnerFilter {
     status?: string;
     search?: string;
     checkpoint?: string;
+    chipStatus?: string;
 }
 
 export interface PagingData {
@@ -130,14 +131,22 @@ export class RunnersService {
         if (filter.gender) query.gender = filter.gender;
         if (filter.ageGroup) query.ageGroup = filter.ageGroup;
         if (filter.status) query.status = filter.status;
+        if (filter.chipStatus === 'has') {
+            query.chipCode = { $exists: true, $nin: ['', null] };
+        } else if (filter.chipStatus === 'missing') {
+            if (!query.$and) query.$and = [];
+            query.$and.push({ $or: [{ chipCode: { $exists: false } }, { chipCode: '' }, { chipCode: null }] });
+        }
 
         if (paging?.search || filter.search) {
             const searchTerm = paging?.search || filter.search;
-            query.$or = [
+            const searchOr = [
                 { bib: { $regex: searchTerm, $options: 'i' } },
                 { firstName: { $regex: searchTerm, $options: 'i' } },
                 { lastName: { $regex: searchTerm, $options: 'i' } },
             ];
+            if (!query.$and) query.$and = [];
+            query.$and.push({ $or: searchOr });
         }
 
         const page = paging?.page || 1;

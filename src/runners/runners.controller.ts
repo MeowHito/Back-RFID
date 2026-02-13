@@ -32,11 +32,12 @@ export class RunnersController {
         @Query('gender') gender: string,
         @Query('ageGroup') ageGroup: string,
         @Query('status') status: string,
+        @Query('chipStatus') chipStatus: string,
         @Query('search') search: string,
         @Query('page') page: number,
         @Query('limit') limit: number,
     ) {
-        const filter: RunnerFilter = { eventId, category, gender, ageGroup, status, search };
+        const filter: RunnerFilter = { eventId, category, gender, ageGroup, status, chipStatus, search };
         const paging: PagingData = { page: page || 1, limit: limit || 50, search };
         return this.runnersService.findByEventWithPaging(filter, paging);
     }
