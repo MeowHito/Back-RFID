@@ -129,6 +129,9 @@ export class Runner {
     // Category ranking
     @Prop({ default: 0 })
     categoryRank: number;
+
+    @Prop()
+    sourceFile: string; // Original import filename
 }
 
 export const RunnerSchema = SchemaFactory.createForClass(Runner);

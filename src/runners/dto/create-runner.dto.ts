@@ -122,4 +122,8 @@ export class CreateRunnerDto {
     @IsOptional()
     @IsString()
     address?: string;
+
+    @IsOptional()
+    @IsString()
+    sourceFile?: string;
 }
