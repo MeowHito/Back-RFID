@@ -58,10 +58,17 @@ export class CheckpointsService {
     }
 
     async updateMany(checkpoints: Array<{ id: string } & Partial<CreateCheckpointDto>>): Promise<void> {
-        for (const cp of checkpoints) {
+        if (checkpoints.length === 0) return;
+        const bulkOps = checkpoints.map(cp => {
             const { id, ...updateData } = cp;
-            await this.checkpointModel.findByIdAndUpdate(id, updateData).exec();
-        }
+            return {
+                updateOne: {
+                    filter: { _id: new Types.ObjectId(id) },
+                    update: { $set: updateData },
+                },
+            };
+        });
+        await this.checkpointModel.bulkWrite(bulkOps as any, { ordered: false });
     }
 
     async delete(id: string): Promise<void> {
@@ -118,16 +125,18 @@ export class CheckpointsService {
     }
 
     async updateMappings(mappings: Array<{ checkpointId: string; eventId: string } & Partial<CreateCheckpointMappingDto>>): Promise<void> {
-        for (const mapping of mappings) {
-            await this.mappingModel.findOneAndUpdate(
-                {
+        if (mappings.length === 0) return;
+        const bulkOps = mappings.map(mapping => ({
+            updateOne: {
+                filter: {
                     checkpointId: new Types.ObjectId(mapping.checkpointId),
                     eventId: new Types.ObjectId(mapping.eventId),
                 },
-                { $set: mapping },
-                { upsert: true, new: true }
-            ).exec();
-        }
+                update: { $set: mapping },
+                upsert: true,
+            },
+        }));
+        await this.mappingModel.bulkWrite(bulkOps as any, { ordered: false });
     }
 
     async deleteMappingsByEvent(eventId: string): Promise<void> {

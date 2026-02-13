@@ -144,3 +144,8 @@ RunnerSchema.index({ eventId: 1, gender: 1, status: 1 }); // Gender + status fil
 RunnerSchema.index({ eventId: 1, overallRank: 1 }); // Sorted results by rank
 RunnerSchema.index({ eventId: 1, category: 1, gender: 1, status: 1 }); // Combined filtering
 RunnerSchema.index({ eventId: 1, latestCheckpoint: 1 }); // Checkpoint tracking
+RunnerSchema.index({ eventId: 1, category: 1, status: 1, netTime: 1 }); // Ranking calculation
+RunnerSchema.index({ eventId: 1, ageGroup: 1 }); // Age group aggregation
+RunnerSchema.index({ eventId: 1, category: 1, ageGroup: 1, gender: 1 }); // Detailed ranking
+RunnerSchema.index({ eventId: 1, status: 1, netTime: 1 }); // Finish-by-time aggregation
+RunnerSchema.index({ createdAt: -1 }); // findAll sort

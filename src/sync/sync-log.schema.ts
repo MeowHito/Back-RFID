@@ -35,3 +35,4 @@ export const SyncLogSchema = SchemaFactory.createForClass(SyncLog);
 // Indexes
 SyncLogSchema.index({ campaignId: 1, createdAt: -1 });
 SyncLogSchema.index({ status: 1 });
+SyncLogSchema.index({ campaignId: 1, status: 1 }); // getSyncData count queries

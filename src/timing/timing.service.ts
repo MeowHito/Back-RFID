@@ -104,7 +104,8 @@ export class TimingService {
                 runnerId: new Types.ObjectId(runnerId),
             })
             .sort({ order: 1 })
-            .exec();
+            .lean()
+            .exec() as Promise<TimingRecordDocument[]>;
     }
 
     async getEventRecords(eventId: string): Promise<TimingRecordDocument[]> {
@@ -112,7 +113,8 @@ export class TimingService {
             .find({ eventId: new Types.ObjectId(eventId) })
             .sort({ scanTime: -1 })
             .limit(100)
-            .exec();
+            .lean()
+            .exec() as Promise<TimingRecordDocument[]>;
     }
 
     async deleteRecord(id: string): Promise<void> {

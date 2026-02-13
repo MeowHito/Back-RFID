@@ -1,22 +1,46 @@
-# Database Indexes & Deployment (EC2 / Vercel)
+# Database Indexes & Performance Optimization
 
-## สิ่งที่ปรับเพื่อให้โหลดเร็วขึ้น (ที่ทำไปแล้ว)
+## สิ่งที่ปรับเพื่อให้โหลดเร็วขึ้น
 
+### รอบที่ 1 (เดิม)
 - **Campaign:** เพิ่ม index `isFeatured` และใช้ `.lean()` ใน findFeatured + findAll
-- **Runners:** เพิ่ม `countByEvent()` ใช้ `countDocuments` แทนโหลด list ทั้งหมด (ใช้ใน registration count, BIB สร้างอัตโนมัติ), จำกัด `findByEvent()` สูงสุด 2000 รายการ และใช้ `.lean()`
-- **Events:** จำกัด `findAll` / `findByFilter` สูงสุด 500 รายการ และใช้ `.lean()`
+- **Runners:** เพิ่ม `countByEvent()` ใช้ `countDocuments` แทนโหลด list ทั้งหมด, จำกัด `findByEvent()` สูงสุด 2000 รายการ
+- **Events:** จำกัด `findAll` / `findByFilter` สูงสุด 500 รายการ
 - **Checkpoints:** `findByCampaign` และ `findMappingsByEvent` ใช้ `.lean()`
-- **Frontend (จัดการจุด Checkpoint):** โหลด campaigns + featured พร้อมกัน (ลดจาก 3 เป็น 2 รอบ)
 
-หลัง deploy backend ใหม่ index จะถูกสร้าง/ sync เอง (รวม `isFeatured`)
+### รอบที่ 2 (ล่าสุด – ปรับทั้งระบบ)
+
+**เพิ่ม Index ใหม่:**
+- **Runner:** `eventId+category+status+netTime` (ranking), `eventId+ageGroup` (age aggregation), `eventId+category+ageGroup+gender` (detailed ranking), `eventId+status+netTime` (finish-by-time), `createdAt` (findAll sort)
+- **Event:** `status` (findByFilter), `campaignId+date` (findByCampaign sorted)
+- **SyncLog:** `campaignId+status` (getSyncData count queries)
+
+**แก้ N+1 Query (ปัญหาใหญ่สุด):**
+- **`updateRankings`** – เปลี่ยนจาก loop `findByIdAndUpdate` ทีละคน → **`bulkWrite`** (1000 นักวิ่ง = 1 DB call แทน 1000+)
+- **`checkpoints.updateMany`** – loop → **`bulkWrite`**
+- **`checkpoints.updateMappings`** – loop → **`bulkWrite`**
+
+**แก้ Memory Load:**
+- **`getFinishByTime`** – เปลี่ยนจากโหลดนักวิ่งทั้งหมดเข้า memory → **MongoDB aggregation pipeline** (ประมวลผลใน DB)
+
+**เพิ่ม `.lean()` ทุก read-only query:**
+- `runners.findByEventWithPaging`, `findByBib`, `findByRfid`, `findByChipCode`, `getParticipantWithStationByEvent`, `getLatestParticipantByCheckpoint`
+- `events.findByCampaign`, `findByUuid`, `findByShareToken`
+- `timing.getRunnerRecords`, `getEventRecords`
+- `sync.getSyncData` (logs query)
+
+**Parallelize Sequential Queries:**
+- **`sync.getSyncData`** – 4 sequential DB queries → **`Promise.all`** (4 ขนานพร้อมกัน)
+
+หลัง deploy backend ใหม่ index จะถูกสร้าง/sync เอง
 
 ---
 
-## สรุป Index ที่มีในโปรเจกต์
+## สรุป Index ทั้งหมด
 
-Mongoose สร้าง index ตามที่ประกาศใน schema ตอนที่ backend เริ่มทำงาน (เมื่อเชื่อมต่อ MongoDB)
+Mongoose สร้าง index ตามที่ประกาศใน schema ตอนที่ backend เริ่มทำงาน
 
-### Campaigns
+### Campaigns (6 indexes)
 | Index | ใช้สำหรับ |
 |-------|------------|
 | `uuid` (unique) | ค้นหาด้วย uuid |
@@ -24,16 +48,69 @@ Mongoose สร้าง index ตามที่ประกาศใน schema
 | `status` | กรองสถานะ |
 | `isDraft, status` | กรอง campaign ที่เผยแพร่ |
 | `isDraft, eventDate` | รายการที่เผยแพร่เรียงตามวัน |
-| **`isFeatured`** | **ดึง campaign ที่กดดาว (featured) – ใช้บ่อยใน admin** |
+| `isFeatured` | ดึง campaign ที่กดดาว (featured) |
 
-### Checkpoints
+### Events (6 indexes)
 | Index | ใช้สำหรับ |
 |-------|------------|
-| `campaignId, orderNum` | ดึง checkpoint ของ campaign เรียงตามลำดับ |
+| `uuid` (unique) | ค้นหาด้วย uuid |
+| `campaignId` | ดึง event ของ campaign |
+| `date` (-1) | เรียงตามวัน |
+| `shareToken` | public sharing |
+| `status` | กรองสถานะ |
+| `campaignId, date` | findByCampaign sorted |
+
+### Checkpoints (2 indexes)
+| Index | ใช้สำหรับ |
+|-------|------------|
+| `campaignId, orderNum` | ดึง checkpoint เรียงตามลำดับ |
 | `uuid` (unique) | ค้นหาด้วย uuid |
 
-### Runners, TimingRecords, Users, Events, etc.
-มี index ครบตาม schema ใน `backend/src/**/*.schema.ts`
+### CheckpointMappings (2 indexes)
+| Index | ใช้สำหรับ |
+|-------|------------|
+| `checkpointId, eventId` (unique) | ค้นหา mapping |
+| `eventId, orderNum` | ดึง mapping ของ event |
+
+### Runners (13 indexes)
+| Index | ใช้สำหรับ |
+|-------|------------|
+| `eventId, bib` (unique) | ค้นหา BIB |
+| `eventId, rfidTag` | ค้นหาด้วย RFID |
+| `eventId, chipCode` | ค้นหาด้วย chip |
+| `eventId, status` | กรองสถานะ |
+| `eventId, category, netTime` | ผลการแข่งขัน |
+| `eventId, gender, status` | กรองเพศ+สถานะ |
+| `eventId, overallRank` | เรียงอันดับ |
+| `eventId, category, gender, status` | กรองรวม |
+| `eventId, latestCheckpoint` | ติดตาม checkpoint |
+| `eventId, category, status, netTime` | ranking calculation |
+| `eventId, ageGroup` | age group aggregation |
+| `eventId, category, ageGroup, gender` | detailed ranking |
+| `eventId, status, netTime` | finish-by-time aggregation |
+
+### TimingRecords (5 indexes)
+| Index | ใช้สำหรับ |
+|-------|------------|
+| `eventId, runnerId` | ค้นหา timing ของนักวิ่ง |
+| `eventId, bib, checkpoint` | ค้นหาด้วย bib+checkpoint |
+| `scanTime` (-1) | เรียงตามเวลา |
+| `eventId, checkpoint, scanTime` | per-checkpoint queries |
+| `runnerId, order` | runner timeline |
+
+### SyncLogs (3 indexes)
+| Index | ใช้สำหรับ |
+|-------|------------|
+| `campaignId, createdAt` (-1) | ดึง log ล่าสุด |
+| `status` | กรองสถานะ |
+| `campaignId, status` | count queries ใน getSyncData |
+
+### Users (3 indexes)
+| Index | ใช้สำหรับ |
+|-------|------------|
+| `email` (unique) | login |
+| `uuid` (unique) | ค้นหาด้วย uuid |
+| `username` | ค้นหาด้วย username |
 
 ---
 

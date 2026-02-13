@@ -48,23 +48,15 @@ export class SyncService {
     }
 
     async getSyncData(campaignId: string): Promise<any> {
-        const logs = await this.syncLogModel
-            .find({ campaignId: new Types.ObjectId(campaignId) })
-            .sort({ createdAt: -1 })
-            .limit(10)
-            .exec();
+        const cid = new Types.ObjectId(campaignId);
 
-        const totalRecords = await this.syncLogModel
-            .countDocuments({ campaignId: new Types.ObjectId(campaignId) })
-            .exec();
-
-        const successCount = await this.syncLogModel
-            .countDocuments({ campaignId: new Types.ObjectId(campaignId), status: 'success' })
-            .exec();
-
-        const errorCount = await this.syncLogModel
-            .countDocuments({ campaignId: new Types.ObjectId(campaignId), status: 'error' })
-            .exec();
+        // Run all queries in parallel instead of sequential
+        const [logs, totalRecords, successCount, errorCount] = await Promise.all([
+            this.syncLogModel.find({ campaignId: cid }).sort({ createdAt: -1 }).limit(10).lean().exec(),
+            this.syncLogModel.countDocuments({ campaignId: cid }).exec(),
+            this.syncLogModel.countDocuments({ campaignId: cid, status: 'success' }).exec(),
+            this.syncLogModel.countDocuments({ campaignId: cid, status: 'error' }).exec(),
+        ]);
 
         return {
             recentLogs: logs,

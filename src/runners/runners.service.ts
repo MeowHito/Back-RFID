@@ -106,11 +106,11 @@ export class RunnersService {
         const skip = (page - 1) * limit;
 
         const [data, total] = await Promise.all([
-            this.runnerModel.find(query).sort({ overallRank: 1, bib: 1 }).skip(skip).limit(limit).exec(),
+            this.runnerModel.find(query).sort({ overallRank: 1, bib: 1 }).skip(skip).limit(limit).lean().exec(),
             this.runnerModel.countDocuments(query).exec(),
         ]);
 
-        return { data, total };
+        return { data: data as RunnerDocument[], total };
     }
 
     async findOne(id: string): Promise<RunnerDocument> {
@@ -123,21 +123,21 @@ export class RunnersService {
         return this.runnerModel.findOne({
             eventId: new Types.ObjectId(eventId),
             bib,
-        }).exec();
+        }).lean().exec() as Promise<RunnerDocument | null>;
     }
 
     async findByRfid(eventId: string, rfidTag: string): Promise<RunnerDocument | null> {
         return this.runnerModel.findOne({
             eventId: new Types.ObjectId(eventId),
             $or: [{ rfidTag }, { chipCode: rfidTag }],
-        }).exec();
+        }).lean().exec() as Promise<RunnerDocument | null>;
     }
 
     async findByChipCode(eventId: string, chipCode: string): Promise<RunnerDocument | null> {
         return this.runnerModel.findOne({
             eventId: new Types.ObjectId(eventId),
             chipCode,
-        }).exec();
+        }).lean().exec() as Promise<RunnerDocument | null>;
     }
 
     async update(id: string, updateData: any): Promise<RunnerDocument | null> {
@@ -162,7 +162,7 @@ export class RunnersService {
     }
 
     async updateRankings(eventId: string, category: string): Promise<void> {
-        // Update overall ranking
+        // Fetch all finished runners (lean for speed)
         const runners = await this.runnerModel
             .find({
                 eventId: new Types.ObjectId(eventId),
@@ -170,34 +170,47 @@ export class RunnersService {
                 status: 'finished',
             })
             .sort({ netTime: 1 })
+            .lean()
             .exec();
 
+        if (runners.length === 0) return;
+
+        // Build a map: runnerId -> { overallRank, genderRank, ageGroupRank }
+        const rankMap = new Map<string, { overallRank: number; genderRank: number; ageGroupRank: number }>();
+
+        // Overall ranking
         for (let i = 0; i < runners.length; i++) {
-            await this.runnerModel.findByIdAndUpdate(runners[i]._id, {
-                overallRank: i + 1,
-            });
+            rankMap.set(runners[i]._id.toString(), { overallRank: i + 1, genderRank: 0, ageGroupRank: 0 });
         }
 
-        // Update gender rankings
+        // Gender rankings
         for (const gender of ['M', 'F']) {
             const genderRunners = runners.filter(r => r.gender === gender);
             for (let i = 0; i < genderRunners.length; i++) {
-                await this.runnerModel.findByIdAndUpdate(genderRunners[i]._id, {
-                    genderRank: i + 1,
-                });
+                const entry = rankMap.get(genderRunners[i]._id.toString())!;
+                entry.genderRank = i + 1;
             }
         }
 
-        // Update age group rankings
+        // Age group rankings
         const ageGroups = [...new Set(runners.map(r => r.ageGroup))];
         for (const ageGroup of ageGroups) {
             const ageGroupRunners = runners.filter(r => r.ageGroup === ageGroup);
             for (let i = 0; i < ageGroupRunners.length; i++) {
-                await this.runnerModel.findByIdAndUpdate(ageGroupRunners[i]._id, {
-                    ageGroupRank: i + 1,
-                });
+                const entry = rankMap.get(ageGroupRunners[i]._id.toString())!;
+                entry.ageGroupRank = i + 1;
             }
         }
+
+        // Single bulkWrite instead of N individual updates
+        const bulkOps = Array.from(rankMap.entries()).map(([id, ranks]) => ({
+            updateOne: {
+                filter: { _id: new Types.ObjectId(id) },
+                update: { $set: ranks },
+            },
+        }));
+
+        await this.runnerModel.bulkWrite(bulkOps, { ordered: false });
     }
 
     // Statistics methods from reference
@@ -234,30 +247,47 @@ export class RunnersService {
     }
 
     async getFinishByTime(eventId: string): Promise<any[]> {
-        const runners = await this.runnerModel.find({
-            eventId: new Types.ObjectId(eventId),
-            status: 'finished',
-            netTime: { $exists: true },
-        }).exec();
-
-        // Group by hour intervals
-        const timeGroups: Record<string, number> = {};
-        runners.forEach(runner => {
-            if (runner.netTime) {
-                const hours = Math.floor(runner.netTime / 3600000);
-                const key = `${hours}h-${hours + 1}h`;
-                timeGroups[key] = (timeGroups[key] || 0) + 1;
-            }
-        });
-
-        return Object.entries(timeGroups).map(([timeRange, count]) => ({ timeRange, count }));
+        // Use aggregation instead of loading all runners into memory
+        return this.runnerModel.aggregate([
+            {
+                $match: {
+                    eventId: new Types.ObjectId(eventId),
+                    status: 'finished',
+                    netTime: { $exists: true, $gt: 0 },
+                },
+            },
+            {
+                $project: {
+                    hourBucket: { $floor: { $divide: ['$netTime', 3600000] } },
+                },
+            },
+            {
+                $group: {
+                    _id: '$hourBucket',
+                    count: { $sum: 1 },
+                },
+            },
+            { $sort: { _id: 1 } },
+            {
+                $project: {
+                    _id: 0,
+                    timeRange: {
+                        $concat: [
+                            { $toString: '$_id' }, 'h-',
+                            { $toString: { $add: ['$_id', 1] } }, 'h',
+                        ],
+                    },
+                    count: 1,
+                },
+            },
+        ]).exec();
     }
 
     async getParticipantWithStationByEvent(eventId: string): Promise<RunnerDocument[]> {
         return this.runnerModel.find({
             eventId: new Types.ObjectId(eventId),
             latestCheckpoint: { $exists: true, $ne: null },
-        }).sort({ latestCheckpoint: 1, elapsedTime: 1 }).exec();
+        }).sort({ latestCheckpoint: 1, elapsedTime: 1 }).limit(2000).lean().exec() as Promise<RunnerDocument[]>;
     }
 
     async getLatestParticipantByCheckpoint(
@@ -273,7 +303,7 @@ export class RunnersService {
         if (gender) query.gender = gender;
         if (ageGroup) query.ageGroup = ageGroup;
 
-        return this.runnerModel.find(query).sort({ elapsedTime: -1 }).limit(50).exec();
+        return this.runnerModel.find(query).sort({ elapsedTime: -1 }).limit(50).lean().exec() as Promise<RunnerDocument[]>;
     }
 
     async delete(id: string): Promise<void> {

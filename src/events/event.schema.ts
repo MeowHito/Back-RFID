@@ -134,3 +134,5 @@ EventSchema.index({ uuid: 1 }, { unique: true });
 EventSchema.index({ campaignId: 1 });
 EventSchema.index({ date: -1 });
 EventSchema.index({ shareToken: 1 });
+EventSchema.index({ status: 1 }); // findByFilter
+EventSchema.index({ campaignId: 1, date: 1 }); // findByCampaign sorted

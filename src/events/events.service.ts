@@ -36,18 +36,19 @@ export class EventsService {
     }
 
     async findByUuid(uuid: string): Promise<EventDocument | null> {
-        return this.eventModel.findOne({ uuid }).exec();
+        return this.eventModel.findOne({ uuid }).lean().exec() as Promise<EventDocument | null>;
     }
 
     async findByShareToken(token: string): Promise<EventDocument | null> {
-        return this.eventModel.findOne({ shareToken: token }).exec();
+        return this.eventModel.findOne({ shareToken: token }).lean().exec() as Promise<EventDocument | null>;
     }
 
     async findByCampaign(campaignId: string): Promise<EventDocument[]> {
         return this.eventModel
             .find({ campaignId: new Types.ObjectId(campaignId) })
             .sort({ date: 1 })
-            .exec();
+            .lean()
+            .exec() as Promise<EventDocument[]>;
     }
 
     async findByFilter(filter: EventFilter): Promise<EventDocument[]> {
