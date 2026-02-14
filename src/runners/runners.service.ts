@@ -215,7 +215,7 @@ export class RunnersService {
             }
             if (statusConditions.length > 0) {
                 if (!query.$and) query.$and = [];
-                query.$and.push(statusConditions.length === 1 ? statusConditions[0] : { $or: statusConditions });
+                query.$and.push(...statusConditions);
             }
         }
 
