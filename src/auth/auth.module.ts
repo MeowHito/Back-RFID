@@ -8,11 +8,13 @@ import { JwtStrategy } from './jwt.strategy';
 import { RolesGuard } from './guards/roles.guard';
 import { UsersModule } from '../users/users.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { AdminLogsModule } from '../admin-logs/admin-logs.module';
 
 @Module({
     imports: [
         UsersModule,
         CampaignsModule,
+        AdminLogsModule,
         PassportModule.register({ defaultStrategy: 'jwt' }),
         JwtModule.registerAsync({
             imports: [ConfigModule],

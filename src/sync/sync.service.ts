@@ -3,15 +3,38 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Campaign, CampaignDocument } from '../campaigns/campaign.schema';
+import { Event, EventDocument } from '../events/event.schema';
+import { CreateRunnerDto } from '../runners/dto/create-runner.dto';
+import { RunnersService } from '../runners/runners.service';
 import { SyncLog, SyncLogDocument } from './sync-log.schema';
 
 type RaceTigerRequestType = 'info' | 'bio' | 'split';
+
+interface EventResolver {
+    eventIdByRaceTigerEventId: Map<number, string>;
+    fallbackEventId: string | null;
+}
+
+interface RaceTigerRequestResult {
+    endpoint: string;
+    requestParams: {
+        pc: string;
+        rid: string;
+        page?: number;
+        token: string;
+    };
+    response: Response;
+    rawBody: string;
+    parsedBody: any;
+}
 
 @Injectable()
 export class SyncService {
     constructor(
         @InjectModel(SyncLog.name) private syncLogModel: Model<SyncLogDocument>,
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
+        @InjectModel(Event.name) private eventModel: Model<EventDocument>,
+        private readonly runnersService: RunnersService,
         private readonly configService: ConfigService,
     ) { }
 
@@ -52,6 +75,221 @@ export class SyncService {
             return Object.fromEntries(entries);
         }
         return parsedBody;
+    }
+
+    private parseNumericValue(value: unknown): number | null {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return value;
+        }
+        if (typeof value === 'string' && value.trim() !== '') {
+            const parsed = Number(value);
+            if (Number.isFinite(parsed)) {
+                return parsed;
+            }
+        }
+        return null;
+    }
+
+    private toSafeString(value: unknown): string {
+        if (typeof value === 'string') {
+            return value.trim();
+        }
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return String(value);
+        }
+        return '';
+    }
+
+    private toOptionalDate(value: unknown): Date | undefined {
+        const raw = this.toSafeString(value);
+        if (!raw) {
+            return undefined;
+        }
+        const parsed = new Date(raw);
+        if (Number.isNaN(parsed.getTime())) {
+            return undefined;
+        }
+        return parsed;
+    }
+
+    private normalizeGender(value: unknown): 'M' | 'F' {
+        const normalized = this.toSafeString(value).toLowerCase();
+        if (
+            normalized === 'f'
+            || normalized === 'female'
+            || normalized === 'woman'
+            || normalized === '2'
+            || normalized === 'หญิง'
+            || normalized === 'female(หญิง)'
+        ) {
+            return 'F';
+        }
+        return 'M';
+    }
+
+    private splitName(fullName: string): { firstName: string; lastName: string } {
+        const cleaned = fullName.replace(/\s+/g, ' ').trim();
+        if (!cleaned) {
+            return { firstName: 'Unknown', lastName: 'Runner' };
+        }
+
+        const parts = cleaned.split(' ');
+        if (parts.length === 1) {
+            return { firstName: parts[0], lastName: '-' };
+        }
+
+        return {
+            firstName: parts.slice(0, -1).join(' '),
+            lastName: parts[parts.length - 1],
+        };
+    }
+
+    private resolveEventIdFromBioRow(row: any, eventResolver: EventResolver): string | null {
+        const raceTigerEventId = this.parseNumericValue(row?.EventId ?? row?.eventId);
+        if (raceTigerEventId !== null && eventResolver.eventIdByRaceTigerEventId.has(raceTigerEventId)) {
+            return eventResolver.eventIdByRaceTigerEventId.get(raceTigerEventId) || null;
+        }
+        return eventResolver.fallbackEventId;
+    }
+
+    private mapBioRowToRunner(row: any, eventResolver: EventResolver): CreateRunnerDto | null {
+        const eventId = this.resolveEventIdFromBioRow(row, eventResolver);
+        if (!eventId) {
+            return null;
+        }
+
+        const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib ?? row?.AthleteId ?? row?.athleteId);
+        if (!bib) {
+            return null;
+        }
+
+        const englishName = this.toSafeString(row?.EnName ?? row?.enName);
+        const localName = this.toSafeString(row?.Name ?? row?.name);
+        const baseName = englishName || localName;
+        const { firstName, lastName } = this.splitName(baseName);
+        const { firstName: firstNameTh, lastName: lastNameTh } = localName && localName !== baseName
+            ? this.splitName(localName)
+            : { firstName: '', lastName: '' };
+
+        const parsedAge = this.parseNumericValue(row?.Age ?? row?.age);
+        const category = this.toSafeString(row?.Category ?? row?.category ?? row?.Category2 ?? row?.category2) || 'General';
+        const chipCode = this.toSafeString(row?.ChipCode ?? row?.chipCode);
+        const teamName = this.toSafeString(row?.TeamName ?? row?.teamName);
+
+        return {
+            eventId,
+            bib,
+            firstName,
+            lastName,
+            firstNameTh: firstNameTh || undefined,
+            lastNameTh: lastNameTh || undefined,
+            gender: this.normalizeGender(row?.Gender ?? row?.gender),
+            category,
+            age: parsedAge ?? undefined,
+            ageGroup: this.toSafeString(row?.Category2 ?? row?.category2) || undefined,
+            team: teamName || undefined,
+            teamName: teamName || undefined,
+            chipCode: chipCode || undefined,
+            rfidTag: chipCode || undefined,
+            nationality: this.toSafeString(row?.CountryRegion ?? row?.countryRegion) || undefined,
+            phone: this.toSafeString(row?.Phone ?? row?.phone) || undefined,
+            birthDate: this.toOptionalDate(row?.Birthday ?? row?.birthday),
+            status: 'not_started',
+            isStarted: false,
+            allowRFIDSync: true,
+            sourceFile: 'RaceTiger BIO sync',
+        };
+    }
+
+    private async buildEventResolver(campaignId: string): Promise<EventResolver> {
+        const campaignQuery: any[] = [{ campaignId }];
+        if (Types.ObjectId.isValid(campaignId)) {
+            campaignQuery.push({ campaignId: this.toCampaignObjectId(campaignId) });
+        }
+
+        const events = await this.eventModel
+            .find({ $or: campaignQuery })
+            .select('_id rfidEventId')
+            .lean()
+            .exec();
+
+        if (!events.length) {
+            throw new BadRequestException('Campaign has no events for runner mapping');
+        }
+
+        const eventIdByRaceTigerEventId = new Map<number, string>();
+        events.forEach((event: any) => {
+            const raceTigerEventId = this.parseNumericValue(event?.rfidEventId);
+            if (raceTigerEventId !== null) {
+                eventIdByRaceTigerEventId.set(raceTigerEventId, String(event._id));
+            }
+        });
+
+        return {
+            eventIdByRaceTigerEventId,
+            fallbackEventId: events.length === 1 ? String(events[0]._id) : null,
+        };
+    }
+
+    private async requestRaceTiger(
+        campaign: CampaignDocument,
+        type: RaceTigerRequestType,
+        page: number,
+    ): Promise<RaceTigerRequestResult> {
+        const raceId = campaign.raceId.trim();
+        const token = campaign.rfidToken.trim();
+        const baseUrl = this.getRaceTigerBaseUrl();
+        const path = this.getRaceTigerPath(type);
+        const endpoint = `${baseUrl}${path}`;
+        const partnerCode = this.configService.get<string>('RACE_TIGER_PARTNER_CODE') || '000001';
+        const timeoutMs = Number(this.configService.get<string>('RACE_TIGER_TIMEOUT_MS') || 15000);
+
+        const form = new URLSearchParams({
+            pc: partnerCode,
+            rid: raceId,
+            token,
+        });
+        if (type !== 'info') {
+            form.set('page', String(page));
+        }
+
+        const controller = new AbortController();
+        const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+        let response: Response;
+        try {
+            response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: form.toString(),
+                signal: controller.signal,
+            });
+        } finally {
+            clearTimeout(timeoutHandle);
+        }
+
+        const rawBody = await response.text();
+        let parsedBody: any = null;
+        try {
+            parsedBody = JSON.parse(rawBody);
+        } catch {
+            parsedBody = null;
+        }
+
+        return {
+            endpoint,
+            requestParams: {
+                pc: partnerCode,
+                rid: raceId,
+                page: type === 'info' ? undefined : page,
+                token: this.maskToken(token),
+            },
+            response,
+            rawBody,
+            parsedBody,
+        };
     }
 
     private async getSyncEnabledCampaign(campaignId: string): Promise<CampaignDocument> {
@@ -170,56 +408,11 @@ export class SyncService {
 
         try {
             const campaign = await this.getSyncEnabledCampaign(campaignId);
-            const raceId = campaign.raceId.trim();
-            const token = campaign.rfidToken.trim();
-
-            const baseUrl = this.getRaceTigerBaseUrl();
-            const path = this.getRaceTigerPath(type);
-            const endpoint = `${baseUrl}${path}`;
-            const partnerCode = this.configService.get<string>('RACE_TIGER_PARTNER_CODE') || '000001';
-            const timeoutMs = Number(this.configService.get<string>('RACE_TIGER_TIMEOUT_MS') || 15000);
-
-            const form = new URLSearchParams({
-                pc: partnerCode,
-                rid: raceId,
-                token,
-            });
-            if (type !== 'info') {
-                form.set('page', String(safePage));
-            }
+            const raceTigerResult = await this.requestRaceTiger(campaign, type, safePage);
+            const { endpoint, requestParams, response, rawBody, parsedBody } = raceTigerResult;
 
             previewRequest.endpoint = endpoint;
-            previewRequest.requestParams = {
-                pc: partnerCode,
-                rid: raceId,
-                page: type === 'info' ? undefined : safePage,
-                token: this.maskToken(token),
-            };
-
-            const controller = new AbortController();
-            const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
-
-            let response: Response;
-            try {
-                response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: form.toString(),
-                    signal: controller.signal,
-                });
-            } finally {
-                clearTimeout(timeoutHandle);
-            }
-
-            const rawBody = await response.text();
-            let parsedBody: any = null;
-            try {
-                parsedBody = JSON.parse(rawBody);
-            } catch {
-                parsedBody = null;
-            }
+            previewRequest.requestParams = requestParams;
 
             const itemCount = Array.isArray(parsedBody?.data) ? parsedBody.data.length : 0;
             const preview = {
@@ -265,6 +458,141 @@ export class SyncService {
                 endTime: new Date(),
                 errorDetails: {
                     previewRequest,
+                    error: {
+                        message: errorMessage,
+                        name: error?.name,
+                    },
+                },
+            });
+
+            if (
+                error instanceof BadRequestException
+                || error instanceof NotFoundException
+                || error instanceof BadGatewayException
+            ) {
+                throw error;
+            }
+
+            throw new BadGatewayException(errorMessage);
+        }
+    }
+
+    async syncAllRunners(campaignId: string): Promise<any> {
+        const startTime = new Date();
+        const syncLog = await this.createSyncLog({
+            campaignId,
+            status: 'pending',
+            message: 'RaceTiger full runner sync started',
+            startTime,
+        });
+
+        const maxPages = Number(this.configService.get<string>('RACE_TIGER_MAX_BIO_PAGES') || 200);
+
+        try {
+            const campaign = await this.getSyncEnabledCampaign(campaignId);
+            const eventResolver = await this.buildEventResolver(campaignId);
+
+            let pagesFetched = 0;
+            let rowsFetched = 0;
+            let rowsMapped = 0;
+            let rowsSkipped = 0;
+            let inserted = 0;
+            let updated = 0;
+            const processingErrors: string[] = [];
+            let reachedEnd = false;
+
+            for (let page = 1; page <= maxPages; page += 1) {
+                const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page);
+                if (!response.ok) {
+                    throw new BadGatewayException(`RaceTiger BIO page ${page} returned status ${response.status}`);
+                }
+
+                if (parsedBody === null || typeof parsedBody !== 'object') {
+                    throw new BadGatewayException(`RaceTiger BIO page ${page} returned invalid JSON payload`);
+                }
+
+                pagesFetched += 1;
+
+                const rows = Array.isArray(parsedBody?.data) ? parsedBody.data : [];
+                if (!rows.length) {
+                    reachedEnd = true;
+                    break;
+                }
+
+                rowsFetched += rows.length;
+
+                const mapped: CreateRunnerDto[] = [];
+                for (const row of rows) {
+                    const runner = this.mapBioRowToRunner(row, eventResolver);
+                    if (runner) {
+                        mapped.push(runner);
+                    } else {
+                        rowsSkipped += 1;
+                    }
+                }
+
+                rowsMapped += mapped.length;
+
+                if (!mapped.length) {
+                    continue;
+                }
+
+                const pageResult = await this.runnersService.createMany(mapped, true);
+                inserted += pageResult.inserted || 0;
+                updated += pageResult.updated || 0;
+                if (Array.isArray(pageResult.errors) && pageResult.errors.length) {
+                    processingErrors.push(...pageResult.errors.slice(0, 20 - processingErrors.length));
+                }
+            }
+
+            if (rowsFetched > 0 && rowsMapped === 0) {
+                throw new BadRequestException(
+                    'Unable to map BIO rows to local events. Please verify event RFID Event ID mapping for this campaign.',
+                );
+            }
+
+            if (!reachedEnd) {
+                throw new BadGatewayException(
+                    `Reached max BIO pages (${maxPages}) before RaceTiger returned empty data. Increase RACE_TIGER_MAX_BIO_PAGES if needed.`,
+                );
+            }
+
+            const result = {
+                fetchedAt: new Date().toISOString(),
+                summary: {
+                    pagesFetched,
+                    rowsFetched,
+                    rowsMapped,
+                    rowsSkipped,
+                    inserted,
+                    updated,
+                    errors: processingErrors,
+                },
+            };
+
+            await this.updateSyncLog(syncLog._id.toString(), {
+                status: 'success',
+                message: `RaceTiger full runner sync success (inserted ${inserted}, updated ${updated})`,
+                recordsProcessed: rowsMapped,
+                recordsFailed: rowsSkipped + processingErrors.length,
+                endTime: new Date(),
+                errorDetails: { fullSync: result },
+            });
+
+            return result;
+        } catch (error: any) {
+            const timeoutError = error?.name === 'AbortError';
+            const errorMessage = timeoutError
+                ? 'RaceTiger request timeout'
+                : (error?.message || 'RaceTiger full sync failed');
+
+            await this.updateSyncLog(syncLog._id.toString(), {
+                status: 'error',
+                message: `RaceTiger full runner sync failed: ${errorMessage}`,
+                recordsProcessed: 0,
+                recordsFailed: 1,
+                endTime: new Date(),
+                errorDetails: {
                     error: {
                         message: errorMessage,
                         name: error?.name,

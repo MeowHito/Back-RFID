@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Headers } from '@nestjs/common';
+import { Controller, Get, Query, Headers, Post } from '@nestjs/common';
 import { SyncService } from './sync.service';
 
 interface NormalizedResponse {
@@ -53,6 +53,15 @@ export class SyncController {
     ) {
         const parsedPage = Number(page || 1);
         const data = await this.syncService.previewRaceTigerData(id, type || 'info', parsedPage);
+        return this.successResponse(data);
+    }
+
+    @Post('full-sync')
+    async syncAllRunners(
+        @Headers() headers: Record<string, string>,
+        @Query('id') id: string,
+    ) {
+        const data = await this.syncService.syncAllRunners(id);
         return this.successResponse(data);
     }
 

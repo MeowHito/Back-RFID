@@ -44,8 +44,13 @@ export class EventsService {
     }
 
     async findByCampaign(campaignId: string): Promise<EventDocument[]> {
+        const campaignQuery: any[] = [{ campaignId }];
+        if (Types.ObjectId.isValid(campaignId)) {
+            campaignQuery.push({ campaignId: new Types.ObjectId(campaignId) });
+        }
+
         return this.eventModel
-            .find({ campaignId: new Types.ObjectId(campaignId) })
+            .find({ $or: campaignQuery })
             .sort({ date: 1 })
             .lean()
             .exec() as Promise<EventDocument[]>;

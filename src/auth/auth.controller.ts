@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Request, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Get, Request, UseGuards, Req } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { LoginDto, LoginStationDto, CreateUserDto } from '../users/dto/user.dto';
@@ -13,8 +13,15 @@ export class AuthController {
     }
 
     @Post('login')
-    login(@Body() loginDto: LoginDto) {
-        return this.authService.login(loginDto);
+    login(@Body() loginDto: LoginDto, @Req() req: any) {
+        // Extract client IP from various headers (proxy-aware)
+        const clientIp =
+            req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+            req.headers['x-real-ip'] ||
+            req.connection?.remoteAddress ||
+            req.ip ||
+            '-';
+        return this.authService.login(loginDto, clientIp);
     }
 
     @Post('login-station')

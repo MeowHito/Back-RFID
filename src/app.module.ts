@@ -19,6 +19,7 @@ import { Event, EventSchema } from './events/event.schema';
 import { Runner, RunnerSchema } from './runners/runner.schema';
 import { Checkpoint, CheckpointSchema } from './checkpoints/checkpoint.schema';
 import { User, UserSchema } from './users/user.schema';
+import { AdminLogsModule } from './admin-logs/admin-logs.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { User, UserSchema } from './users/user.schema';
     AuthModule,
     PublicApiModule,
     SyncModule,
+    AdminLogsModule,
   ],
   controllers: [AppController],
   providers: [AppService, SeedService],

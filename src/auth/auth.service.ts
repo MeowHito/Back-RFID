@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../users/users.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { AdminLogsService } from '../admin-logs/admin-logs.service';
 import { LoginDto, LoginStationDto, CreateUserDto } from '../users/dto/user.dto';
 
 export interface JwtPayload {
@@ -31,6 +32,7 @@ export class AuthService {
         private usersService: UsersService,
         private campaignsService: CampaignsService,
         private jwtService: JwtService,
+        private adminLogsService: AdminLogsService,
     ) { }
 
     async register(createUserDto: CreateUserDto): Promise<AuthResponse> {
@@ -57,13 +59,29 @@ export class AuthService {
         };
     }
 
-    async login(loginDto: LoginDto): Promise<AuthResponse> {
+    async login(loginDto: LoginDto, clientIp?: string): Promise<AuthResponse> {
         const user = await this.usersService.validatePassword(loginDto.email, loginDto.password);
         if (!user) {
             throw new UnauthorizedException('Invalid credentials');
         }
 
         await this.usersService.updateLastLogin(user._id.toString());
+
+        // Log admin login
+        if (user.role === 'admin' || user.role === 'organizer') {
+            try {
+                await this.adminLogsService.createLog({
+                    loginAccount: user.email,
+                    accountName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.username || user.email,
+                    clientIp: clientIp || '-',
+                    userUuid: user.uuid,
+                    role: user.role,
+                    remark: 'Login successful',
+                });
+            } catch (error) {
+                console.error('Failed to create admin log:', error);
+            }
+        }
 
         const payload: JwtPayload = {
             sub: user.uuid,
