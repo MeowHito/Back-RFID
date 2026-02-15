@@ -99,6 +99,9 @@ export class Campaign {
     rfidToken: string;
 
     @Prop()
+    raceId: string;
+
+    @Prop()
     organizerName: string;
 
     @Prop()

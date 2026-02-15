@@ -67,12 +67,15 @@ export class CampaignsService {
     async create(createCampaignDto: CreateCampaignDto): Promise<CampaignDocument> {
         const slugSource = createCampaignDto.slug || createCampaignDto.name;
         const slug = await this.generateUniqueSlug(slugSource);
+        const providedToken = createCampaignDto.rfidToken?.trim();
+        const providedRaceId = createCampaignDto.raceId?.trim();
 
         const campaign = new this.campaignModel({
             ...createCampaignDto,
             slug,
             uuid: uuidv4(),
-            rfidToken: uuidv4(),
+            rfidToken: providedToken || uuidv4(),
+            raceId: providedRaceId || undefined,
         });
         return campaign.save();
     }
@@ -179,6 +182,14 @@ export class CampaignsService {
         if (updateData.slug || updateData.name) {
             nextData.slug = await this.generateUniqueSlug(updateData.slug || updateData.name || 'event', id);
         }
+        if (typeof updateData.rfidToken === 'string') {
+            const token = updateData.rfidToken.trim();
+            nextData.rfidToken = token || undefined;
+        }
+        if (typeof updateData.raceId === 'string') {
+            const raceId = updateData.raceId.trim();
+            nextData.raceId = raceId || undefined;
+        }
 
         const campaign = await this.campaignModel.findByIdAndUpdate(id, nextData, { new: true }).exec();
         if (!campaign) throw new NotFoundException('Campaign not found');
@@ -222,6 +233,14 @@ export class CampaignsService {
         const nextData = { ...updateData };
         if (updateData.slug || updateData.name) {
             nextData.slug = await this.generateUniqueSlug(updateData.slug || updateData.name || 'event', String(existing._id));
+        }
+        if (typeof updateData.rfidToken === 'string') {
+            const token = updateData.rfidToken.trim();
+            nextData.rfidToken = token || undefined;
+        }
+        if (typeof updateData.raceId === 'string') {
+            const raceId = updateData.raceId.trim();
+            nextData.raceId = raceId || undefined;
         }
 
         const campaign = await this.campaignModel.findOneAndUpdate({ uuid }, nextData, { new: true }).exec();

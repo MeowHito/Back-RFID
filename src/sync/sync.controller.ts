@@ -43,4 +43,25 @@ export class SyncController {
         const data = await this.syncService.getSyncData(id);
         return this.successResponse(data);
     }
+
+    @Get('preview')
+    async previewRaceTigerData(
+        @Headers() headers: Record<string, string>,
+        @Query('id') id: string,
+        @Query('type') type: 'info' | 'bio' | 'split',
+        @Query('page') page: string,
+    ) {
+        const parsedPage = Number(page || 1);
+        const data = await this.syncService.previewRaceTigerData(id, type || 'info', parsedPage);
+        return this.successResponse(data);
+    }
+
+    @Get('latest-payload')
+    async getLatestPayload(
+        @Headers() headers: Record<string, string>,
+        @Query('id') id: string,
+    ) {
+        const data = await this.syncService.getLatestPayload(id);
+        return this.successResponse(data);
+    }
 }

@@ -105,6 +105,14 @@ export class CreateCampaignDto {
     allowRFIDSync?: boolean;
 
     @IsOptional()
+    @IsString()
+    rfidToken?: string;
+
+    @IsOptional()
+    @IsString()
+    raceId?: string;
+
+    @IsOptional()
     @IsBoolean()
     isApproveCertificate?: boolean;
 
