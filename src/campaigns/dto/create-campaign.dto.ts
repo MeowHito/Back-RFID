@@ -45,6 +45,10 @@ export class CreateCampaignDto {
 
     @IsOptional()
     @IsString()
+    slug?: string;
+
+    @IsOptional()
+    @IsString()
     shortName?: string;
 
     @IsOptional()

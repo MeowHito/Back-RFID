@@ -22,6 +22,9 @@ export class Campaign {
     @Prop({ required: true, unique: true })
     uuid: string;
 
+    @Prop({ unique: true, sparse: true })
+    slug: string;
+
     @Prop({ required: true })
     name: string;
 
@@ -133,6 +136,7 @@ export const CampaignSchema = SchemaFactory.createForClass(Campaign);
 
 // Indexes
 CampaignSchema.index({ uuid: 1 }, { unique: true });
+CampaignSchema.index({ slug: 1 }, { unique: true, sparse: true });
 CampaignSchema.index({ eventDate: -1 });
 CampaignSchema.index({ status: 1 });
 CampaignSchema.index({ isDraft: 1, status: 1 }); // For filtering published campaigns
