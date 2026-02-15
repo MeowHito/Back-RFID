@@ -39,6 +39,15 @@ export class PublicApiController {
         };
     }
 
+    private async resolveCampaignObjectId(id: string): Promise<string> {
+        if (!id) {
+            throw new BadRequestException('Campaign id is required');
+        }
+
+        const campaign = await this.campaignsService.findById(id);
+        return String(campaign._id);
+    }
+
     // User Registration
     @Post('register')
     async register(@Body() body: CreateUserDto) {
@@ -149,7 +158,8 @@ export class PublicApiController {
 
     @Get('campaign/getCheckpointById')
     async getCheckpointById(@Query('id') id: string) {
-        const data = await this.checkpointsService.findByCampaign(id);
+        const campaignId = await this.resolveCampaignObjectId(id);
+        const data = await this.checkpointsService.findByCampaign(campaignId);
         return this.successResponse(data);
     }
 
@@ -177,8 +187,9 @@ export class PublicApiController {
         @Query('favorites') favorites: string,
         @Query('type') type: string,
     ) {
+        const eventId = await this.resolveCampaignObjectId(id);
         const filter = {
-            eventId: id,
+            eventId,
             gender,
             ageGroup,
         };
@@ -188,8 +199,9 @@ export class PublicApiController {
 
     @Get('campaign/getAllStatusByEvent')
     async getAllStatusByEvent(@Query('id') id: string) {
+        const eventId = await this.resolveCampaignObjectId(id);
         // Get statistics by status
-        const runners = await this.runnersService.findByEvent({ eventId: id });
+        const runners = await this.runnersService.findByEvent({ eventId });
         const statusCounts: Record<string, number> = {};
         runners.forEach(runner => {
             statusCounts[runner.status] = (statusCounts[runner.status] || 0) + 1;
@@ -200,8 +212,9 @@ export class PublicApiController {
 
     @Get('campaign/getStartersByAge')
     async getStartersByAge(@Query('id') id: string) {
+        const eventId = await this.resolveCampaignObjectId(id);
         const runners = await this.runnersService.findByEvent({
-            eventId: id,
+            eventId,
             status: 'in_progress'
         });
         const ageGroups: Record<string, number> = {};
@@ -215,8 +228,9 @@ export class PublicApiController {
 
     @Get('campaign/getFinishByTime')
     async getFinishByTime(@Query('id') id: string) {
+        const eventId = await this.resolveCampaignObjectId(id);
         const runners = await this.runnersService.findByEvent({
-            eventId: id,
+            eventId,
             status: 'finished'
         });
         // Group by hour intervals
@@ -238,11 +252,12 @@ export class PublicApiController {
         @Query('chipCode') chipCode: string,
         @Query('bibNo') bibNo: string,
     ) {
+        const eventId = await this.resolveCampaignObjectId(id);
         let runner;
         if (bibNo) {
-            runner = await this.runnersService.findByBib(id, bibNo);
+            runner = await this.runnersService.findByBib(eventId, bibNo);
         } else if (chipCode) {
-            runner = await this.runnersService.findByRfid(id, chipCode);
+            runner = await this.runnersService.findByRfid(eventId, chipCode);
         }
         return this.successResponse(runner ? [runner] : []);
     }
@@ -256,8 +271,9 @@ export class PublicApiController {
         @Query('gender') gender: string,
         @Query('ageGroup') ageGroup: string,
     ) {
+        const eventId = await this.resolveCampaignObjectId(id);
         const filter = {
-            eventId: id,
+            eventId,
             checkpoint: checkpointName,
             gender,
             ageGroup,

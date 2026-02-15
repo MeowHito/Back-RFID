@@ -52,4 +52,3 @@ export const CheckpointSchema = SchemaFactory.createForClass(Checkpoint);
 
 // Indexes
 CheckpointSchema.index({ campaignId: 1, orderNum: 1 });
-CheckpointSchema.index({ uuid: 1 }, { unique: true });

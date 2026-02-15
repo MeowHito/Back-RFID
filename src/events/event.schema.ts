@@ -130,7 +130,6 @@ export class Event {
 export const EventSchema = SchemaFactory.createForClass(Event);
 
 // Indexes
-EventSchema.index({ uuid: 1 }, { unique: true });
 EventSchema.index({ campaignId: 1 });
 EventSchema.index({ date: -1 });
 EventSchema.index({ shareToken: 1 });

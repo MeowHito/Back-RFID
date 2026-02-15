@@ -135,8 +135,6 @@ export class Campaign {
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);
 
 // Indexes
-CampaignSchema.index({ uuid: 1 }, { unique: true });
-CampaignSchema.index({ slug: 1 }, { unique: true, sparse: true });
 CampaignSchema.index({ eventDate: -1 });
 CampaignSchema.index({ status: 1 });
 CampaignSchema.index({ isDraft: 1, status: 1 }); // For filtering published campaigns
