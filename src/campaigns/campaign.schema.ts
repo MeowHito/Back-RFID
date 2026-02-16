@@ -13,6 +13,7 @@ export interface RaceCategory {
     raceType?: string;  // e.g., "Marathon", "Half Marathon" (for road races)
     badgeColor: string; // e.g., "#e60000"
     status: string;     // "live", "wait", "finished"
+    remoteEventNo?: string; // RaceTiger project number / remote event id
     itra?: number;      // ITRA points
     utmbIndex?: string; // UTMB Index
 }

@@ -31,6 +31,10 @@ export class RaceCategoryDto {
     status?: string;
 
     @IsOptional()
+    @IsString()
+    remoteEventNo?: string;
+
+    @IsOptional()
     @IsNumber()
     itra?: number;
 

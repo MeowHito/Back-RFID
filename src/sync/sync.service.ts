@@ -90,6 +90,78 @@ export class SyncService {
         return null;
     }
 
+    private normalizeComparableText(value: unknown): string {
+        return this.toSafeString(value)
+            .toLowerCase()
+            .replace(/[^a-z0-9ก-๙]+/g, '');
+    }
+
+    private parseDistanceValue(value: unknown): number | null {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return value;
+        }
+
+        const raw = this.toSafeString(value).replace(/,/g, '');
+        if (!raw) {
+            return null;
+        }
+
+        const match = raw.match(/-?\d+(?:\.\d+)?/);
+        if (!match) {
+            return null;
+        }
+
+        const parsed = Number(match[0]);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    private resolveRaceTigerEventIdFromCategory(
+        event: any,
+        categories: any[],
+        eventIndex: number,
+    ): number | null {
+        if (!categories.length) {
+            return null;
+        }
+
+        const eventCategoryKey = this.normalizeComparableText(event?.category ?? event?.name);
+        if (eventCategoryKey) {
+            for (const category of categories) {
+                const candidate = this.parseNumericValue(category?.remoteEventNo);
+                if (candidate === null) {
+                    continue;
+                }
+
+                const categoryKey = this.normalizeComparableText(category?.name);
+                if (!categoryKey) {
+                    continue;
+                }
+
+                if (categoryKey === eventCategoryKey || eventCategoryKey.includes(categoryKey) || categoryKey.includes(eventCategoryKey)) {
+                    return candidate;
+                }
+            }
+        }
+
+        const eventDistance = this.parseDistanceValue(event?.distance);
+        if (eventDistance !== null) {
+            for (const category of categories) {
+                const candidate = this.parseNumericValue(category?.remoteEventNo);
+                const categoryDistance = this.parseDistanceValue(category?.distance);
+                if (candidate === null || categoryDistance === null) {
+                    continue;
+                }
+
+                if (Math.abs(categoryDistance - eventDistance) < 0.001) {
+                    return candidate;
+                }
+            }
+        }
+
+        const indexedCategory = categories[eventIndex];
+        return this.parseNumericValue(indexedCategory?.remoteEventNo);
+    }
+
     private toSafeString(value: unknown): string {
         if (typeof value === 'string') {
             return value.trim();
@@ -207,19 +279,31 @@ export class SyncService {
             campaignQuery.push({ campaignId: this.toCampaignObjectId(campaignId) });
         }
 
-        const events = await this.eventModel
+        const [events, campaign] = await Promise.all([
+            this.eventModel
             .find({ $or: campaignQuery })
-            .select('_id rfidEventId')
+            .select('_id rfidEventId category distance name')
             .lean()
-            .exec();
+            .exec(),
+            this.campaignModel
+                .findById(this.toCampaignObjectId(campaignId))
+                .select('categories')
+                .lean()
+                .exec(),
+        ]);
 
         if (!events.length) {
             throw new BadRequestException('Campaign has no events for runner mapping');
         }
 
+        const categoryMappings = Array.isArray((campaign as any)?.categories)
+            ? (campaign as any).categories
+            : [];
+
         const eventIdByRaceTigerEventId = new Map<number, string>();
-        events.forEach((event: any) => {
-            const raceTigerEventId = this.parseNumericValue(event?.rfidEventId);
+        events.forEach((event: any, index: number) => {
+            const raceTigerEventId = this.parseNumericValue(event?.rfidEventId)
+                ?? this.resolveRaceTigerEventIdFromCategory(event, categoryMappings, index);
             if (raceTigerEventId !== null) {
                 eventIdByRaceTigerEventId.set(raceTigerEventId, String(event._id));
             }
