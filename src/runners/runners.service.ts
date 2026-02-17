@@ -127,6 +127,44 @@ export class RunnersService {
             .exec() as Promise<RunnerDocument[]>;
     }
 
+    async findByEventIds(
+        eventIds: string[],
+        filter?: Pick<RunnerFilter, 'category' | 'gender' | 'ageGroup' | 'status' | 'checkpoint' | 'search'>,
+        limitCap: number = 5000,
+    ): Promise<RunnerDocument[]> {
+        const objectIds = eventIds
+            .filter((id): id is string => Boolean(id) && Types.ObjectId.isValid(id))
+            .map((id) => new Types.ObjectId(id));
+
+        if (!objectIds.length) {
+            return [];
+        }
+
+        const query: any = { eventId: { $in: objectIds } };
+        if (filter?.category) query.category = filter.category;
+        if (filter?.gender) query.gender = filter.gender;
+        if (filter?.ageGroup) query.ageGroup = filter.ageGroup;
+        if (filter?.status) query.status = filter.status;
+        if (filter?.checkpoint) query.latestCheckpoint = filter.checkpoint;
+
+        if (filter?.search) {
+            query.$or = [
+                { bib: { $regex: filter.search, $options: 'i' } },
+                { firstName: { $regex: filter.search, $options: 'i' } },
+                { lastName: { $regex: filter.search, $options: 'i' } },
+                { firstNameTh: { $regex: filter.search, $options: 'i' } },
+                { lastNameTh: { $regex: filter.search, $options: 'i' } },
+            ];
+        }
+
+        return this.runnerModel
+            .find(query)
+            .sort({ overallRank: 1, bib: 1 })
+            .limit(limitCap)
+            .lean()
+            .exec() as Promise<RunnerDocument[]>;
+    }
+
     async findByEventWithPaging(filter: RunnerFilter, paging?: PagingData): Promise<{ data: RunnerDocument[]; total: number; dupBibs?: string[]; dupChips?: string[]; statusCounts?: Record<string, number> }> {
         const eventOid = new Types.ObjectId(filter.eventId);
         const baseMatch: any = { eventId: eventOid };

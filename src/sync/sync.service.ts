@@ -162,6 +162,48 @@ export class SyncService {
         return this.parseNumericValue(indexedCategory?.remoteEventNo);
     }
 
+    private resolveRaceTigerEventIdFromBioRow(row: any): number | null {
+        const direct = this.parseNumericValue(
+            row?.EventId
+            ?? row?.eventId
+            ?? row?.eventid
+            ?? row?.EventNo
+            ?? row?.eventNo
+            ?? row?.eventno
+            ?? row?.ProjectNo
+            ?? row?.projectNo
+            ?? row?.projectno
+            ?? row?.RaceNo
+            ?? row?.raceNo
+            ?? row?.raceno,
+        );
+        if (direct !== null) {
+            return direct;
+        }
+
+        if (!row || typeof row !== 'object') {
+            return null;
+        }
+
+        for (const [key, value] of Object.entries(row)) {
+            const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]+/g, '');
+            if (
+                normalizedKey === 'eventid'
+                || normalizedKey === 'eventno'
+                || normalizedKey === 'projectno'
+                || normalizedKey === 'projectnumber'
+                || normalizedKey === 'raceno'
+            ) {
+                const parsed = this.parseNumericValue(value);
+                if (parsed !== null) {
+                    return parsed;
+                }
+            }
+        }
+
+        return null;
+    }
+
     private toSafeString(value: unknown): string {
         if (typeof value === 'string') {
             return value.trim();
@@ -217,7 +259,7 @@ export class SyncService {
     }
 
     private resolveEventIdFromBioRow(row: any, eventResolver: EventResolver): string | null {
-        const raceTigerEventId = this.parseNumericValue(row?.EventId ?? row?.eventId);
+        const raceTigerEventId = this.resolveRaceTigerEventIdFromBioRow(row);
         if (raceTigerEventId !== null && eventResolver.eventIdByRaceTigerEventId.has(raceTigerEventId)) {
             return eventResolver.eventIdByRaceTigerEventId.get(raceTigerEventId) || null;
         }
@@ -631,7 +673,7 @@ export class SyncService {
 
             if (rowsFetched > 0 && rowsMapped === 0) {
                 throw new BadRequestException(
-                    'Unable to map BIO rows to local events. Please verify event RFID Event ID mapping for this campaign.',
+                    'Unable to map BIO rows to local events. Verify RaceTiger EventId/EventNo fields match local Event RFID Event ID or campaign category Remote Event No.',
                 );
             }
 

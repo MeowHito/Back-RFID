@@ -5,6 +5,7 @@ import { CampaignsService, PagingData } from '../campaigns/campaigns.service';
 import { RunnersService } from '../runners/runners.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
 import { TimingService } from '../timing/timing.service';
+import { EventsService } from '../events/events.service';
 import { CreateUserDto, LoginStationDto, UpdatePasswordDto } from '../users/dto/user.dto';
 
 interface NormalizedResponse {
@@ -24,6 +25,7 @@ export class PublicApiController {
         private readonly runnersService: RunnersService,
         private readonly checkpointsService: CheckpointsService,
         private readonly timingService: TimingService,
+        private readonly eventsService: EventsService,
     ) { }
 
     private successResponse(data?: any): NormalizedResponse {
@@ -187,13 +189,21 @@ export class PublicApiController {
         @Query('favorites') favorites: string,
         @Query('type') type: string,
     ) {
-        const eventId = await this.resolveCampaignObjectId(id);
+        const campaignId = await this.resolveCampaignObjectId(id);
+        const events = await this.eventsService.findByCampaign(campaignId);
+        const eventIds = Array.from(
+            new Set([
+                campaignId,
+                ...events.map((event: any) => String(event?._id || '')).filter(Boolean),
+            ]),
+        );
+
         const filter = {
-            eventId,
             gender,
             ageGroup,
         };
-        const data = await this.runnersService.findByEvent(filter);
+
+        const data = await this.runnersService.findByEventIds(eventIds, filter);
         return this.successResponse({ data, total: data.length });
     }
 
