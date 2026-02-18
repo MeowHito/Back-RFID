@@ -269,6 +269,97 @@ export class SyncService {
         return this.parseNumericValue(indexedCategory?.remoteEventNo);
     }
 
+    private classifyTimingPointType(
+        name: string,
+        sortOrder: number | null,
+    ): 'start' | 'checkpoint' | 'finish' {
+        const normalized = name.toLowerCase().replace(/[^a-z0-9]+/g, '');
+        if (normalized === 'start' || normalized === 'startline' || sortOrder === 1) {
+            return 'start';
+        }
+        if (normalized === 'finish' || normalized === 'finishline' || normalized === 'end' || sortOrder === 9999) {
+            return 'finish';
+        }
+        return 'checkpoint';
+    }
+
+    /**
+     * Extract TimingPoints from the Info response's Events array.
+     * Each event row may contain a "TimingPoints" array with TpName/SortOrder.
+     * We merge all timing points across events into a deduplicated, sorted list.
+     */
+    private extractTimingPointsFromInfoRows(
+        eventRows: any[],
+    ): Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number }> {
+        const seen = new Map<string, { sortOrder: number; name: string }>();
+
+        for (const row of eventRows) {
+            const timingPoints = row?.TimingPoints ?? row?.timingPoints ?? row?.timingpoints;
+            if (!Array.isArray(timingPoints)) {
+                continue;
+            }
+            for (const tp of timingPoints) {
+                const tpName = this.toSafeString(tp?.TpName ?? tp?.tpName ?? tp?.Name ?? tp?.name);
+                if (!tpName) continue;
+                const sortOrder = this.parseNumericValue(tp?.SortOrder ?? tp?.sortOrder) ?? 500;
+                if (!seen.has(tpName) || sortOrder < (seen.get(tpName)!.sortOrder)) {
+                    seen.set(tpName, { sortOrder, name: tpName });
+                }
+            }
+        }
+
+        if (seen.size === 0) {
+            return [];
+        }
+
+        const sorted = [...seen.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+        return sorted.map((tp, idx) => ({
+            name: tp.name,
+            type: this.classifyTimingPointType(tp.name, tp.sortOrder),
+            orderNum: idx + 1,
+        }));
+    }
+
+    /**
+     * Extract checkpoint/timing-point names from splitScore rows.
+     * The RaceTiger splitScore response uses "TpName" for the checkpoint name.
+     */
+    private extractTimingPointsFromSplitRows(
+        splitRows: any[],
+    ): Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number }> {
+        const seen = new Map<string, { sortOrder: number; name: string }>();
+
+        for (const row of splitRows) {
+            const cpName = this.toSafeString(
+                row?.TpName ?? row?.tpName ?? row?.tpname
+                ?? row?.CheckPoint ?? row?.Checkpoint ?? row?.checkpoint
+                ?? row?.CheckpointName ?? row?.checkpointName
+                ?? row?.CPName ?? row?.cpName
+                ?? row?.StationName ?? row?.stationName
+                ?? this.findRowValueByNormalizedKeys(row, [
+                    'tpname', 'checkpoint', 'checkpointname', 'cpname', 'stationname', 'station',
+                ]),
+            );
+            if (!cpName) continue;
+
+            const sortOrder = this.parseNumericValue(row?.SortOrder ?? row?.sortOrder) ?? 500;
+            if (!seen.has(cpName) || sortOrder < (seen.get(cpName)!.sortOrder)) {
+                seen.set(cpName, { sortOrder, name: cpName });
+            }
+        }
+
+        if (seen.size === 0) {
+            return [];
+        }
+
+        const sorted = [...seen.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+        return sorted.map((tp, idx) => ({
+            name: tp.name,
+            type: this.classifyTimingPointType(tp.name, tp.sortOrder),
+            orderNum: idx + 1,
+        }));
+    }
+
     private resolveRaceTigerEventIdFromBioRow(row: any): number | null {
         const direct = this.parseNumericValue(
             row?.EventId
@@ -845,42 +936,28 @@ export class SyncService {
 
             syncResult.runners = { inserted: bioInserted, updated: bioUpdated, skipped: bioSkipped };
 
-            // Fetch checkpoint names from splitScore page 1
-            const splitCheckpointNames: string[] = [];
-            try {
-                const { response: splitRes, parsedBody: splitParsed } = await this.requestRaceTiger(campaign, 'split', 1);
-                if (splitRes.ok && splitParsed) {
-                    const splitRows = this.extractRowsFromPayload(splitParsed);
-                    const seen = new Set<string>();
-                    for (const row of splitRows) {
-                        const cpName = this.toSafeString(
-                            row?.CheckPoint ?? row?.Checkpoint ?? row?.checkpoint
-                            ?? row?.CheckpointName ?? row?.checkpointName
-                            ?? row?.CPName ?? row?.cpName
-                            ?? row?.StationName ?? row?.stationName
-                            ?? this.findRowValueByNormalizedKeys(row, ['checkpoint', 'checkpointname', 'cpname', 'stationname', 'station']),
+            // Extract TimingPoints from Info response first (most reliable source)
+            const timingPointDefs = this.extractTimingPointsFromInfoRows(rows);
+
+            // Fallback: fetch checkpoint names from splitScore page 1
+            let splitTimingPointDefs: Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number }> = [];
+            if (timingPointDefs.length === 0) {
+                try {
+                    const { response: splitRes, parsedBody: splitParsed } = await this.requestRaceTiger(campaign, 'split', 1);
+                    if (splitRes.ok && splitParsed) {
+                        splitTimingPointDefs = this.extractTimingPointsFromSplitRows(
+                            this.extractRowsFromPayload(splitParsed),
                         );
-                        if (cpName && !seen.has(cpName)) {
-                            seen.add(cpName);
-                            splitCheckpointNames.push(cpName);
-                        }
                     }
+                } catch {
+                    // splitScore unavailable — fall back to defaults
                 }
-            } catch {
-                // splitScore unavailable — fall back to defaults
             }
 
-            // Build checkpoint list: from split data or defaults
-            const checkpointDefs: Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number }> =
-                splitCheckpointNames.length > 0
-                    ? splitCheckpointNames.map((cpName, idx) => {
-                        const normalized = cpName.toLowerCase().replace(/[^a-z0-9]+/g, '');
-                        const type: 'start' | 'checkpoint' | 'finish' =
-                            normalized === 'start' || normalized === 'startline' ? 'start'
-                            : normalized === 'finish' || normalized === 'finishline' || normalized === 'end' ? 'finish'
-                            : 'checkpoint';
-                        return { name: cpName, type, orderNum: idx + 1 };
-                    })
+            const checkpointDefs = timingPointDefs.length > 0
+                ? timingPointDefs
+                : splitTimingPointDefs.length > 0
+                    ? splitTimingPointDefs
                     : [
                         { name: 'START', type: 'start' as const, orderNum: 1 },
                         { name: 'FINISH', type: 'finish' as const, orderNum: 2 },
@@ -893,6 +970,21 @@ export class SyncService {
                     checkpointDefs.map(cp => ({ ...cp, campaignId })),
                 );
                 checkpointsCreated += checkpointDefs.length;
+            } else {
+                // Update existing checkpoints if they only have defaults (START/FINISH)
+                // and we now have more detailed timing points
+                const existingNames = new Set(existingCps.map((cp: any) => cp.name));
+                const onlyDefaults = existingCps.length <= 2
+                    && existingNames.has('START')
+                    && existingNames.has('FINISH')
+                    && checkpointDefs.length > 2;
+                if (onlyDefaults) {
+                    await this.checkpointsService.deleteByCampaign(campaignId);
+                    await this.checkpointsService.createMany(
+                        checkpointDefs.map(cp => ({ ...cp, campaignId })),
+                    );
+                    checkpointsCreated += checkpointDefs.length;
+                }
             }
 
             const cps = await this.checkpointsService.findByCampaign(campaignId);
