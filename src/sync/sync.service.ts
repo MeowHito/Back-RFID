@@ -6,6 +6,7 @@ import { Campaign, CampaignDocument } from '../campaigns/campaign.schema';
 import { Event, EventDocument } from '../events/event.schema';
 import { CreateRunnerDto } from '../runners/dto/create-runner.dto';
 import { RunnersService } from '../runners/runners.service';
+import { CheckpointsService } from '../checkpoints/checkpoints.service';
 import { SyncLog, SyncLogDocument } from './sync-log.schema';
 
 type RaceTigerRequestType = 'info' | 'bio' | 'split';
@@ -35,6 +36,7 @@ export class SyncService {
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
         @InjectModel(Event.name) private eventModel: Model<EventDocument>,
         private readonly runnersService: RunnersService,
+        private readonly checkpointsService: CheckpointsService,
         private readonly configService: ConfigService,
     ) { }
 
@@ -66,15 +68,120 @@ export class SyncService {
     }
 
     private getPayloadSample(parsedBody: any): any {
-        const data = parsedBody?.data;
-        if (Array.isArray(data)) {
-            return data.slice(0, 3);
+        const rows = this.extractRowsFromPayload(parsedBody);
+        if (rows.length) {
+            return rows.slice(0, 3);
         }
+
+        const data = parsedBody?.data;
         if (data && typeof data === 'object') {
             const entries = Object.entries(data).slice(0, 12);
             return Object.fromEntries(entries);
         }
         return parsedBody;
+    }
+
+    private extractRowsFromPayload(parsedBody: any): any[] {
+        if (!parsedBody || typeof parsedBody !== 'object') {
+            return [];
+        }
+
+        const queue: any[] = [parsedBody];
+        const visited = new Set<any>();
+        const preferredKeys = new Set([
+            'data',
+            'rows',
+            'list',
+            'items',
+            'result',
+            'records',
+            'eventlist',
+            'participantlist',
+        ]);
+
+        while (queue.length > 0) {
+            const current = queue.shift();
+            if (!current || typeof current !== 'object' || visited.has(current)) {
+                continue;
+            }
+            visited.add(current);
+
+            if (Array.isArray(current)) {
+                return current;
+            }
+
+            const entries = Object.entries(current as Record<string, any>);
+
+            for (const [key, value] of entries) {
+                if (!Array.isArray(value)) {
+                    continue;
+                }
+
+                const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]+/g, '');
+                if (preferredKeys.has(normalizedKey)) {
+                    return value;
+                }
+            }
+
+            for (const [, value] of entries) {
+                if (Array.isArray(value)) {
+                    return value;
+                }
+            }
+
+            for (const [, value] of entries) {
+                if (value && typeof value === 'object') {
+                    queue.push(value);
+                }
+            }
+        }
+
+        return [];
+    }
+
+    private findRowValueByNormalizedKeys(row: any, normalizedKeys: string[]): unknown {
+        if (!row || typeof row !== 'object') {
+            return undefined;
+        }
+
+        const targets = new Set(normalizedKeys);
+        for (const [key, value] of Object.entries(row)) {
+            const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]+/g, '');
+            if (targets.has(normalizedKey)) {
+                return value;
+            }
+        }
+
+        return undefined;
+    }
+
+    private resolveRaceTigerEventIdFromInfoRow(row: any): number | null {
+        const direct = this.parseNumericValue(
+            row?.EventId
+            ?? row?.eventId
+            ?? row?.eventid
+            ?? row?.EventNo
+            ?? row?.eventNo
+            ?? row?.eventno
+            ?? row?.ProjectNo
+            ?? row?.projectNo
+            ?? row?.projectno
+            ?? row?.RaceNo
+            ?? row?.raceNo
+            ?? row?.raceno,
+        );
+        if (direct !== null) {
+            return direct;
+        }
+
+        const fallback = this.findRowValueByNormalizedKeys(row, [
+            'eventid',
+            'eventno',
+            'projectno',
+            'projectnumber',
+            'raceno',
+        ]);
+        return this.parseNumericValue(fallback);
     }
 
     private parseNumericValue(value: unknown): number | null {
@@ -545,7 +652,7 @@ export class SyncService {
             previewRequest.endpoint = endpoint;
             previewRequest.requestParams = requestParams;
 
-            const itemCount = Array.isArray(parsedBody?.data) ? parsedBody.data.length : 0;
+            const itemCount = this.extractRowsFromPayload(parsedBody).length;
             const preview = {
                 fetchedAt: new Date().toISOString(),
                 request: previewRequest,
@@ -620,11 +727,7 @@ export class SyncService {
             throw new BadGatewayException('RaceTiger INFO returned invalid JSON');
         }
 
-        const rows: any[] = Array.isArray(parsedBody?.data)
-            ? parsedBody.data
-            : Array.isArray(parsedBody?.Data)
-                ? parsedBody.Data
-                : [];
+        const rows = this.extractRowsFromPayload(parsedBody);
 
         if (!rows.length) {
             return { imported: 0, updated: 0, events: [], raw: parsedBody };
@@ -640,24 +743,45 @@ export class SyncService {
         const events: any[] = [];
 
         for (const row of rows) {
-            const raceTigerEventId =
-                this.parseNumericValue(
-                    row?.EventId ?? row?.eventId ?? row?.eventid
-                    ?? row?.ProjectNo ?? row?.projectNo ?? row?.projectno
-                    ?? row?.RaceNo ?? row?.raceNo ?? row?.raceno
-                    ?? row?.EventNo ?? row?.eventNo ?? row?.eventno,
-                );
+            const raceTigerEventId = this.resolveRaceTigerEventIdFromInfoRow(row);
+
+            const nameFromNormalizedKey = this.findRowValueByNormalizedKeys(row, [
+                'eventname',
+                'name',
+                'projectname',
+                'racename',
+            ]);
 
             const name = this.toSafeString(
-                row?.EventName ?? row?.eventName ?? row?.Name ?? row?.name ?? row?.ProjectName ?? row?.projectName,
+                row?.EventName
+                ?? row?.eventName
+                ?? row?.Name
+                ?? row?.name
+                ?? row?.ProjectName
+                ?? row?.projectName
+                ?? nameFromNormalizedKey,
             ) || (raceTigerEventId !== null ? `Event ${raceTigerEventId}` : 'Unnamed Event');
 
+            const distanceFromNormalizedKey = this.findRowValueByNormalizedKeys(row, [
+                'distance',
+                'km',
+                'kilometer',
+                'kilometers',
+            ]);
+
             const distanceRaw = this.toSafeString(
-                row?.Distance ?? row?.distance ?? row?.Km ?? row?.km,
+                row?.Distance ?? row?.distance ?? row?.Km ?? row?.km ?? distanceFromNormalizedKey,
             );
             const distance = this.parseDistanceValue(distanceRaw) ?? undefined;
 
-            const dateRaw = this.toSafeString(row?.EventDate ?? row?.eventDate ?? row?.Date ?? row?.date);
+            const dateFromNormalizedKey = this.findRowValueByNormalizedKeys(row, [
+                'eventdate',
+                'date',
+                'racedate',
+                'startdate',
+            ]);
+
+            const dateRaw = this.toSafeString(row?.EventDate ?? row?.eventDate ?? row?.Date ?? row?.date ?? dateFromNormalizedKey);
             const date = dateRaw ? (new Date(dateRaw).getTime() ? new Date(dateRaw) : fallbackDate) : fallbackDate;
 
             const existing = raceTigerEventId !== null
@@ -690,7 +814,64 @@ export class SyncService {
             }
         }
 
-        return { imported, updated, events };
+        const syncResult: any = { imported, updated, events, runners: { inserted: 0, updated: 0, skipped: 0 }, checkpoints: { created: 0 } };
+
+        if (events.length > 0) {
+            const eventResolver = await this.buildEventResolver(campaignId);
+            const maxPages = Number(this.configService.get<string>('RACE_TIGER_MAX_BIO_PAGES') || 200);
+            let bioInserted = 0;
+            let bioUpdated = 0;
+            let bioSkipped = 0;
+
+            for (let page = 1; page <= maxPages; page++) {
+                const { response: bioRes, parsedBody: bioParsed } = await this.requestRaceTiger(campaign, 'bio', page);
+                if (!bioRes.ok) break;
+                const bioRows = this.extractRowsFromPayload(bioParsed);
+                if (!bioRows.length) break;
+
+                const mapped: CreateRunnerDto[] = [];
+                for (const row of bioRows) {
+                    const runner = this.mapBioRowToRunner(row, eventResolver);
+                    if (runner) mapped.push(runner);
+                    else bioSkipped++;
+                }
+
+                if (mapped.length) {
+                    const pageResult = await this.runnersService.createMany(mapped, true);
+                    bioInserted += pageResult.inserted || 0;
+                    bioUpdated += pageResult.updated || 0;
+                }
+            }
+
+            syncResult.runners = { inserted: bioInserted, updated: bioUpdated, skipped: bioSkipped };
+
+            let checkpointsCreated = 0;
+            for (const ev of events) {
+                const evId = ev.id as string;
+                const existing = await this.checkpointsService.findByCampaign(campaignId);
+                if (existing.length === 0) {
+                    const defaultCheckpoints = [
+                        { campaignId, name: 'START', type: 'start' as const, orderNum: 1 },
+                        { campaignId, name: 'FINISH', type: 'finish' as const, orderNum: 2 },
+                    ];
+                    await this.checkpointsService.createMany(defaultCheckpoints);
+                    checkpointsCreated += defaultCheckpoints.length;
+                }
+
+                const cps = await this.checkpointsService.findByCampaign(campaignId);
+                const mappingDocs = cps.map((cp: any, idx: number) => ({
+                    checkpointId: String(cp._id),
+                    eventId: evId,
+                    orderNum: idx + 1,
+                }));
+                if (mappingDocs.length) {
+                    await this.checkpointsService.updateMappings(mappingDocs);
+                }
+            }
+            syncResult.checkpoints = { created: checkpointsCreated };
+        }
+
+        return syncResult;
     }
 
     async syncAllRunners(campaignId: string): Promise<any> {
@@ -729,7 +910,7 @@ export class SyncService {
 
                 pagesFetched += 1;
 
-                const rows = Array.isArray(parsedBody?.data) ? parsedBody.data : [];
+                const rows = this.extractRowsFromPayload(parsedBody);
                 if (!rows.length) {
                     reachedEnd = true;
                     break;
