@@ -845,20 +845,59 @@ export class SyncService {
 
             syncResult.runners = { inserted: bioInserted, updated: bioUpdated, skipped: bioSkipped };
 
+            // Fetch checkpoint names from splitScore page 1
+            const splitCheckpointNames: string[] = [];
+            try {
+                const { response: splitRes, parsedBody: splitParsed } = await this.requestRaceTiger(campaign, 'split', 1);
+                if (splitRes.ok && splitParsed) {
+                    const splitRows = this.extractRowsFromPayload(splitParsed);
+                    const seen = new Set<string>();
+                    for (const row of splitRows) {
+                        const cpName = this.toSafeString(
+                            row?.CheckPoint ?? row?.Checkpoint ?? row?.checkpoint
+                            ?? row?.CheckpointName ?? row?.checkpointName
+                            ?? row?.CPName ?? row?.cpName
+                            ?? row?.StationName ?? row?.stationName
+                            ?? this.findRowValueByNormalizedKeys(row, ['checkpoint', 'checkpointname', 'cpname', 'stationname', 'station']),
+                        );
+                        if (cpName && !seen.has(cpName)) {
+                            seen.add(cpName);
+                            splitCheckpointNames.push(cpName);
+                        }
+                    }
+                }
+            } catch {
+                // splitScore unavailable — fall back to defaults
+            }
+
+            // Build checkpoint list: from split data or defaults
+            const checkpointDefs: Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number }> =
+                splitCheckpointNames.length > 0
+                    ? splitCheckpointNames.map((cpName, idx) => {
+                        const normalized = cpName.toLowerCase().replace(/[^a-z0-9]+/g, '');
+                        const type: 'start' | 'checkpoint' | 'finish' =
+                            normalized === 'start' || normalized === 'startline' ? 'start'
+                            : normalized === 'finish' || normalized === 'finishline' || normalized === 'end' ? 'finish'
+                            : 'checkpoint';
+                        return { name: cpName, type, orderNum: idx + 1 };
+                    })
+                    : [
+                        { name: 'START', type: 'start' as const, orderNum: 1 },
+                        { name: 'FINISH', type: 'finish' as const, orderNum: 2 },
+                    ];
+
             let checkpointsCreated = 0;
+            const existingCps = await this.checkpointsService.findByCampaign(campaignId);
+            if (existingCps.length === 0) {
+                await this.checkpointsService.createMany(
+                    checkpointDefs.map(cp => ({ ...cp, campaignId })),
+                );
+                checkpointsCreated += checkpointDefs.length;
+            }
+
+            const cps = await this.checkpointsService.findByCampaign(campaignId);
             for (const ev of events) {
                 const evId = ev.id as string;
-                const existing = await this.checkpointsService.findByCampaign(campaignId);
-                if (existing.length === 0) {
-                    const defaultCheckpoints = [
-                        { campaignId, name: 'START', type: 'start' as const, orderNum: 1 },
-                        { campaignId, name: 'FINISH', type: 'finish' as const, orderNum: 2 },
-                    ];
-                    await this.checkpointsService.createMany(defaultCheckpoints);
-                    checkpointsCreated += defaultCheckpoints.length;
-                }
-
-                const cps = await this.checkpointsService.findByCampaign(campaignId);
                 const mappingDocs = cps.map((cp: any, idx: number) => ({
                     checkpointId: String(cp._id),
                     eventId: evId,
@@ -868,7 +907,7 @@ export class SyncService {
                     await this.checkpointsService.updateMappings(mappingDocs);
                 }
             }
-            syncResult.checkpoints = { created: checkpointsCreated };
+            syncResult.checkpoints = { created: checkpointsCreated, names: cps.map((cp: any) => cp.name) };
         }
 
         return syncResult;
