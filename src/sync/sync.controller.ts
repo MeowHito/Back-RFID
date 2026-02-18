@@ -56,6 +56,15 @@ export class SyncController {
         return this.successResponse(data);
     }
 
+    @Post('import-events')
+    async importEventsFromRaceTiger(
+        @Headers() headers: Record<string, string>,
+        @Query('id') id: string,
+    ) {
+        const data = await this.syncService.importEventsFromRaceTiger(id);
+        return this.successResponse(data);
+    }
+
     @Post('full-sync')
     async syncAllRunners(
         @Headers() headers: Record<string, string>,

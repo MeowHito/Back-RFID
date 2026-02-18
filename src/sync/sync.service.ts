@@ -351,9 +351,14 @@ export class SyncService {
             }
         });
 
+        const hasMappedEvents = eventIdByRaceTigerEventId.size > 0;
+        const fallbackEventId = !hasMappedEvents
+            ? String(events[0]._id)
+            : (events.length === 1 ? String(events[0]._id) : null);
+
         return {
             eventIdByRaceTigerEventId,
-            fallbackEventId: events.length === 1 ? String(events[0]._id) : null,
+            fallbackEventId,
         };
     }
 
@@ -601,6 +606,91 @@ export class SyncService {
 
             throw new BadGatewayException(errorMessage);
         }
+    }
+
+    async importEventsFromRaceTiger(campaignId: string): Promise<any> {
+        const campaign = await this.getSyncEnabledCampaign(campaignId);
+        const { parsedBody, response } = await this.requestRaceTiger(campaign, 'info', 1);
+
+        if (!response.ok) {
+            throw new BadGatewayException(`RaceTiger INFO returned status ${response.status}`);
+        }
+
+        if (!parsedBody || typeof parsedBody !== 'object') {
+            throw new BadGatewayException('RaceTiger INFO returned invalid JSON');
+        }
+
+        const rows: any[] = Array.isArray(parsedBody?.data)
+            ? parsedBody.data
+            : Array.isArray(parsedBody?.Data)
+                ? parsedBody.Data
+                : [];
+
+        if (!rows.length) {
+            return { imported: 0, updated: 0, events: [], raw: parsedBody };
+        }
+
+        const campaignObjId = this.toCampaignObjectId(campaignId);
+        const campaignDoc = await this.campaignModel.findById(campaignObjId).select('eventDate location name').lean().exec();
+        const fallbackDate = (campaignDoc as any)?.eventDate ?? new Date();
+        const fallbackLocation = (campaignDoc as any)?.location ?? '';
+
+        let imported = 0;
+        let updated = 0;
+        const events: any[] = [];
+
+        for (const row of rows) {
+            const raceTigerEventId =
+                this.parseNumericValue(
+                    row?.EventId ?? row?.eventId ?? row?.eventid
+                    ?? row?.ProjectNo ?? row?.projectNo ?? row?.projectno
+                    ?? row?.RaceNo ?? row?.raceNo ?? row?.raceno
+                    ?? row?.EventNo ?? row?.eventNo ?? row?.eventno,
+                );
+
+            const name = this.toSafeString(
+                row?.EventName ?? row?.eventName ?? row?.Name ?? row?.name ?? row?.ProjectName ?? row?.projectName,
+            ) || (raceTigerEventId !== null ? `Event ${raceTigerEventId}` : 'Unnamed Event');
+
+            const distanceRaw = this.toSafeString(
+                row?.Distance ?? row?.distance ?? row?.Km ?? row?.km,
+            );
+            const distance = this.parseDistanceValue(distanceRaw) ?? undefined;
+
+            const dateRaw = this.toSafeString(row?.EventDate ?? row?.eventDate ?? row?.Date ?? row?.date);
+            const date = dateRaw ? (new Date(dateRaw).getTime() ? new Date(dateRaw) : fallbackDate) : fallbackDate;
+
+            const existing = raceTigerEventId !== null
+                ? await this.eventModel.findOne({ campaignId: campaignObjId, rfidEventId: raceTigerEventId }).exec()
+                : null;
+
+            if (existing) {
+                await this.eventModel.findByIdAndUpdate(existing._id, {
+                    name,
+                    ...(distance !== undefined ? { distance } : {}),
+                    date,
+                }).exec();
+                updated += 1;
+                events.push({ action: 'updated', id: String(existing._id), name, rfidEventId: raceTigerEventId });
+            } else {
+                const { v4: uuidv4 } = await import('uuid');
+                const created = await this.eventModel.create({
+                    uuid: uuidv4(),
+                    shareToken: uuidv4(),
+                    campaignId: campaignObjId,
+                    name,
+                    date,
+                    location: fallbackLocation,
+                    status: 'upcoming',
+                    ...(raceTigerEventId !== null ? { rfidEventId: raceTigerEventId } : {}),
+                    ...(distance !== undefined ? { distance } : {}),
+                });
+                imported += 1;
+                events.push({ action: 'created', id: String(created._id), name, rfidEventId: raceTigerEventId });
+            }
+        }
+
+        return { imported, updated, events };
     }
 
     async syncAllRunners(campaignId: string): Promise<any> {
