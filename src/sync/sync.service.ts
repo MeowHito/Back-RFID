@@ -14,6 +14,7 @@ type RaceTigerRequestType = 'info' | 'bio' | 'split';
 interface EventResolver {
     eventIdByRaceTigerEventId: Map<number, string>;
     fallbackEventId: string | null;
+    categoryByEventId: Map<string, string>; // local eventId → category name for runner.category
 }
 
 interface RaceTigerRequestResult {
@@ -484,7 +485,12 @@ export class SyncService {
             : { firstName: '', lastName: '' };
 
         const parsedAge = this.parseNumericValue(row?.Age ?? row?.age);
-        const category = this.toSafeString(row?.Category ?? row?.category ?? row?.Category2 ?? row?.category2) || 'General';
+        const rawCategory = this.toSafeString(row?.Category ?? row?.category ?? row?.Category2 ?? row?.category2);
+        // If RaceTiger sends category as a number (event ID) or empty, fall back to local event name
+        const categoryIsUseless = !rawCategory || /^\d+$/.test(rawCategory);
+        const category = categoryIsUseless
+            ? (eventResolver.categoryByEventId.get(eventId) || rawCategory || 'General')
+            : rawCategory;
         const chipCode = this.toSafeString(row?.ChipCode ?? row?.chipCode);
         const teamName = this.toSafeString(row?.TeamName ?? row?.teamName);
 
@@ -554,9 +560,17 @@ export class SyncService {
             ? String(events[0]._id)
             : (events.length === 1 ? String(events[0]._id) : null);
 
+        // Build category name map: local eventId → category/name to use for runner.category
+        const categoryByEventId = new Map<string, string>();
+        events.forEach((event: any) => {
+            const name = this.toSafeString(event?.category ?? event?.name);
+            if (name) categoryByEventId.set(String(event._id), name);
+        });
+
         return {
             eventIdByRaceTigerEventId,
             fallbackEventId,
+            categoryByEventId,
         };
     }
 
