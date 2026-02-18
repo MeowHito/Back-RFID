@@ -126,16 +126,21 @@ export class CheckpointsService {
 
     async updateMappings(mappings: Array<{ checkpointId: string; eventId: string } & Partial<CreateCheckpointMappingDto>>): Promise<void> {
         if (mappings.length === 0) return;
-        const bulkOps = mappings.map(mapping => ({
-            updateOne: {
-                filter: {
-                    checkpointId: new Types.ObjectId(mapping.checkpointId),
-                    eventId: new Types.ObjectId(mapping.eventId),
+        const bulkOps = mappings.map(mapping => {
+            const { checkpointId, eventId, ...rest } = mapping;
+            const cpObjId = new Types.ObjectId(checkpointId);
+            const evObjId = new Types.ObjectId(eventId);
+            return {
+                updateOne: {
+                    filter: { checkpointId: cpObjId, eventId: evObjId },
+                    update: {
+                        $set: { ...rest },
+                        $setOnInsert: { checkpointId: cpObjId, eventId: evObjId },
+                    },
+                    upsert: true,
                 },
-                update: { $set: mapping },
-                upsert: true,
-            },
-        }));
+            };
+        });
         await this.mappingModel.bulkWrite(bulkOps as any, { ordered: false });
     }
 
