@@ -847,6 +847,7 @@ export class SyncService {
         let imported = 0;
         let updated = 0;
         const events: any[] = [];
+        const distanceStrByRaceTigerId = new Map<string, string>();
 
         for (const row of rows) {
             const raceTigerEventId = this.resolveRaceTigerEventIdFromInfoRow(row);
@@ -879,6 +880,8 @@ export class SyncService {
                 row?.Distance ?? row?.distance ?? row?.Km ?? row?.km ?? distanceFromNormalizedKey,
             );
             const distance = this.parseDistanceValue(distanceRaw) ?? undefined;
+            const distanceForCat = distance !== undefined ? `${distance} KM` : (distanceRaw || '');
+            if (raceTigerEventId !== null) distanceStrByRaceTigerId.set(String(raceTigerEventId), distanceForCat);
 
             const dateFromNormalizedKey = this.findRowValueByNormalizedKeys(row, [
                 'eventdate',
@@ -917,6 +920,39 @@ export class SyncService {
                 });
                 imported += 1;
                 events.push({ action: 'created', id: String(created._id), name, rfidEventId: raceTigerEventId });
+            }
+        }
+
+        // Upsert campaign.categories from imported RaceTiger events
+        const campaignForCats = await this.campaignModel.findById(campaignObjId).exec();
+        if (campaignForCats) {
+            const existingCategories: any[] = [...((campaignForCats as any).categories || [])];
+            let categoriesChanged = false;
+            for (const ev of events) {
+                const remoteNo = ev.rfidEventId !== null ? String(ev.rfidEventId) : '';
+                const distStr = distanceStrByRaceTigerId.get(remoteNo) || '';
+                const matchIdx = existingCategories.findIndex(
+                    (c: any) => remoteNo && String(c.remoteEventNo) === remoteNo,
+                );
+                if (matchIdx >= 0) {
+                    if (ev.name) existingCategories[matchIdx].name = ev.name;
+                    if (distStr) existingCategories[matchIdx].distance = distStr;
+                    categoriesChanged = true;
+                } else if (remoteNo) {
+                    existingCategories.push({
+                        name: ev.name || 'Unnamed',
+                        distance: distStr || '0 KM',
+                        startTime: '06:00',
+                        cutoff: '-',
+                        badgeColor: '#dc2626',
+                        status: 'live',
+                        remoteEventNo: remoteNo,
+                    });
+                    categoriesChanged = true;
+                }
+            }
+            if (categoriesChanged) {
+                await this.campaignModel.findByIdAndUpdate(campaignObjId, { categories: existingCategories }).exec();
             }
         }
 
