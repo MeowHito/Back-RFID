@@ -9,7 +9,7 @@ import { RunnersService } from '../runners/runners.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
 import { SyncLog, SyncLogDocument } from './sync-log.schema';
 
-type RaceTigerRequestType = 'info' | 'bio' | 'split';
+type RaceTigerRequestType = 'info' | 'bio' | 'split' | 'score';
 
 interface EventResolver {
     eventIdByRaceTigerEventId: Map<number, string>;
@@ -59,12 +59,9 @@ export class SyncService {
     }
 
     private getRaceTigerPath(type: RaceTigerRequestType): string {
-        if (type === 'info') {
-            return this.configService.get<string>('RACE_TIGER_INFO_PATH') || '/Dif/info';
-        }
-        if (type === 'bio') {
-            return this.configService.get<string>('RACE_TIGER_BIO_PATH') || '/Dif/bio';
-        }
+        if (type === 'info') return this.configService.get<string>('RACE_TIGER_INFO_PATH') || '/Dif/info';
+        if (type === 'bio') return this.configService.get<string>('RACE_TIGER_BIO_PATH') || '/Dif/bio';
+        if (type === 'score') return this.configService.get<string>('RACE_TIGER_SCORE_PATH') || '/Dif/score';
         return this.configService.get<string>('RACE_TIGER_SPLIT_PATH') || '/Dif/splitScore';
     }
 
@@ -493,6 +490,9 @@ export class SyncService {
             : rawCategory;
         const chipCode = this.toSafeString(row?.ChipCode ?? row?.chipCode);
         const teamName = this.toSafeString(row?.TeamName ?? row?.teamName);
+        const athleteId = this.toSafeString(
+            row?.AthleteId ?? row?.athleteId ?? row?.athleteid ?? row?.ATHLETEID,
+        );
 
         return {
             eventId,
@@ -516,6 +516,7 @@ export class SyncService {
             isStarted: false,
             allowRFIDSync: true,
             sourceFile: 'RaceTiger BIO sync',
+            ...(athleteId ? { athleteId } : {}),
         };
     }
 
@@ -581,7 +582,7 @@ export class SyncService {
     ): Promise<RaceTigerRequestResult> {
         const raceId = campaign.raceId.trim();
         const token = campaign.rfidToken.trim();
-        const baseUrl = this.getRaceTigerBaseUrl();
+        const baseUrl = (campaign as any).raceTigerBaseUrl?.trim() || this.getRaceTigerBaseUrl();
         const path = this.getRaceTigerPath(type);
         const endpoint = `${baseUrl}${path}`;
         const partnerCode = (campaign as any).partnerCode?.trim() || this.configService.get<string>('RACE_TIGER_PARTNER_CODE') || '000001';
@@ -733,8 +734,8 @@ export class SyncService {
         type: RaceTigerRequestType = 'info',
         page: number = 1,
     ): Promise<any> {
-        if (!['info', 'bio', 'split'].includes(type)) {
-            throw new BadRequestException('type must be one of: info, bio, split');
+        if (!['info', 'bio', 'split', 'score'].includes(type)) {
+            throw new BadRequestException('type must be one of: info, bio, split, score');
         }
 
         const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;

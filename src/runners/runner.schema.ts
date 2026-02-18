@@ -132,6 +132,9 @@ export class Runner {
 
     @Prop()
     sourceFile: string; // Original import filename
+
+    @Prop()
+    athleteId: string; // RaceTiger AthleteId — used to match splitScore/score timing records
 }
 
 export const RunnerSchema = SchemaFactory.createForClass(Runner);

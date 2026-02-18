@@ -126,4 +126,8 @@ export class CreateRunnerDto {
     @IsOptional()
     @IsString()
     sourceFile?: string;
+
+    @IsOptional()
+    @IsString()
+    athleteId?: string; // RaceTiger AthleteId for matching with splitScore/score
 }

@@ -106,6 +106,9 @@ export class Campaign {
     partnerCode: string;
 
     @Prop()
+    raceTigerBaseUrl: string; // e.g. https://wx.racetigertiming.com (extracted from pasted URL)
+
+    @Prop()
     organizerName: string;
 
     @Prop()
