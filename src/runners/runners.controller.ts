@@ -28,6 +28,7 @@ export class RunnersController {
     @Get('paged')
     findByEventWithPaging(
         @Query('eventId') eventId: string,
+        @Query('campaignId') campaignId: string,
         @Query('category') category: string,
         @Query('gender') gender: string,
         @Query('ageGroup') ageGroup: string,
@@ -40,7 +41,7 @@ export class RunnersController {
         @Query('page') page: number,
         @Query('limit') limit: number,
     ) {
-        const filter: RunnerFilter = { eventId, category, gender, ageGroup, status, chipStatus, runnerStatus, sortBy, sortOrder, search };
+        const filter: RunnerFilter = { eventId, campaignId, category, gender, ageGroup, status, chipStatus, runnerStatus, sortBy, sortOrder, search };
         const paging: PagingData = { page: page || 1, limit: limit || 50, search };
         return this.runnersService.findByEventWithPaging(filter, paging);
     }

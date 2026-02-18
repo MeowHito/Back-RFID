@@ -5,7 +5,8 @@ import { Runner, RunnerDocument } from './runner.schema';
 import { CreateRunnerDto } from './dto/create-runner.dto';
 
 export interface RunnerFilter {
-    eventId: string;
+    eventId?: string;
+    campaignId?: string;
     category?: string;
     gender?: string;
     ageGroup?: string;
@@ -166,8 +167,19 @@ export class RunnersService {
     }
 
     async findByEventWithPaging(filter: RunnerFilter, paging?: PagingData): Promise<{ data: RunnerDocument[]; total: number; dupBibs?: string[]; dupChips?: string[]; statusCounts?: Record<string, number> }> {
-        const eventOid = new Types.ObjectId(filter.eventId);
-        const baseMatch: any = { eventId: eventOid };
+        let eventOidFilter: any;
+        if (filter.campaignId && Types.ObjectId.isValid(filter.campaignId)) {
+            // Query all events belonging to this campaign, then match runners by those event IDs
+            const campaignOid = new Types.ObjectId(filter.campaignId);
+            const events = await (this.runnerModel.db.model('Event') as any)
+                .find({ $or: [{ campaignId: campaignOid }, { campaignId: filter.campaignId }] })
+                .select('_id').lean().exec();
+            const eventIds = events.map((e: any) => new Types.ObjectId(String(e._id)));
+            eventOidFilter = eventIds.length > 0 ? { $in: eventIds } : { $in: [] };
+        } else {
+            eventOidFilter = new Types.ObjectId(filter.eventId);
+        }
+        const baseMatch: any = { eventId: eventOidFilter };
         if (filter.category) baseMatch.category = filter.category;
 
         // Pre-compute duplicate BIBs and ChipCodes for this event+category
