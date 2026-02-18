@@ -103,6 +103,9 @@ export class Campaign {
     raceId: string;
 
     @Prop()
+    partnerCode: string;
+
+    @Prop()
     organizerName: string;
 
     @Prop()

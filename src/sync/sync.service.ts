@@ -479,7 +479,7 @@ export class SyncService {
         const baseUrl = this.getRaceTigerBaseUrl();
         const path = this.getRaceTigerPath(type);
         const endpoint = `${baseUrl}${path}`;
-        const partnerCode = this.configService.get<string>('RACE_TIGER_PARTNER_CODE') || '000001';
+        const partnerCode = (campaign as any).partnerCode?.trim() || this.configService.get<string>('RACE_TIGER_PARTNER_CODE') || '000001';
         const timeoutMs = Number(this.configService.get<string>('RACE_TIGER_TIMEOUT_MS') || 15000);
 
         const form = new URLSearchParams({
