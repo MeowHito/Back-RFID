@@ -117,6 +117,14 @@ export class CreateCampaignDto {
     raceId?: string;
 
     @IsOptional()
+    @IsString()
+    partnerCode?: string;
+
+    @IsOptional()
+    @IsString()
+    raceTigerBaseUrl?: string;
+
+    @IsOptional()
     @IsBoolean()
     isApproveCertificate?: boolean;
 
