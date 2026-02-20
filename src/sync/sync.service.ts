@@ -1081,7 +1081,7 @@ export class SyncService {
             // Create mappings for ALL campaign events (not just newly imported ones)
             const campaignQuery2: any[] = [{ campaignId }];
             if (Types.ObjectId.isValid(campaignId)) campaignQuery2.push({ campaignId: this.toCampaignObjectId(campaignId) });
-            const allCampaignEvents = await this.eventModel.find({ $or: campaignQuery2 }).select('_id').lean().exec();
+            const allCampaignEvents = await this.eventModel.find({ $or: campaignQuery2 }).select('_id name category').lean().exec();
             for (const ev of allCampaignEvents) {
                 const evId = String(ev._id);
                 const mappingDocs = cps.map((cp: any, idx: number) => ({
@@ -1092,6 +1092,16 @@ export class SyncService {
                 if (mappingDocs.length) {
                     await this.checkpointsService.updateMappings(mappingDocs);
                 }
+            }
+
+            // Auto-populate distanceMappings on all checkpoints so admin doesn't need to tick manually
+            const allEventNames = allCampaignEvents
+                .map((ev: any) => this.toSafeString(ev.category || ev.name))
+                .filter(Boolean);
+            if (cps.length > 0 && allEventNames.length > 0) {
+                await this.checkpointsService.updateMany(
+                    cps.map((cp: any) => ({ id: String(cp._id), distanceMappings: allEventNames })),
+                );
             }
             syncResult.checkpoints = { created: checkpointsCreated, names: cps.map((cp: any) => cp.name) };
         }
