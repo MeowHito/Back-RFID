@@ -509,7 +509,15 @@ export class SyncService {
             teamName: teamName || undefined,
             chipCode: chipCode || undefined,
             rfidTag: chipCode || undefined,
-            nationality: this.toSafeString(row?.CountryRegion ?? row?.countryRegion) || undefined,
+            nationality: this.toSafeString(
+                row?.CountryRegion ?? row?.countryRegion
+                ?? row?.Country ?? row?.country
+                ?? row?.Nation ?? row?.nation
+                ?? row?.Nationality ?? row?.nationality
+                ?? row?.Nat ?? row?.nat
+                ?? row?.CountryCode ?? row?.countryCode
+                ?? this.findRowValueByNormalizedKeys(row, ['country', 'nation', 'nationality', 'countryregion', 'countrycode', 'nat']),
+            ) || undefined,
             phone: this.toSafeString(row?.Phone ?? row?.phone) || undefined,
             birthDate: this.toOptionalDate(row?.Birthday ?? row?.birthday),
             status: 'not_started',
@@ -579,6 +587,7 @@ export class SyncService {
         campaign: CampaignDocument,
         type: RaceTigerRequestType,
         page: number,
+        eid?: number,
     ): Promise<RaceTigerRequestResult> {
         const raceId = campaign.raceId.trim();
         const token = campaign.rfidToken.trim();
@@ -595,6 +604,9 @@ export class SyncService {
         });
         if (type !== 'info') {
             form.set('page', String(page));
+        }
+        if (eid !== undefined) {
+            form.set('eid', String(eid));
         }
 
         const controller = new AbortController();
@@ -628,6 +640,7 @@ export class SyncService {
                 pc: partnerCode,
                 rid: raceId,
                 page: type === 'info' ? undefined : page,
+                ...(eid !== undefined ? { eid } : {}),
                 token: this.maskToken(token),
             },
             response,
@@ -848,6 +861,7 @@ export class SyncService {
         let updated = 0;
         const events: any[] = [];
         const distanceStrByRaceTigerId = new Map<string, string>();
+        const startTimeByRaceTigerId = new Map<string, string>();
 
         for (const row of rows) {
             const raceTigerEventId = this.resolveRaceTigerEventIdFromInfoRow(row);
@@ -882,6 +896,14 @@ export class SyncService {
             const distance = this.parseDistanceValue(distanceRaw) ?? undefined;
             const distanceForCat = distance !== undefined ? `${distance} KM` : (distanceRaw || '');
             if (raceTigerEventId !== null) distanceStrByRaceTigerId.set(String(raceTigerEventId), distanceForCat);
+
+            const waveTimeRaw = this.toSafeString(
+                row?.WaveTime ?? row?.waveTime ?? row?.wavetime
+                ?? row?.GunTime ?? row?.gunTime ?? row?.guntime
+                ?? row?.StartTime ?? row?.startTime ?? row?.starttime
+                ?? this.findRowValueByNormalizedKeys(row, ['wavetime', 'guntime', 'starttime', 'wavestart']),
+            );
+            if (waveTimeRaw && raceTigerEventId !== null) startTimeByRaceTigerId.set(String(raceTigerEventId), waveTimeRaw);
 
             const dateFromNormalizedKey = this.findRowValueByNormalizedKeys(row, [
                 'eventdate',
@@ -934,15 +956,17 @@ export class SyncService {
                 const matchIdx = existingCategories.findIndex(
                     (c: any) => remoteNo && String(c.remoteEventNo) === remoteNo,
                 );
+                const startTimeStr = startTimeByRaceTigerId.get(remoteNo) || '';
                 if (matchIdx >= 0) {
                     if (ev.name) existingCategories[matchIdx].name = ev.name;
                     if (distStr) existingCategories[matchIdx].distance = distStr;
+                    if (startTimeStr) existingCategories[matchIdx].startTime = startTimeStr;
                     categoriesChanged = true;
                 } else if (remoteNo) {
                     existingCategories.push({
                         name: ev.name || 'Unnamed',
                         distance: distStr || '0 KM',
-                        startTime: '06:00',
+                        startTime: startTimeStr || '06:00',
                         cutoff: '-',
                         badgeColor: '#dc2626',
                         status: 'live',
@@ -965,24 +989,39 @@ export class SyncService {
             let bioUpdated = 0;
             let bioSkipped = 0;
 
-            for (let page = 1; page <= maxPages; page++) {
-                const { response: bioRes, parsedBody: bioParsed } = await this.requestRaceTiger(campaign, 'bio', page);
-                if (!bioRes.ok) break;
-                const bioRows = this.extractRowsFromPayload(bioParsed);
-                if (!bioRows.length) break;
+            // Collect RaceTiger event IDs from imported events to fetch BIO per-event with eid
+            const raceTigerEids = events
+                .map(ev => ev.rfidEventId)
+                .filter((eid): eid is number => eid !== null && eid !== undefined);
 
-                const mapped: CreateRunnerDto[] = [];
-                for (const row of bioRows) {
-                    const runner = this.mapBioRowToRunner(row, eventResolver);
-                    if (runner) mapped.push(runner);
-                    else bioSkipped++;
-                }
+            const fetchBioForEid = async (eid: number | undefined) => {
+                for (let page = 1; page <= maxPages; page++) {
+                    const { response: bioRes, parsedBody: bioParsed } = await this.requestRaceTiger(campaign, 'bio', page, eid);
+                    if (!bioRes.ok) break;
+                    const bioRows = this.extractRowsFromPayload(bioParsed);
+                    if (!bioRows.length) break;
 
-                if (mapped.length) {
-                    const pageResult = await this.runnersService.createMany(mapped, true);
-                    bioInserted += pageResult.inserted || 0;
-                    bioUpdated += pageResult.updated || 0;
+                    const mapped: CreateRunnerDto[] = [];
+                    for (const row of bioRows) {
+                        const runner = this.mapBioRowToRunner(row, eventResolver);
+                        if (runner) mapped.push(runner);
+                        else bioSkipped++;
+                    }
+
+                    if (mapped.length) {
+                        const pageResult = await this.runnersService.createMany(mapped, true);
+                        bioInserted += pageResult.inserted || 0;
+                        bioUpdated += pageResult.updated || 0;
+                    }
                 }
+            };
+
+            if (raceTigerEids.length > 0) {
+                for (const eid of raceTigerEids) {
+                    await fetchBioForEid(eid);
+                }
+            } else {
+                await fetchBioForEid(undefined);
             }
 
             syncResult.runners = { inserted: bioInserted, updated: bioUpdated, skipped: bioSkipped };
@@ -1039,8 +1078,12 @@ export class SyncService {
             }
 
             const cps = await this.checkpointsService.findByCampaign(campaignId);
-            for (const ev of events) {
-                const evId = ev.id as string;
+            // Create mappings for ALL campaign events (not just newly imported ones)
+            const campaignQuery2: any[] = [{ campaignId }];
+            if (Types.ObjectId.isValid(campaignId)) campaignQuery2.push({ campaignId: this.toCampaignObjectId(campaignId) });
+            const allCampaignEvents = await this.eventModel.find({ $or: campaignQuery2 }).select('_id').lean().exec();
+            for (const ev of allCampaignEvents) {
+                const evId = String(ev._id);
                 const mappingDocs = cps.map((cp: any, idx: number) => ({
                     checkpointId: String(cp._id),
                     eventId: evId,
@@ -1078,61 +1121,69 @@ export class SyncService {
             let inserted = 0;
             let updated = 0;
             const processingErrors: string[] = [];
-            let reachedEnd = false;
 
-            for (let page = 1; page <= maxPages; page += 1) {
-                const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page);
-                if (!response.ok) {
-                    throw new BadGatewayException(`RaceTiger BIO page ${page} returned status ${response.status}`);
-                }
+            // Get all rfidEventIds so we can fetch BIO per-event with eid
+            const campaignEventsForSync = await this.eventModel
+                .find({ $or: [{ campaignId }, { campaignId: this.toCampaignObjectId(campaignId) }] })
+                .select('rfidEventId')
+                .lean()
+                .exec();
+            const raceTigerEids = campaignEventsForSync
+                .map((ev: any) => this.parseNumericValue(ev.rfidEventId))
+                .filter((eid): eid is number => eid !== null);
 
-                if (parsedBody === null || typeof parsedBody !== 'object') {
-                    throw new BadGatewayException(`RaceTiger BIO page ${page} returned invalid JSON payload`);
-                }
+            const eidsToFetch: Array<number | undefined> = raceTigerEids.length > 0
+                ? raceTigerEids
+                : [undefined];
 
-                pagesFetched += 1;
-
-                const rows = this.extractRowsFromPayload(parsedBody);
-                if (!rows.length) {
-                    reachedEnd = true;
-                    break;
-                }
-
-                rowsFetched += rows.length;
-
-                const mapped: CreateRunnerDto[] = [];
-                for (const row of rows) {
-                    const runner = this.mapBioRowToRunner(row, eventResolver);
-                    if (runner) {
-                        mapped.push(runner);
-                    } else {
-                        rowsSkipped += 1;
+            for (const eid of eidsToFetch) {
+                for (let page = 1; page <= maxPages; page += 1) {
+                    const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page, eid);
+                    if (!response.ok) {
+                        throw new BadGatewayException(`RaceTiger BIO eid=${eid ?? 'all'} page ${page} returned status ${response.status}`);
                     }
-                }
 
-                rowsMapped += mapped.length;
+                    if (parsedBody === null || typeof parsedBody !== 'object') {
+                        throw new BadGatewayException(`RaceTiger BIO eid=${eid ?? 'all'} page ${page} returned invalid JSON`);
+                    }
 
-                if (!mapped.length) {
-                    continue;
-                }
+                    pagesFetched += 1;
 
-                const pageResult = await this.runnersService.createMany(mapped, true);
-                inserted += pageResult.inserted || 0;
-                updated += pageResult.updated || 0;
-                if (Array.isArray(pageResult.errors) && pageResult.errors.length) {
-                    processingErrors.push(...pageResult.errors.slice(0, 20 - processingErrors.length));
+                    const rows = this.extractRowsFromPayload(parsedBody);
+                    if (!rows.length) {
+                        break;
+                    }
+
+                    rowsFetched += rows.length;
+
+                    const mapped: CreateRunnerDto[] = [];
+                    for (const row of rows) {
+                        const runner = this.mapBioRowToRunner(row, eventResolver);
+                        if (runner) {
+                            mapped.push(runner);
+                        } else {
+                            rowsSkipped += 1;
+                        }
+                    }
+
+                    rowsMapped += mapped.length;
+
+                    if (!mapped.length) {
+                        continue;
+                    }
+
+                    const pageResult = await this.runnersService.createMany(mapped, true);
+                    inserted += pageResult.inserted || 0;
+                    updated += pageResult.updated || 0;
+                    if (Array.isArray(pageResult.errors) && pageResult.errors.length) {
+                        processingErrors.push(...pageResult.errors.slice(0, 20 - processingErrors.length));
+                    }
                 }
             }
 
             if (rowsFetched > 0 && rowsMapped === 0) {
                 throw new BadRequestException(
                     'Unable to map BIO rows to local events. Verify RaceTiger EventId/EventNo fields match local Event RFID Event ID or campaign category Remote Event No.',
-                );
-            }
-
-            if (!reachedEnd) {
-                throw new BadGatewayException(
-                    `Reached max BIO pages (${maxPages}) before RaceTiger returned empty data. Increase RACE_TIGER_MAX_BIO_PAGES if needed.`,
                 );
             }
 
