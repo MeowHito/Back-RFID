@@ -195,6 +195,35 @@ export class SyncService {
         return null;
     }
 
+    private resolveRaceTigerEventIdFromTimingPoint(tp: any): number | null {
+        const direct = this.parseNumericValue(
+            tp?.EventId
+            ?? tp?.eventId
+            ?? tp?.eventid
+            ?? tp?.EventNo
+            ?? tp?.eventNo
+            ?? tp?.eventno
+            ?? tp?.ProjectNo
+            ?? tp?.projectNo
+            ?? tp?.projectno
+            ?? tp?.RaceNo
+            ?? tp?.raceNo
+            ?? tp?.raceno,
+        );
+        if (direct !== null) {
+            return direct;
+        }
+
+        const fallback = this.findRowValueByNormalizedKeys(tp, [
+            'eventid',
+            'eventno',
+            'projectno',
+            'projectnumber',
+            'raceno',
+        ]);
+        return this.parseNumericValue(fallback);
+    }
+
     private normalizeComparableText(value: unknown): string {
         return this.toSafeString(value)
             .toLowerCase()
@@ -290,29 +319,56 @@ export class SyncService {
         eventRows: any[],
     ): Map<string, Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number; km: number | undefined }>> {
         const result = new Map<string, Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number; km: number | undefined }>>();
+        const seenByEvent = new Map<string, Map<string, { name: string; sortOrder: number; km: number | null }>>();
 
         for (const row of eventRows) {
-            const raceTigerEventId = this.resolveRaceTigerEventIdFromInfoRow(row);
-            if (raceTigerEventId === null) continue;
+            const rowEventId = this.resolveRaceTigerEventIdFromInfoRow(row);
 
             const timingPoints = row?.TimingPoints ?? row?.timingPoints ?? row?.timingpoints;
             if (!Array.isArray(timingPoints)) continue;
 
-            const points: Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number; km: number | undefined }> = [];
             for (const tp of timingPoints) {
                 const tpName = this.toSafeString(tp?.TpName ?? tp?.tpName ?? tp?.Name ?? tp?.name);
                 if (!tpName) continue;
+
+                const tpEventId = this.resolveRaceTigerEventIdFromTimingPoint(tp) ?? rowEventId;
+                if (tpEventId === null) continue;
+
                 const sortOrder = this.parseNumericValue(tp?.SortOrder ?? tp?.sortOrder) ?? 500;
-                const tpKm = this.parseDistanceValue(tp?.Km ?? tp?.km ?? tp?.Distance ?? tp?.distance ?? tp?.TpKm ?? tp?.tpKm);
-                points.push({
-                    name: tpName,
-                    type: this.classifyTimingPointType(tpName, sortOrder),
-                    orderNum: points.length + 1,
-                    km: tpKm ?? undefined,
-                });
+                const tpKm = this.parseDistanceValue(tp?.Km ?? tp?.km ?? tp?.Distance ?? tp?.distance ?? tp?.TpKm ?? tp?.tpKm) ?? null;
+
+                const eventKey = String(tpEventId);
+                if (!seenByEvent.has(eventKey)) {
+                    seenByEvent.set(eventKey, new Map());
+                }
+
+                const byName = seenByEvent.get(eventKey)!;
+                const comparableName = this.normalizeComparableText(tpName);
+                const prev = byName.get(comparableName);
+                if (!prev || sortOrder < prev.sortOrder) {
+                    byName.set(comparableName, {
+                        name: tpName,
+                        sortOrder,
+                        km: tpKm ?? prev?.km ?? null,
+                    });
+                } else if (prev.km === null && tpKm !== null) {
+                    prev.km = tpKm;
+                    byName.set(comparableName, prev);
+                }
             }
+        }
+
+        for (const [eventKey, byName] of seenByEvent.entries()) {
+            const points = [...byName.values()]
+                .sort((a, b) => a.sortOrder - b.sortOrder)
+                .map((tp, idx) => ({
+                    name: tp.name,
+                    type: this.classifyTimingPointType(tp.name, tp.sortOrder),
+                    orderNum: idx + 1,
+                    km: tp.km ?? undefined,
+                }));
             if (points.length > 0) {
-                result.set(String(raceTigerEventId), points.sort((a, b) => a.orderNum - b.orderNum));
+                result.set(eventKey, points);
             }
         }
 
@@ -565,10 +621,15 @@ export class SyncService {
             return null;
         }
 
+        // Prefer explicit FirstName/LastName from BIO, fall back to splitting EnName/Name
+        const explicitFirstName = this.toSafeString(row?.FirstName ?? row?.firstName);
+        const explicitLastName = this.toSafeString(row?.LastName ?? row?.lastName);
         const englishName = this.toSafeString(row?.EnName ?? row?.enName);
         const localName = this.toSafeString(row?.Name ?? row?.name);
         const baseName = englishName || localName;
-        const { firstName, lastName } = this.splitName(baseName);
+        const { firstName: splitFirst, lastName: splitLast } = this.splitName(baseName);
+        const firstName = explicitFirstName || splitFirst;
+        const lastName = explicitLastName || splitLast;
         const { firstName: firstNameTh, lastName: lastNameTh } = localName && localName !== baseName
             ? this.splitName(localName)
             : { firstName: '', lastName: '' };
@@ -585,6 +646,15 @@ export class SyncService {
         const athleteId = this.toSafeString(
             row?.AthleteId ?? row?.athleteId ?? row?.athleteid ?? row?.ATHLETEID,
         );
+        const idNo = this.toSafeString(
+            row?.IDNo ?? row?.IdNo ?? row?.idNo ?? row?.IDNO
+            ?? row?.CardId ?? row?.cardId ?? row?.CardID
+            ?? this.findRowValueByNormalizedKeys(row, ['idno', 'cardid', 'cardno', 'identityno']),
+        ) || undefined;
+        const email = this.toSafeString(
+            row?.Email ?? row?.email ?? row?.EMAIL
+            ?? this.findRowValueByNormalizedKeys(row, ['email', 'mail']),
+        ) || undefined;
 
         return {
             eventId,
@@ -614,6 +684,8 @@ export class SyncService {
             ) || undefined,
             phone: this.toSafeString(row?.Phone ?? row?.phone) || undefined,
             birthDate: this.toOptionalDate(row?.Birthday ?? row?.birthday),
+            idNo,
+            email,
             status: 'not_started',
             isStarted: false,
             allowRFIDSync: true,
@@ -630,10 +702,10 @@ export class SyncService {
 
         const [events, campaign] = await Promise.all([
             this.eventModel
-            .find({ $or: campaignQuery })
-            .select('_id rfidEventId category distance name')
-            .lean()
-            .exec(),
+                .find({ $or: campaignQuery })
+                .select('_id rfidEventId category distance name')
+                .lean()
+                .exec(),
             this.campaignModel
                 .findById(this.toCampaignObjectId(campaignId))
                 .select('categories')
@@ -1094,11 +1166,18 @@ export class SyncService {
                 const forcedEventId = eid !== undefined
                     ? (eventResolver.eventIdByRaceTigerEventId.get(eid) || null)
                     : null;
+                let totalExpected = Infinity;
+                let totalFetched = 0;
                 for (let page = 1; page <= maxPages; page++) {
                     const { response: bioRes, parsedBody: bioParsed } = await this.requestRaceTiger(campaign, 'bio', page, eid);
                     if (!bioRes.ok) break;
                     const bioRows = this.extractRowsFromPayload(bioParsed);
                     if (!bioRows.length) break;
+
+                    // Use total from API response to determine expected item count
+                    const apiTotal = this.parseNumericValue(bioParsed?.total);
+                    if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
+                    totalFetched += bioRows.length;
 
                     const mapped: CreateRunnerDto[] = [];
                     for (const row of bioRows) {
@@ -1112,6 +1191,9 @@ export class SyncService {
                         bioInserted += pageResult.inserted || 0;
                         bioUpdated += pageResult.updated || 0;
                     }
+
+                    // Stop if we've fetched all expected items
+                    if (totalFetched >= totalExpected) break;
                 }
             };
 
@@ -1237,13 +1319,35 @@ export class SyncService {
                 }
             }
 
-            // Auto-populate distanceMappings on all checkpoints so admin doesn't need to tick manually
-            const allEventNames = allCampaignEvents
-                .map((ev: any) => this.toSafeString(ev.category || ev.name))
-                .filter(Boolean);
-            if (cps.length > 0 && allEventNames.length > 0) {
+            // Auto-populate distanceMappings per checkpoint based on which events actually use it
+            const cpEventMap = new Map<string, Set<string>>();
+            for (const ev of allCampaignEvents) {
+                const evName = this.toSafeString((ev as any).category || (ev as any).name);
+                const rfidEid = (ev as any).rfidEventId;
+                const eventTps = rfidEid ? timingPointsPerEvent.get(String(rfidEid)) : undefined;
+                if (eventTps) {
+                    // Only assign this event to the checkpoints it actually uses
+                    for (const tp of eventTps) {
+                        const cpId = cpIdByName.get(this.normalizeComparableText(tp.name));
+                        if (cpId && evName) {
+                            if (!cpEventMap.has(cpId)) cpEventMap.set(cpId, new Set());
+                            cpEventMap.get(cpId)!.add(evName);
+                        }
+                    }
+                } else if (evName) {
+                    // Fallback: assign all checkpoints for events without timing points
+                    for (const cp of cps) {
+                        const cpId = String(cp._id);
+                        if (!cpEventMap.has(cpId)) cpEventMap.set(cpId, new Set());
+                        cpEventMap.get(cpId)!.add(evName);
+                    }
+                }
+            }
+            if (cpEventMap.size > 0) {
                 await this.checkpointsService.updateMany(
-                    cps.map((cp: any) => ({ id: String(cp._id), distanceMappings: allEventNames })),
+                    [...cpEventMap.entries()].map(([cpId, names]) => ({
+                        id: cpId, distanceMappings: [...names],
+                    })),
                 );
             }
             syncResult.checkpoints = { created: checkpointsCreated, names: cps.map((cp: any) => cp.name) };
