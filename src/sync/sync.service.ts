@@ -283,6 +283,44 @@ export class SyncService {
 
     /**
      * Extract TimingPoints from the Info response's Events array.
+     * Each event row may contain a "TimingPoints" array with TpName/SortOrder/Km.
+     * Returns timing points PER event (by RaceTiger event ID) with km distance.
+     */
+    private extractTimingPointsPerEventFromInfoRows(
+        eventRows: any[],
+    ): Map<string, Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number; km: number | undefined }>> {
+        const result = new Map<string, Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number; km: number | undefined }>>();
+
+        for (const row of eventRows) {
+            const raceTigerEventId = this.resolveRaceTigerEventIdFromInfoRow(row);
+            if (raceTigerEventId === null) continue;
+
+            const timingPoints = row?.TimingPoints ?? row?.timingPoints ?? row?.timingpoints;
+            if (!Array.isArray(timingPoints)) continue;
+
+            const points: Array<{ name: string; type: 'start' | 'checkpoint' | 'finish'; orderNum: number; km: number | undefined }> = [];
+            for (const tp of timingPoints) {
+                const tpName = this.toSafeString(tp?.TpName ?? tp?.tpName ?? tp?.Name ?? tp?.name);
+                if (!tpName) continue;
+                const sortOrder = this.parseNumericValue(tp?.SortOrder ?? tp?.sortOrder) ?? 500;
+                const tpKm = this.parseNumericValue(tp?.Km ?? tp?.km ?? tp?.Distance ?? tp?.distance ?? tp?.TpKm ?? tp?.tpKm);
+                points.push({
+                    name: tpName,
+                    type: this.classifyTimingPointType(tpName, sortOrder),
+                    orderNum: points.length + 1,
+                    km: tpKm ?? undefined,
+                });
+            }
+            if (points.length > 0) {
+                result.set(String(raceTigerEventId), points.sort((a, b) => a.orderNum - b.orderNum));
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Extract TimingPoints from the Info response's Events array.
      * Each event row may contain a "TimingPoints" array with TpName/SortOrder.
      * We merge all timing points across events into a deduplicated, sorted list.
      */
@@ -1026,7 +1064,10 @@ export class SyncService {
 
             syncResult.runners = { inserted: bioInserted, updated: bioUpdated, skipped: bioSkipped };
 
-            // Extract TimingPoints from Info response first (most reliable source)
+            // Extract TimingPoints PER EVENT from Info response (with km distances)
+            const timingPointsPerEvent = this.extractTimingPointsPerEventFromInfoRows(rows);
+
+            // Also extract merged timing points for checkpoint creation
             const timingPointDefs = this.extractTimingPointsFromInfoRows(rows);
 
             // Fallback: fetch checkpoint names from splitScore page 1
@@ -1078,19 +1119,53 @@ export class SyncService {
             }
 
             const cps = await this.checkpointsService.findByCampaign(campaignId);
-            // Create mappings for ALL campaign events (not just newly imported ones)
+            const cpIdByName = new Map(cps.map((cp: any) => [cp.name, String(cp._id)]));
+
+            // Create mappings for ALL campaign events with per-event km distances
             const campaignQuery2: any[] = [{ campaignId }];
             if (Types.ObjectId.isValid(campaignId)) campaignQuery2.push({ campaignId: this.toCampaignObjectId(campaignId) });
-            const allCampaignEvents = await this.eventModel.find({ $or: campaignQuery2 }).select('_id name category').lean().exec();
+            const allCampaignEvents = await this.eventModel.find({ $or: campaignQuery2 }).select('_id name category rfidEventId').lean().exec();
+
             for (const ev of allCampaignEvents) {
                 const evId = String(ev._id);
-                const mappingDocs = cps.map((cp: any, idx: number) => ({
-                    checkpointId: String(cp._id),
-                    eventId: evId,
-                    orderNum: idx + 1,
-                }));
+                const rfidEid = ev.rfidEventId;
+                const eventTimingPoints = rfidEid ? timingPointsPerEvent.get(String(rfidEid)) : undefined;
+
+                // Build mapping docs with distanceFromStart from per-event timing points
+                const mappingDocs: Array<{ checkpointId: string; eventId: string; orderNum: number; distanceFromStart?: number }> = [];
+
+                if (eventTimingPoints && eventTimingPoints.length > 0) {
+                    // Use per-event timing points with km distances
+                    for (let idx = 0; idx < eventTimingPoints.length; idx++) {
+                        const tp = eventTimingPoints[idx];
+                        const cpId = cpIdByName.get(tp.name);
+                        if (!cpId) continue;
+                        mappingDocs.push({
+                            checkpointId: cpId,
+                            eventId: evId,
+                            orderNum: idx + 1,
+                            distanceFromStart: tp.km,
+                        });
+                    }
+                } else {
+                    // Fallback: use global checkpoint list without distances
+                    for (let idx = 0; idx < cps.length; idx++) {
+                        mappingDocs.push({
+                            checkpointId: String(cps[idx]._id),
+                            eventId: evId,
+                            orderNum: idx + 1,
+                        });
+                    }
+                }
+
                 if (mappingDocs.length) {
                     await this.checkpointsService.updateMappings(mappingDocs);
+                }
+
+                // Update Event document with startTime if available
+                const startTimeForEvent = rfidEid ? startTimeByRaceTigerId.get(String(rfidEid)) : undefined;
+                if (startTimeForEvent) {
+                    await this.eventModel.findByIdAndUpdate(evId, { startTime: startTimeForEvent }).exec();
                 }
             }
 
