@@ -303,7 +303,7 @@ export class SyncService {
                 const tpName = this.toSafeString(tp?.TpName ?? tp?.tpName ?? tp?.Name ?? tp?.name);
                 if (!tpName) continue;
                 const sortOrder = this.parseNumericValue(tp?.SortOrder ?? tp?.sortOrder) ?? 500;
-                const tpKm = this.parseNumericValue(tp?.Km ?? tp?.km ?? tp?.Distance ?? tp?.distance ?? tp?.TpKm ?? tp?.tpKm);
+                const tpKm = this.parseDistanceValue(tp?.Km ?? tp?.km ?? tp?.Distance ?? tp?.distance ?? tp?.TpKm ?? tp?.tpKm);
                 points.push({
                     name: tpName,
                     type: this.classifyTimingPointType(tpName, sortOrder),
@@ -448,6 +448,47 @@ export class SyncService {
         return '';
     }
 
+    private normalizeRaceTigerTime(value: unknown): string {
+        const raw = this.toSafeString(value);
+        if (!raw) {
+            return '';
+        }
+
+        const directTimeMatch = raw.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+        if (directTimeMatch) {
+            const hh = directTimeMatch[1].padStart(2, '0');
+            const mm = directTimeMatch[2];
+            return `${hh}:${mm}`;
+        }
+
+        const parsed = new Date(raw);
+        if (!Number.isNaN(parsed.getTime())) {
+            const hh = String(parsed.getHours()).padStart(2, '0');
+            const mm = String(parsed.getMinutes()).padStart(2, '0');
+            return `${hh}:${mm}`;
+        }
+
+        return raw;
+    }
+
+    private toDateFromTimeString(value: unknown): Date | undefined {
+        const time = this.normalizeRaceTigerTime(value);
+        const match = time.match(/^(\d{1,2}):(\d{2})$/);
+        if (!match) {
+            return undefined;
+        }
+
+        const hh = Number(match[1]);
+        const mm = Number(match[2]);
+        if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+            return undefined;
+        }
+
+        const date = new Date();
+        date.setHours(hh, mm, 0, 0);
+        return date;
+    }
+
     private toOptionalDate(value: unknown): Date | undefined {
         const raw = this.toSafeString(value);
         if (!raw) {
@@ -492,16 +533,29 @@ export class SyncService {
         };
     }
 
-    private resolveEventIdFromBioRow(row: any, eventResolver: EventResolver): string | null {
+    private resolveEventIdFromBioRow(
+        row: any,
+        eventResolver: EventResolver,
+        forcedEventId?: string | null,
+    ): string | null {
         const raceTigerEventId = this.resolveRaceTigerEventIdFromBioRow(row);
         if (raceTigerEventId !== null && eventResolver.eventIdByRaceTigerEventId.has(raceTigerEventId)) {
             return eventResolver.eventIdByRaceTigerEventId.get(raceTigerEventId) || null;
         }
+
+        if (forcedEventId) {
+            return forcedEventId;
+        }
+
         return eventResolver.fallbackEventId;
     }
 
-    private mapBioRowToRunner(row: any, eventResolver: EventResolver): CreateRunnerDto | null {
-        const eventId = this.resolveEventIdFromBioRow(row, eventResolver);
+    private mapBioRowToRunner(
+        row: any,
+        eventResolver: EventResolver,
+        forcedEventId?: string | null,
+    ): CreateRunnerDto | null {
+        const eventId = this.resolveEventIdFromBioRow(row, eventResolver, forcedEventId);
         if (!eventId) {
             return null;
         }
@@ -519,7 +573,7 @@ export class SyncService {
             ? this.splitName(localName)
             : { firstName: '', lastName: '' };
 
-        const parsedAge = this.parseNumericValue(row?.Age ?? row?.age);
+        const parsedAge = this.parseDistanceValue(row?.Age ?? row?.age);
         const rawCategory = this.toSafeString(row?.Category ?? row?.category ?? row?.Category2 ?? row?.category2);
         // If RaceTiger sends category as a number (event ID) or empty, fall back to local event name
         const categoryIsUseless = !rawCategory || /^\d+$/.test(rawCategory);
@@ -542,7 +596,9 @@ export class SyncService {
             gender: this.normalizeGender(row?.Gender ?? row?.gender),
             category,
             age: parsedAge ?? undefined,
-            ageGroup: this.toSafeString(row?.Category2 ?? row?.category2) || undefined,
+            ageGroup: this.toSafeString(
+                row?.Category2 ?? row?.category2 ?? row?.AgeGroup ?? row?.ageGroup,
+            ) || undefined,
             team: teamName || undefined,
             teamName: teamName || undefined,
             chipCode: chipCode || undefined,
@@ -935,7 +991,7 @@ export class SyncService {
             const distanceForCat = distance !== undefined ? `${distance} KM` : (distanceRaw || '');
             if (raceTigerEventId !== null) distanceStrByRaceTigerId.set(String(raceTigerEventId), distanceForCat);
 
-            const waveTimeRaw = this.toSafeString(
+            const waveTimeRaw = this.normalizeRaceTigerTime(
                 row?.WaveTime ?? row?.waveTime ?? row?.wavetime
                 ?? row?.GunTime ?? row?.gunTime ?? row?.guntime
                 ?? row?.StartTime ?? row?.startTime ?? row?.starttime
@@ -1028,11 +1084,16 @@ export class SyncService {
             let bioSkipped = 0;
 
             // Collect RaceTiger event IDs from imported events to fetch BIO per-event with eid
-            const raceTigerEids = events
-                .map(ev => ev.rfidEventId)
-                .filter((eid): eid is number => eid !== null && eid !== undefined);
+            const raceTigerEids = [...new Set(
+                events
+                    .map(ev => ev.rfidEventId)
+                    .filter((eid): eid is number => eid !== null && eid !== undefined),
+            )];
 
             const fetchBioForEid = async (eid: number | undefined) => {
+                const forcedEventId = eid !== undefined
+                    ? (eventResolver.eventIdByRaceTigerEventId.get(eid) || null)
+                    : null;
                 for (let page = 1; page <= maxPages; page++) {
                     const { response: bioRes, parsedBody: bioParsed } = await this.requestRaceTiger(campaign, 'bio', page, eid);
                     if (!bioRes.ok) break;
@@ -1041,7 +1102,7 @@ export class SyncService {
 
                     const mapped: CreateRunnerDto[] = [];
                     for (const row of bioRows) {
-                        const runner = this.mapBioRowToRunner(row, eventResolver);
+                        const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
                         if (runner) mapped.push(runner);
                         else bioSkipped++;
                     }
@@ -1119,7 +1180,9 @@ export class SyncService {
             }
 
             const cps = await this.checkpointsService.findByCampaign(campaignId);
-            const cpIdByName = new Map(cps.map((cp: any) => [cp.name, String(cp._id)]));
+            const cpIdByName = new Map(
+                cps.map((cp: any) => [this.normalizeComparableText(cp.name), String(cp._id)]),
+            );
 
             // Create mappings for ALL campaign events with per-event km distances
             const campaignQuery2: any[] = [{ campaignId }];
@@ -1138,7 +1201,7 @@ export class SyncService {
                     // Use per-event timing points with km distances
                     for (let idx = 0; idx < eventTimingPoints.length; idx++) {
                         const tp = eventTimingPoints[idx];
-                        const cpId = cpIdByName.get(tp.name);
+                        const cpId = cpIdByName.get(this.normalizeComparableText(tp.name));
                         if (!cpId) continue;
                         mappingDocs.push({
                             checkpointId: cpId,
@@ -1158,6 +1221,8 @@ export class SyncService {
                     }
                 }
 
+                // Replace existing rows so each event keeps only its own checkpoint mappings from RaceTiger
+                await this.checkpointsService.deleteMappingsByEvent(evId);
                 if (mappingDocs.length) {
                     await this.checkpointsService.updateMappings(mappingDocs);
                 }
@@ -1165,7 +1230,10 @@ export class SyncService {
                 // Update Event document with startTime if available
                 const startTimeForEvent = rfidEid ? startTimeByRaceTigerId.get(String(rfidEid)) : undefined;
                 if (startTimeForEvent) {
-                    await this.eventModel.findByIdAndUpdate(evId, { startTime: startTimeForEvent }).exec();
+                    const startTimeDate = this.toDateFromTimeString(startTimeForEvent);
+                    if (startTimeDate) {
+                        await this.eventModel.findByIdAndUpdate(evId, { startTime: startTimeDate }).exec();
+                    }
                 }
             }
 
@@ -1216,12 +1284,16 @@ export class SyncService {
             const raceTigerEids = campaignEventsForSync
                 .map((ev: any) => this.parseNumericValue(ev.rfidEventId))
                 .filter((eid): eid is number => eid !== null);
+            const uniqueRaceTigerEids = [...new Set(raceTigerEids)];
 
-            const eidsToFetch: Array<number | undefined> = raceTigerEids.length > 0
-                ? raceTigerEids
+            const eidsToFetch: Array<number | undefined> = uniqueRaceTigerEids.length > 0
+                ? uniqueRaceTigerEids
                 : [undefined];
 
             for (const eid of eidsToFetch) {
+                const forcedEventId = eid !== undefined
+                    ? (eventResolver.eventIdByRaceTigerEventId.get(eid) || null)
+                    : null;
                 for (let page = 1; page <= maxPages; page += 1) {
                     const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page, eid);
                     if (!response.ok) {
@@ -1243,7 +1315,7 @@ export class SyncService {
 
                     const mapped: CreateRunnerDto[] = [];
                     for (const row of rows) {
-                        const runner = this.mapBioRowToRunner(row, eventResolver);
+                        const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
                         if (runner) {
                             mapped.push(runner);
                         } else {
