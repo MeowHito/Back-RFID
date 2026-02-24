@@ -1,10 +1,19 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
 import { CheckpointsService } from './checkpoints.service';
+import { CheckpointSchedulerService } from './checkpoint-scheduler.service';
 import { CreateCheckpointDto, CreateCheckpointMappingDto } from './dto/create-checkpoint.dto';
 
 @Controller('checkpoints')
 export class CheckpointsController {
-    constructor(private readonly checkpointsService: CheckpointsService) { }
+    constructor(
+        private readonly checkpointsService: CheckpointsService,
+        private readonly schedulerService: CheckpointSchedulerService,
+    ) { }
+
+    @Post('cutoff/check')
+    triggerCutOffCheck() {
+        return this.schedulerService.triggerCutOffCheck();
+    }
 
     @Post()
     create(@Body() createDto: CreateCheckpointDto) {

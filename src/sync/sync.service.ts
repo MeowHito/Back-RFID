@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -32,6 +32,7 @@ interface RaceTigerRequestResult {
 
 @Injectable()
 export class SyncService {
+    private readonly logger = new Logger(SyncService.name);
     constructor(
         @InjectModel(SyncLog.name) private syncLogModel: Model<SyncLogDocument>,
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
@@ -1266,6 +1267,19 @@ export class SyncService {
                 cps.map((cp: any) => [this.normalizeComparableText(cp.name), String(cp._id)]),
             );
 
+            // Update kmCumulative on each checkpoint from RaceTiger actual_distance (use first event's distances as default)
+            for (const [, tps] of timingPointsPerEvent.entries()) {
+                for (const tp of tps) {
+                    if (tp.km !== undefined) {
+                        const cpId = cpIdByName.get(this.normalizeComparableText(tp.name));
+                        if (cpId) {
+                            await this.checkpointsService.update(cpId, { kmCumulative: tp.km });
+                        }
+                    }
+                }
+                break; // Use first event's distances as checkpoint default
+            }
+
             // Create mappings for ALL campaign events with per-event km distances
             const campaignQuery2: any[] = [{ campaignId }];
             if (Types.ObjectId.isValid(campaignId)) campaignQuery2.push({ campaignId: this.toCampaignObjectId(campaignId) });
@@ -1390,6 +1404,14 @@ export class SyncService {
                 .filter((eid): eid is number => eid !== null);
             const uniqueRaceTigerEids = [...new Set(raceTigerEids)];
 
+            this.logger.log(`=== Full Sync: Campaign ${campaignId} ===`);
+            this.logger.log(`Event Resolver: ${eventResolver.eventIdByRaceTigerEventId.size} mapped events, fallback=${eventResolver.fallbackEventId || 'NONE'}`);
+            for (const [rtId, localId] of eventResolver.eventIdByRaceTigerEventId.entries()) {
+                const catName = eventResolver.categoryByEventId.get(localId) || '?';
+                this.logger.log(`  RaceTiger EID ${rtId} → local event ${localId} (${catName})`);
+            }
+            this.logger.log(`RaceTiger EIDs to fetch: ${uniqueRaceTigerEids.length > 0 ? uniqueRaceTigerEids.join(', ') : 'ALL (no eid filter)'}`);
+
             const eidsToFetch: Array<number | undefined> = uniqueRaceTigerEids.length > 0
                 ? uniqueRaceTigerEids
                 : [undefined];
@@ -1418,13 +1440,42 @@ export class SyncService {
                     rowsFetched += rows.length;
 
                     const mapped: CreateRunnerDto[] = [];
+                    const skipReasons: Record<string, number> = {};
                     for (const row of rows) {
                         const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
                         if (runner) {
                             mapped.push(runner);
                         } else {
                             rowsSkipped += 1;
+                            // Determine skip reason
+                            const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib ?? row?.AthleteId ?? row?.athleteId);
+                            const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+                            let reason = 'unknown';
+                            if (!bib) {
+                                reason = 'no_bib';
+                            } else if (rtEventId === null) {
+                                reason = 'no_event_id_in_row';
+                            } else if (!eventResolver.eventIdByRaceTigerEventId.has(rtEventId) && !forcedEventId && !eventResolver.fallbackEventId) {
+                                reason = `unmapped_eid_${rtEventId}`;
+                            } else {
+                                reason = 'resolve_failed';
+                            }
+                            skipReasons[reason] = (skipReasons[reason] || 0) + 1;
                         }
+                    }
+
+                    if (Object.keys(skipReasons).length > 0) {
+                        this.logger.warn(`  Page ${page} skip reasons: ${JSON.stringify(skipReasons)}`);
+                        // Add first few skipped BIBs as sample for debugging
+                        const skippedSamples = rows
+                            .filter(r => !this.mapBioRowToRunner(r, eventResolver, forcedEventId))
+                            .slice(0, 3)
+                            .map(r => {
+                                const bib = this.toSafeString(r?.BIB ?? r?.Bib ?? r?.bib);
+                                const eid = r?.EventId ?? r?.eventId ?? r?.EventNo ?? r?.eventNo ?? 'none';
+                                return `BIB=${bib} EID=${eid}`;
+                            });
+                        this.logger.warn(`  Sample skipped rows: ${skippedSamples.join(' | ')}`);
                     }
 
                     rowsMapped += mapped.length;
@@ -1436,6 +1487,7 @@ export class SyncService {
                     const pageResult = await this.runnersService.createMany(mapped, true);
                     inserted += pageResult.inserted || 0;
                     updated += pageResult.updated || 0;
+                    this.logger.log(`  EID=${eid ?? 'all'} page=${page}: fetched=${rows.length} mapped=${mapped.length} inserted=${pageResult.inserted || 0} updated=${pageResult.updated || 0}`);
                     if (Array.isArray(pageResult.errors) && pageResult.errors.length) {
                         processingErrors.push(...pageResult.errors.slice(0, 20 - processingErrors.length));
                     }
