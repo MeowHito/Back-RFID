@@ -636,12 +636,35 @@ export class SyncService {
             : { firstName: '', lastName: '' };
 
         const parsedAge = this.parseDistanceValue(row?.Age ?? row?.age);
-        const rawCategory = this.toSafeString(row?.Category ?? row?.category ?? row?.Category2 ?? row?.category2);
-        // If RaceTiger sends category as a number (event ID) or empty, fall back to local event name
-        const categoryIsUseless = !rawCategory || /^\d+$/.test(rawCategory);
-        const category = categoryIsUseless
-            ? (eventResolver.categoryByEventId.get(eventId) || rawCategory || 'General')
-            : rawCategory;
+        const rawCategory = this.toSafeString(row?.Category ?? row?.category);
+        const rawCategory2 = this.toSafeString(row?.Category2 ?? row?.category2);
+
+        // Detect if RaceTiger "Category" is actually an age group (e.g. "45-49", "M 30-39", "F U18")
+        // Age group patterns: "XX-XX", "M XX-XX", "F XX-XX", "U18", "70+", etc.
+        const isAgeGroupPattern = /^[MF]?\s*\d{1,2}[-+]/.test(rawCategory)
+            || /^\d{1,2}\s*-\s*\d{1,2}$/.test(rawCategory)
+            || /^[MF]\s+U?\d/i.test(rawCategory);
+
+        // Category (race distance) should ALWAYS come from the local event mapping, not from RaceTiger's Category field
+        // because RaceTiger often puts age groups in Category and has no distance field per runner
+        const eventCategory = eventResolver.categoryByEventId.get(eventId);
+        let category: string;
+        if (eventCategory) {
+            // Use the local event's category (e.g. "21K (21 KM)", "10K (10 KM)")
+            category = eventCategory;
+        } else if (!isAgeGroupPattern && rawCategory && !/^\d+$/.test(rawCategory)) {
+            // Only use RaceTiger Category if it looks like a real distance name (not age group, not number)
+            category = rawCategory;
+        } else {
+            category = 'General';
+        }
+
+        // Age group: prefer Category2, then AgeGroup field, then Category if it looks like an age group
+        const ageGroup = rawCategory2
+            || this.toSafeString(row?.AgeGroup ?? row?.ageGroup)
+            || (isAgeGroupPattern ? rawCategory : '')
+            || undefined;
+
         const chipCode = this.toSafeString(row?.ChipCode ?? row?.chipCode);
         const teamName = this.toSafeString(row?.TeamName ?? row?.teamName);
         const athleteId = this.toSafeString(
@@ -667,9 +690,7 @@ export class SyncService {
             gender: this.normalizeGender(row?.Gender ?? row?.gender),
             category,
             age: parsedAge ?? undefined,
-            ageGroup: this.toSafeString(
-                row?.Category2 ?? row?.category2 ?? row?.AgeGroup ?? row?.ageGroup,
-            ) || undefined,
+            ageGroup: ageGroup || undefined,
             team: teamName || undefined,
             teamName: teamName || undefined,
             chipCode: chipCode || undefined,
