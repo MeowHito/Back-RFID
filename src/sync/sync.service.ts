@@ -1259,27 +1259,50 @@ export class SyncService {
                         { name: 'FINISH', type: 'finish' as const, orderNum: 2 },
                     ];
 
+            this.logger.log(`=== Checkpoint Sync ===`);
+            this.logger.log(`  TimingPoints from info: ${timingPointDefs.length} items: [${timingPointDefs.map(t => t.name).join(', ')}]`);
+            this.logger.log(`  TimingPoints per event: ${timingPointsPerEvent.size} events`);
+            for (const [eid, tps] of timingPointsPerEvent.entries()) {
+                this.logger.log(`    EID ${eid}: [${tps.map(t => `${t.name}(${t.km ?? '?'}km)`).join(', ')}]`);
+            }
+            if (splitTimingPointDefs.length > 0) {
+                this.logger.log(`  Fallback splitScore: ${splitTimingPointDefs.length} items: [${splitTimingPointDefs.map(t => t.name).join(', ')}]`);
+            }
+            this.logger.log(`  Final checkpointDefs: ${checkpointDefs.length} items: [${checkpointDefs.map(t => t.name).join(', ')}]`);
+
             let checkpointsCreated = 0;
             const existingCps = await this.checkpointsService.findByCampaign(campaignId);
+            this.logger.log(`  Existing checkpoints: ${existingCps.length} items: [${existingCps.map((cp: any) => cp.name).join(', ')}]`);
+
             if (existingCps.length === 0) {
+                // No existing checkpoints — create them all
+                await this.checkpointsService.createMany(
+                    checkpointDefs.map(cp => ({ ...cp, campaignId })),
+                );
+                checkpointsCreated += checkpointDefs.length;
+                this.logger.log(`  Created ${checkpointDefs.length} new checkpoints`);
+            } else if (checkpointDefs.length > existingCps.length) {
+                // RaceTiger has MORE timing points than we currently have — replace stale data
+                this.logger.warn(`  Replacing ${existingCps.length} stale checkpoints with ${checkpointDefs.length} from RaceTiger`);
+                await this.checkpointsService.deleteByCampaign(campaignId);
                 await this.checkpointsService.createMany(
                     checkpointDefs.map(cp => ({ ...cp, campaignId })),
                 );
                 checkpointsCreated += checkpointDefs.length;
             } else {
-                // Update existing checkpoints if they only have defaults (START/FINISH)
-                // and we now have more detailed timing points
-                const existingNames = new Set(existingCps.map((cp: any) => cp.name));
-                const onlyDefaults = existingCps.length <= 2
-                    && existingNames.has('START')
-                    && existingNames.has('FINISH')
-                    && checkpointDefs.length > 2;
-                if (onlyDefaults) {
+                // Same count or fewer — check if names differ
+                const existingNames = new Set(existingCps.map((cp: any) => this.normalizeComparableText(cp.name)));
+                const newNames = new Set(checkpointDefs.map(cp => this.normalizeComparableText(cp.name)));
+                const hasNewNames = [...newNames].some(n => !existingNames.has(n));
+                if (hasNewNames && checkpointDefs.length >= existingCps.length) {
+                    this.logger.warn(`  Replacing checkpoints due to name mismatch (old: ${[...existingNames].join(',')} vs new: ${[...newNames].join(',')})`);
                     await this.checkpointsService.deleteByCampaign(campaignId);
                     await this.checkpointsService.createMany(
                         checkpointDefs.map(cp => ({ ...cp, campaignId })),
                     );
                     checkpointsCreated += checkpointDefs.length;
+                } else {
+                    this.logger.log(`  Checkpoints unchanged (${existingCps.length} existing match or are more complete)`);
                 }
             }
 
