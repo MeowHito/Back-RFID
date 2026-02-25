@@ -140,6 +140,10 @@ export class Campaign {
     // Countdown settings
     @Prop()
     countdownDate: Date;
+
+    /** When true, RaceTiger data auto-syncs every 15 seconds */
+    @Prop({ default: false })
+    autoSync: boolean;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);

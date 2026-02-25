@@ -1,5 +1,6 @@
-import { Controller, Get, Query, Headers, Post } from '@nestjs/common';
+import { Controller, Get, Query, Headers, Post, Body } from '@nestjs/common';
 import { SyncService } from './sync.service';
+import { SyncSchedulerService } from './sync-scheduler.service';
 
 interface NormalizedResponse {
     status: {
@@ -11,7 +12,10 @@ interface NormalizedResponse {
 
 @Controller('api/sync')
 export class SyncController {
-    constructor(private readonly syncService: SyncService) { }
+    constructor(
+        private readonly syncService: SyncService,
+        private readonly syncSchedulerService: SyncSchedulerService,
+    ) { }
 
     private successResponse(data?: any): NormalizedResponse {
         return {
@@ -81,5 +85,15 @@ export class SyncController {
     ) {
         const data = await this.syncService.getLatestPayload(id);
         return this.successResponse(data);
+    }
+
+    @Post('auto-sync')
+    async toggleAutoSync(
+        @Query('id') id: string,
+        @Query('enabled') enabled: string,
+    ) {
+        const isEnabled = enabled === 'true' || enabled === '1';
+        const result = await this.syncSchedulerService.setAutoSync(id, isEnabled);
+        return this.successResponse({ autoSync: isEnabled, campaign: result?.name });
     }
 }

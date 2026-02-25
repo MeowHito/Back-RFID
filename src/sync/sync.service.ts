@@ -1544,6 +1544,11 @@ export class SyncService {
                 );
             }
 
+            // After bio import, also fetch score/finish data to get timing, ranks, pace
+            this.logger.log(`Fetching score data for campaign ${campaignId}...`);
+            const scoreResult = await this.syncTimingOnly(campaignId);
+            this.logger.log(`Score sync: ${scoreResult.updated} timing updates, ${scoreResult.statusChanges} status changes`);
+
             const result = {
                 fetchedAt: new Date().toISOString(),
                 summary: {
@@ -1554,6 +1559,8 @@ export class SyncService {
                     inserted,
                     updated,
                     errors: processingErrors,
+                    scoreUpdates: scoreResult.updated,
+                    scoreStatusChanges: scoreResult.statusChanges,
                 },
             };
 
@@ -1597,6 +1604,197 @@ export class SyncService {
 
             throw new BadGatewayException(errorMessage);
         }
+    }
+
+    /**
+     * Lightweight sync — fetches only score/timing data from RaceTiger.
+     * Used by auto-sync scheduler every 15 seconds.
+     * Does NOT create sync logs (to prevent log bloat).
+     * Does NOT touch bio fields — only updates timing, status, and rank.
+     */
+    async syncTimingOnly(campaignId: string): Promise<{ updated: number; statusChanges: number; errors: string[] }> {
+        const result = { updated: 0, statusChanges: 0, errors: [] as string[] };
+
+        try {
+            const campaign = await this.getSyncEnabledCampaign(campaignId);
+            const eventResolver = await this.buildEventResolver(campaignId);
+
+            // Get all RaceTiger event IDs for this campaign
+            const campaignEventsForSync = await this.eventModel
+                .find({ $or: [{ campaignId }, { campaignId: this.toCampaignObjectId(campaignId) }] })
+                .select('_id rfidEventId')
+                .lean()
+                .exec();
+            const raceTigerEids = campaignEventsForSync
+                .map((ev: any) => this.parseNumericValue(ev.rfidEventId))
+                .filter((eid): eid is number => eid !== null);
+            const uniqueRaceTigerEids = [...new Set(raceTigerEids)];
+            const eidsToFetch: Array<number | undefined> = uniqueRaceTigerEids.length > 0
+                ? uniqueRaceTigerEids
+                : [undefined];
+
+            for (const eid of eidsToFetch) {
+                try {
+                    // Fetch score data (lightweight — contains BIB, status, time, rank)
+                    const { response, parsedBody } = await this.requestRaceTiger(campaign, 'score', 1, eid);
+                    if (!response.ok) continue;
+                    if (!parsedBody || typeof parsedBody !== 'object') continue;
+
+                    const rows = this.extractRowsFromPayload(parsedBody);
+                    if (!rows.length) continue;
+
+                    // Process each score row — update timing and status for existing runners
+                    for (const row of rows) {
+                        const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib ?? row?.AthleteId ?? row?.athleteId);
+                        if (!bib) continue;
+
+                        // Determine the event ID for this runner
+                        const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+                        let eventId: string | null = null;
+                        if (eid !== undefined) {
+                            eventId = eventResolver.eventIdByRaceTigerEventId.get(eid) || null;
+                        } else if (rtEventId !== null) {
+                            eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
+                        }
+                        if (!eventId) eventId = eventResolver.fallbackEventId;
+                        if (!eventId) continue;
+
+                        // Find existing runner by event + bib
+                        const existingRunner = await this.runnersService.findByBib(eventId, bib);
+                        if (!existingRunner) continue; // Only update existing runners — don't create new ones
+
+                        // Parse timing fields from score row
+                        const updateData: Record<string, any> = {};
+
+                        // Net time (finish time / 净时间)
+                        const netTimeRaw = row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime;
+                        if (netTimeRaw) {
+                            const netTimeMs = this.parseTimeToMs(netTimeRaw);
+                            if (netTimeMs !== null && netTimeMs > 0) {
+                                updateData.netTime = netTimeMs;
+                            }
+                        }
+
+                        // Gun time (枪时间)
+                        const gunTimeRaw = row?.GunTime ?? row?.gunTime ?? row?.ElapsedTime ?? row?.elapsedTime
+                            ?? row?.RealTime ?? row?.realTime ?? row?.Time ?? row?.time;
+                        if (gunTimeRaw) {
+                            const gunTimeMs = this.parseTimeToMs(gunTimeRaw);
+                            if (gunTimeMs !== null && gunTimeMs > 0) {
+                                updateData.gunTime = gunTimeMs;
+                                updateData.elapsedTime = gunTimeMs; // Keep elapsedTime in sync
+                            }
+                        }
+
+                        // Status detection from score data
+                        const scoreStatus = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result).toLowerCase();
+                        const hasDnf = scoreStatus.includes('dnf') || scoreStatus.includes('did not finish');
+                        const hasDns = scoreStatus.includes('dns') || scoreStatus.includes('did not start');
+                        const hasFinish = scoreStatus.includes('finish') || scoreStatus.includes('completed');
+
+                        if (hasDnf && existingRunner.status !== 'dnf') {
+                            updateData.status = 'dnf';
+                            result.statusChanges++;
+                        } else if (hasDns && existingRunner.status !== 'dns') {
+                            updateData.status = 'dns';
+                            result.statusChanges++;
+                        } else if ((hasFinish || (updateData.netTime && updateData.netTime > 0)) && existingRunner.status !== 'finished') {
+                            updateData.status = 'finished';
+                            updateData.isStarted = true;
+                            result.statusChanges++;
+                        } else if (updateData.gunTime && updateData.gunTime > 0 && existingRunner.status === 'not_started') {
+                            updateData.status = 'in_progress';
+                            updateData.isStarted = true;
+                            result.statusChanges++;
+                        }
+
+                        // Rankings
+                        const overallRank = this.parseNumericValue(row?.Rank ?? row?.rank ?? row?.OverallRank ?? row?.overallRank ?? row?.Place ?? row?.place);
+                        if (overallRank !== null && overallRank > 0) {
+                            updateData.overallRank = overallRank;
+                        }
+                        const genderRank = this.parseNumericValue(row?.GenderRank ?? row?.genderRank ?? row?.SexRank ?? row?.sexRank);
+                        if (genderRank !== null && genderRank > 0) {
+                            updateData.genderRank = genderRank;
+                        }
+                        const genderNetRank = this.parseNumericValue(row?.GenderNetRank ?? row?.genderNetRank ?? row?.SexNetRank ?? row?.sexNetRank);
+                        if (genderNetRank !== null && genderNetRank > 0) {
+                            updateData.genderNetRank = genderNetRank;
+                        }
+
+                        // Pace (配速) — stored as string e.g. "04:03"
+                        const gunPace = this.toSafeString(row?.GunPace ?? row?.gunPace ?? row?.Pace ?? row?.pace);
+                        if (gunPace) updateData.gunPace = gunPace;
+
+                        const netPace = this.toSafeString(row?.NetPace ?? row?.netPace ?? row?.ChipPace ?? row?.chipPace);
+                        if (netPace) updateData.netPace = netPace;
+
+                        // Finishers count (完赛人数)
+                        const totalFinishers = this.parseNumericValue(row?.TotalFinishers ?? row?.totalFinishers ?? row?.FinishCount ?? row?.finishCount);
+                        if (totalFinishers !== null && totalFinishers > 0) {
+                            updateData.totalFinishers = totalFinishers;
+                        }
+                        const genderFinishers = this.parseNumericValue(row?.GenderFinishers ?? row?.genderFinishers ?? row?.SexFinishCount ?? row?.sexFinishCount);
+                        if (genderFinishers !== null && genderFinishers > 0) {
+                            updateData.genderFinishers = genderFinishers;
+                        }
+
+                        // Latest checkpoint / station
+                        const latestCp = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.LastStation ?? row?.lastStation ?? row?.LatestCheckpoint);
+                        if (latestCp) {
+                            updateData.latestCheckpoint = latestCp;
+                        }
+
+                        // Only update if there are actual changes
+                        if (Object.keys(updateData).length > 0) {
+                            await this.runnersService.update(String(existingRunner._id), updateData);
+                            result.updated++;
+                        }
+                    }
+                } catch (err: any) {
+                    result.errors.push(`EID ${eid ?? 'all'}: ${err?.message}`);
+                }
+            }
+        } catch (err: any) {
+            result.errors.push(err?.message || 'syncTimingOnly failed');
+        }
+
+        return result;
+    }
+
+    /**
+     * Parse a time string like "1:23:45", "01:23:45.678", or "12345000" (ms) into milliseconds.
+     */
+    private parseTimeToMs(value: unknown): number | null {
+        if (value === null || value === undefined) return null;
+
+        // Already a number (could be ms or seconds)
+        if (typeof value === 'number') {
+            if (value > 86400000) return value; // Already ms (> 1 day in ms)
+            if (value > 86400) return value * 1000; // Seconds → ms
+            return value * 1000; // Assume seconds
+        }
+
+        const str = String(value).trim();
+        if (!str || str === '-' || str === '0' || str === '00:00:00') return null;
+
+        // Try HH:MM:SS or H:MM:SS or HH:MM:SS.mmm
+        const timeMatch = str.match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+        if (timeMatch) {
+            const hours = parseInt(timeMatch[1]);
+            const minutes = parseInt(timeMatch[2]);
+            const seconds = parseInt(timeMatch[3]);
+            const fraction = timeMatch[4] ? parseInt(timeMatch[4].padEnd(3, '0').slice(0, 3)) : 0;
+            return (hours * 3600 + minutes * 60 + seconds) * 1000 + fraction;
+        }
+
+        // Try pure numeric (ms)
+        const num = Number(str);
+        if (!isNaN(num) && num > 0) {
+            return num > 86400000 ? num : num * 1000;
+        }
+
+        return null;
     }
 
     async createSyncLog(data: {

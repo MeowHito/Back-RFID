@@ -6,6 +6,7 @@ import { RunnersModule } from '../runners/runners.module';
 import { CheckpointsModule } from '../checkpoints/checkpoints.module';
 import { SyncController } from './sync.controller';
 import { SyncService } from './sync.service';
+import { SyncSchedulerService } from './sync-scheduler.service';
 import { SyncLog, SyncLogSchema } from './sync-log.schema';
 
 @Module({
@@ -19,7 +20,8 @@ import { SyncLog, SyncLogSchema } from './sync-log.schema';
         ]),
     ],
     controllers: [SyncController],
-    providers: [SyncService],
-    exports: [SyncService],
+    providers: [SyncService, SyncSchedulerService],
+    exports: [SyncService, SyncSchedulerService],
 })
 export class SyncModule { }
+

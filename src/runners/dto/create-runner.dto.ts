@@ -130,4 +130,29 @@ export class CreateRunnerDto {
     @IsOptional()
     @IsString()
     athleteId?: string; // RaceTiger AthleteId for matching with splitScore/score
+
+    // === RaceTiger Score/Finish fields ===
+    @IsOptional()
+    @IsNumber()
+    gunTime?: number;
+
+    @IsOptional()
+    @IsNumber()
+    genderNetRank?: number;
+
+    @IsOptional()
+    @IsString()
+    gunPace?: string;
+
+    @IsOptional()
+    @IsString()
+    netPace?: string;
+
+    @IsOptional()
+    @IsNumber()
+    totalFinishers?: number;
+
+    @IsOptional()
+    @IsNumber()
+    genderFinishers?: number;
 }

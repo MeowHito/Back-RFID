@@ -50,19 +50,53 @@ export class RunnersService {
         if (!runners || runners.length === 0) return result;
 
         if (updateExisting) {
-            // Use bulkWrite with upsert — update existing runners or insert new ones
-            const bulkOps = runners.map(r => ({
-                updateOne: {
-                    filter: { eventId: new Types.ObjectId(r.eventId), bib: r.bib },
-                    update: {
-                        $set: {
-                            ...r,
-                            eventId: new Types.ObjectId(r.eventId),
+            // Use bulkWrite with upsert — update bio fields, but NEVER overwrite status/timing
+            const bulkOps = runners.map(r => {
+                const bioFields: Record<string, any> = {
+                    firstName: r.firstName,
+                    lastName: r.lastName,
+                    gender: r.gender,
+                    category: r.category,
+                    eventId: new Types.ObjectId(r.eventId),
+                };
+                // Only set optional bio fields if they have a value
+                if (r.firstNameTh) bioFields.firstNameTh = r.firstNameTh;
+                if (r.lastNameTh) bioFields.lastNameTh = r.lastNameTh;
+                if (r.age) bioFields.age = r.age;
+                if (r.ageGroup) bioFields.ageGroup = r.ageGroup;
+                if (r.team) bioFields.team = r.team;
+                if (r.teamName) bioFields.teamName = r.teamName;
+                if (r.chipCode) bioFields.chipCode = r.chipCode;
+                if (r.rfidTag) bioFields.rfidTag = r.rfidTag;
+                if (r.nationality) bioFields.nationality = r.nationality;
+                if (r.phone) bioFields.phone = r.phone;
+                if (r.birthDate) bioFields.birthDate = r.birthDate;
+                if (r.idNo) bioFields.idNo = r.idNo;
+                if (r.email) bioFields.email = r.email;
+                if ((r as any).athleteId) bioFields.athleteId = (r as any).athleteId;
+                if (r.sourceFile) bioFields.sourceFile = r.sourceFile;
+
+                return {
+                    updateOne: {
+                        filter: { eventId: new Types.ObjectId(r.eventId), bib: r.bib },
+                        update: {
+                            $set: bioFields,
+                            // status, timing, and rank fields only set on FIRST INSERT
+                            $setOnInsert: {
+                                status: r.status || 'not_started',
+                                isStarted: false,
+                                netTime: 0,
+                                elapsedTime: 0,
+                                overallRank: 0,
+                                genderRank: 0,
+                                ageGroupRank: 0,
+                                categoryRank: 0,
+                            },
                         },
+                        upsert: true,
                     },
-                    upsert: true,
-                },
-            }));
+                };
+            });
             const bulkResult = await this.runnerModel.bulkWrite(bulkOps as any, { ordered: false });
             result.inserted = bulkResult.upsertedCount || 0;
             result.updated = bulkResult.modifiedCount || 0;

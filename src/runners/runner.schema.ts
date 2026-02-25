@@ -135,6 +135,25 @@ export class Runner {
 
     @Prop()
     athleteId: string; // RaceTiger AthleteId — used to match splitScore/score timing records
+
+    // === RaceTiger Score/Finish fields ===
+    @Prop()
+    gunTime: number; // Gun time in milliseconds (枪时间)
+
+    @Prop({ default: 0 })
+    genderNetRank: number; // Gender net time rank (性别净排名)
+
+    @Prop()
+    gunPace: string; // Gun time pace e.g. "04:03" (枪时配速)
+
+    @Prop()
+    netPace: string; // Net time pace e.g. "03:57" (净时配速)
+
+    @Prop({ default: 0 })
+    totalFinishers: number; // Total finishers count at time of finish (完赛总人数)
+
+    @Prop({ default: 0 })
+    genderFinishers: number; // Gender-specific finishers count (完赛性别人数)
 }
 
 export const RunnerSchema = SchemaFactory.createForClass(Runner);
