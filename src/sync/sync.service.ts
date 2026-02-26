@@ -9,7 +9,7 @@ import { RunnersService } from '../runners/runners.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
 import { SyncLog, SyncLogDocument } from './sync-log.schema';
 
-type RaceTigerRequestType = 'info' | 'bio' | 'split' | 'score';
+type RaceTigerRequestType = 'info' | 'bio' | 'split' | 'score' | 'passedTime';
 
 interface EventResolver {
     eventIdByRaceTigerEventId: Map<number, string>;
@@ -63,6 +63,7 @@ export class SyncService {
         if (type === 'info') return this.configService.get<string>('RACE_TIGER_INFO_PATH') || '/Dif/info';
         if (type === 'bio') return this.configService.get<string>('RACE_TIGER_BIO_PATH') || '/Dif/bio';
         if (type === 'score') return this.configService.get<string>('RACE_TIGER_SCORE_PATH') || '/Dif/score';
+        if (type === 'passedTime') return '/Dif/split';
         return this.configService.get<string>('RACE_TIGER_SPLIT_PATH') || '/Dif/splitScore';
     }
 
@@ -511,17 +512,23 @@ export class SyncService {
             return '';
         }
 
+        // Try to parse as full datetime first — preserve date if present
+        const parsed = new Date(raw);
+        if (!Number.isNaN(parsed.getTime()) && raw.length > 10) {
+            // Full datetime — return datetime-local format
+            const yyyy = parsed.getFullYear();
+            const MM = String(parsed.getMonth() + 1).padStart(2, '0');
+            const dd = String(parsed.getDate()).padStart(2, '0');
+            const hh = String(parsed.getHours()).padStart(2, '0');
+            const mm = String(parsed.getMinutes()).padStart(2, '0');
+            return `${yyyy}-${MM}-${dd}T${hh}:${mm}`;
+        }
+
+        // Time-only match (HH:MM or HH:MM:SS)
         const directTimeMatch = raw.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
         if (directTimeMatch) {
             const hh = directTimeMatch[1].padStart(2, '0');
             const mm = directTimeMatch[2];
-            return `${hh}:${mm}`;
-        }
-
-        const parsed = new Date(raw);
-        if (!Number.isNaN(parsed.getTime())) {
-            const hh = String(parsed.getHours()).padStart(2, '0');
-            const mm = String(parsed.getMinutes()).padStart(2, '0');
             return `${hh}:${mm}`;
         }
 
@@ -1023,21 +1030,42 @@ export class SyncService {
     }
 
     async importEventsFromRaceTiger(campaignId: string): Promise<any> {
+        this.logger.log(`\n========== IMPORT EVENTS FROM RACETIGER ==========`);
+        this.logger.log(`Campaign ID: ${campaignId}`);
+
         const campaign = await this.getSyncEnabledCampaign(campaignId);
-        const { parsedBody, response } = await this.requestRaceTiger(campaign, 'info', 1);
+        this.logger.log(`Campaign: "${campaign.name}" RaceId=${campaign.raceId} Token=${this.maskToken(campaign.rfidToken)}`);
+
+        const { parsedBody, response, endpoint, rawBody } = await this.requestRaceTiger(campaign, 'info', 1);
+
+        this.logger.log(`RaceTiger INFO endpoint: ${endpoint}`);
+        this.logger.log(`RaceTiger INFO HTTP status: ${response.status}`);
+        this.logger.log(`RaceTiger INFO raw body length: ${rawBody?.length ?? 0} chars`);
+        this.logger.log(`RaceTiger INFO raw body preview: ${rawBody?.substring(0, 500)}`);
 
         if (!response.ok) {
+            this.logger.error(`RaceTiger INFO returned HTTP ${response.status}`);
             throw new BadGatewayException(`RaceTiger INFO returned status ${response.status}`);
         }
 
         if (!parsedBody || typeof parsedBody !== 'object') {
+            this.logger.error(`RaceTiger INFO returned invalid JSON. Raw: ${rawBody?.substring(0, 300)}`);
             throw new BadGatewayException('RaceTiger INFO returned invalid JSON');
         }
 
+        this.logger.log(`RaceTiger INFO parsed OK. Top-level keys: [${Object.keys(parsedBody).join(', ')}]`);
+
         const rows = this.extractRowsFromPayload(parsedBody);
+        this.logger.log(`Extracted ${rows.length} event rows from INFO response`);
+
+        if (rows.length > 0) {
+            this.logger.log(`First row keys: [${Object.keys(rows[0]).join(', ')}]`);
+            this.logger.log(`First row sample: ${JSON.stringify(rows[0]).substring(0, 500)}`);
+        }
 
         if (!rows.length) {
-            return { imported: 0, updated: 0, events: [], raw: parsedBody };
+            this.logger.warn(`No event rows found in INFO response! Returning empty result.`);
+            return { imported: 0, updated: 0, events: [], debug: { rawBodyPreview: rawBody?.substring(0, 1000), parsedKeys: Object.keys(parsedBody) } };
         }
 
         const campaignObjId = this.toCampaignObjectId(campaignId);
@@ -1050,6 +1078,7 @@ export class SyncService {
         const events: any[] = [];
         const distanceStrByRaceTigerId = new Map<string, string>();
         const startTimeByRaceTigerId = new Map<string, string>();
+        const dateByRaceTigerId = new Map<string, Date>();
 
         for (const row of rows) {
             const raceTigerEventId = this.resolveRaceTigerEventIdFromInfoRow(row);
@@ -1102,6 +1131,7 @@ export class SyncService {
 
             const dateRaw = this.toSafeString(row?.EventDate ?? row?.eventDate ?? row?.Date ?? row?.date ?? dateFromNormalizedKey);
             const date = dateRaw ? (new Date(dateRaw).getTime() ? new Date(dateRaw) : fallbackDate) : fallbackDate;
+            if (raceTigerEventId !== null) dateByRaceTigerId.set(String(raceTigerEventId), date);
 
             const existing = raceTigerEventId !== null
                 ? await this.eventModel.findOne({ campaignId: campaignObjId, rfidEventId: raceTigerEventId }).exec()
@@ -1144,7 +1174,17 @@ export class SyncService {
                 const matchIdx = existingCategories.findIndex(
                     (c: any) => remoteNo && String(c.remoteEventNo) === remoteNo,
                 );
-                const startTimeStr = startTimeByRaceTigerId.get(remoteNo) || '';
+                let startTimeStr = startTimeByRaceTigerId.get(remoteNo) || '';
+                // If startTime is time-only (HH:MM) and we have an event date, combine them
+                if (startTimeStr && /^\d{2}:\d{2}$/.test(startTimeStr)) {
+                    const evDate = dateByRaceTigerId.get(remoteNo);
+                    if (evDate) {
+                        const yyyy = evDate.getFullYear();
+                        const MM = String(evDate.getMonth() + 1).padStart(2, '0');
+                        const dd = String(evDate.getDate()).padStart(2, '0');
+                        startTimeStr = `${yyyy}-${MM}-${dd}T${startTimeStr}`;
+                    }
+                }
                 if (matchIdx >= 0) {
                     if (ev.name) existingCategories[matchIdx].name = ev.name;
                     if (distStr) existingCategories[matchIdx].distance = distStr;
@@ -1154,7 +1194,7 @@ export class SyncService {
                     existingCategories.push({
                         name: ev.name || 'Unnamed',
                         distance: distStr || '0 KM',
-                        startTime: startTimeStr || '06:00',
+                        startTime: startTimeStr || '',
                         cutoff: '-',
                         badgeColor: '#dc2626',
                         status: 'live',
@@ -1409,6 +1449,157 @@ export class SyncService {
                 );
             }
             syncResult.checkpoints = { created: checkpointsCreated, names: cps.map((cp: any) => cp.name) };
+
+            // ---- Step 3.5: Fetch start times from /Dif/split (Passed time data) ----
+            // The INFO endpoint may not include WaveTime, so we fetch actual passed-time
+            // records and look for the START checkpoint timestamp as the wave/gun start time.
+            this.logger.log('=== Fetching passed time data from RaceTiger (/Dif/split) ===');
+            const startTimeByEventEid = new Map<string, string>();
+            for (const eid of raceTigerEids.length > 0 ? raceTigerEids : [undefined as number | undefined]) {
+                try {
+                    const { response: splitRes, parsedBody: splitParsed, rawBody: splitRaw } = await this.requestRaceTiger(campaign, 'passedTime', 1, eid);
+                    this.logger.log(`  /Dif/split EID=${eid ?? 'all'} status=${splitRes.status} bodyLen=${splitRaw?.length ?? 0}`);
+                    if (!splitRes.ok || !splitParsed) continue;
+
+                    // Log first part to understand response structure
+                    this.logger.log(`  /Dif/split top-level keys: [${Object.keys(splitParsed).join(', ')}]`);
+                    const splitRows = this.extractRowsFromPayload(splitParsed);
+                    this.logger.log(`  /Dif/split extracted ${splitRows.length} rows`);
+                    if (splitRows.length > 0) {
+                        this.logger.log(`  /Dif/split first row keys: [${Object.keys(splitRows[0]).join(', ')}]`);
+                        this.logger.log(`  /Dif/split first row: ${JSON.stringify(splitRows[0]).substring(0, 500)}`);
+                    }
+
+                    // Look for START checkpoint records to find the wave start time
+                    for (const row of splitRows) {
+                        const tpName = this.toSafeString(
+                            row?.TpName ?? row?.tpName ?? row?.CheckpointName ?? row?.checkpointName
+                            ?? row?.StationName ?? row?.stationName ?? row?.TimingPointName ?? row?.timingPointName,
+                        ).toUpperCase();
+
+                        // Check if this is a START timing point
+                        if (tpName !== 'START' && !tpName.includes('START') && !tpName.includes('GUN')) continue;
+
+                        // Get the actual timestamp (PassTime, Time, ScanTime, etc.)
+                        const timeStr = this.toSafeString(
+                            row?.PassTime ?? row?.passTime ?? row?.Time ?? row?.time
+                            ?? row?.ScanTime ?? row?.scanTime ?? row?.PassedTime ?? row?.passedTime
+                            ?? row?.GunTime ?? row?.gunTime ?? row?.WaveTime ?? row?.waveTime
+                            ?? row?.RecordTime ?? row?.recordTime,
+                        );
+
+                        if (!timeStr) continue;
+
+                        // Determine which event this belongs to
+                        const rowEid = eid !== undefined ? String(eid) : String(this.resolveRaceTigerEventIdFromBioRow(row) ?? 'unknown');
+
+                        // Only take the first (earliest) START record per event
+                        if (!startTimeByEventEid.has(rowEid)) {
+                            startTimeByEventEid.set(rowEid, timeStr);
+                            this.logger.log(`  Found START time for EID ${rowEid}: "${timeStr}"`);
+                        }
+                    }
+                } catch (err: any) {
+                    this.logger.warn(`  /Dif/split EID=${eid ?? 'all'} error: ${err?.message}`);
+                }
+            }
+
+            // Update campaign categories with extracted start times
+            this.logger.log(`  startTimeByEventEid map: ${JSON.stringify([...startTimeByEventEid.entries()])}`);
+            if (startTimeByEventEid.size > 0) {
+                const campaignForStart = await this.campaignModel.findById(campaignObjId).exec();
+                if (campaignForStart) {
+                    const cats: any[] = [...((campaignForStart as any).categories || [])];
+                    this.logger.log(`  Categories count: ${cats.length}`);
+                    let changed = false;
+                    for (const cat of cats) {
+                        const remoteNo = String(cat.remoteEventNo || '');
+                        this.logger.log(`  Checking cat "${cat.name}" remoteEventNo="${remoteNo}" currentStartTime="${cat.startTime}"`);
+                        const foundTime = startTimeByEventEid.get(remoteNo);
+                        if (foundTime) {
+                            // Try to parse the time string into a datetime-local format
+                            const parsed = new Date(foundTime.replace(' ', 'T'));
+                            if (!isNaN(parsed.getTime())) {
+                                const yyyy = parsed.getFullYear();
+                                const MM = String(parsed.getMonth() + 1).padStart(2, '0');
+                                const dd = String(parsed.getDate()).padStart(2, '0');
+                                const hh = String(parsed.getHours()).padStart(2, '0');
+                                const mm = String(parsed.getMinutes()).padStart(2, '0');
+                                cat.startTime = `${yyyy}-${MM}-${dd}T${hh}:${mm}`;
+                                changed = true;
+                                this.logger.log(`  ✅ Set category "${cat.name}" startTime = ${cat.startTime}`);
+                            } else {
+                                cat.startTime = foundTime;
+                                changed = true;
+                                this.logger.log(`  ✅ Set category "${cat.name}" startTime (raw) = ${foundTime}`);
+                            }
+                        } else {
+                            this.logger.log(`  ❌ No start time found for remoteNo="${remoteNo}"`);
+                        }
+                    }
+                    if (changed) {
+                        await this.campaignModel.findByIdAndUpdate(campaignObjId, { categories: cats }).exec();
+                        this.logger.log(`  Updated category start times in DB`);
+                    } else {
+                        this.logger.warn(`  No categories were updated — remoteEventNo keys may not match`);
+                    }
+                } else {
+                    this.logger.warn(`  Campaign not found for startTime update`);
+                }
+            }
+
+
+            // This pulls Gun Time, Net Time, ranks, pace, finisher counts, and status
+            // so runners aren't left as "live" when they've already finished.
+            this.logger.log('=== Fetching score/timing data from RaceTiger (/Dif/score) ===');
+            try {
+                const scoreResult = await this.syncTimingOnly(campaignId);
+                syncResult.score = scoreResult;
+                this.logger.log(`  Score sync: updated=${scoreResult.updated}, statusChanges=${scoreResult.statusChanges}, errors=${scoreResult.errors.length}`);
+            } catch (scoreErr: any) {
+                this.logger.warn(`  Score sync failed: ${scoreErr?.message}`);
+                syncResult.score = { error: scoreErr?.message };
+            }
+
+            // ---- Step 5: Auto-detect race completion ----
+            // Use RaceTime from INFO response to determine if race has finished
+            const raceTimeStr = this.toSafeString(parsedBody?.data?.RaceTime ?? parsedBody?.data?.raceTime ?? '');
+            const raceDate = raceTimeStr ? new Date(raceTimeStr) : null;
+            const now = new Date();
+            // Consider race finished if race date is more than 2 days ago
+            const isRaceFinished = raceDate && !isNaN(raceDate.getTime()) && (now.getTime() - raceDate.getTime() > 2 * 24 * 60 * 60 * 1000);
+
+            if (isRaceFinished) {
+                this.logger.log(`=== Auto-detecting race completion ===`);
+                this.logger.log(`  RaceTime: ${raceTimeStr}, now: ${now.toISOString()} → race is FINISHED`);
+
+                // Update all category statuses from 'live' to 'finished'
+                const campaignForStatus = await this.campaignModel.findById(campaignObjId).exec();
+                if (campaignForStatus) {
+                    const statusCats: any[] = [...((campaignForStatus as any).categories || [])];
+                    let statusChanged = false;
+                    for (const cat of statusCats) {
+                        if (cat.status !== 'finished') {
+                            this.logger.log(`  Category "${cat.name}\" status: "${cat.status}" → "finished"`);
+                            cat.status = 'finished';
+                            statusChanged = true;
+                        }
+                    }
+                    if (statusChanged) {
+                        await this.campaignModel.findByIdAndUpdate(campaignObjId, { categories: statusCats }).exec();
+                        this.logger.log(`  Updated category statuses to "finished"`);
+                    }
+                }
+
+                // Update all event statuses to 'finished'
+                const campaignQuery: any[] = [{ campaignId }];
+                if (Types.ObjectId.isValid(campaignId)) campaignQuery.push({ campaignId: this.toCampaignObjectId(campaignId) });
+                await this.eventModel.updateMany(
+                    { $or: campaignQuery },
+                    { status: 'finished' },
+                ).exec();
+                this.logger.log(`  Updated event statuses to "finished"`);
+            }
         }
 
         return syncResult;
@@ -1633,127 +1824,189 @@ export class SyncService {
                 ? uniqueRaceTigerEids
                 : [undefined];
 
+            // ──────────────────────────────────────────────────────────────
+            // PERFORMANCE OPTIMIZATION: Pre-load ALL runners into memory
+            // maps keyed by BIB and AthleteId to eliminate N+1 DB queries.
+            // ──────────────────────────────────────────────────────────────
+            const allEventIds = [...eventResolver.eventIdByRaceTigerEventId.values()];
+            if (eventResolver.fallbackEventId && !allEventIds.includes(eventResolver.fallbackEventId)) {
+                allEventIds.push(eventResolver.fallbackEventId);
+            }
+            const allRunners = allEventIds.length > 0
+                ? await this.runnersService.findByEventIds(allEventIds, {}, 100000)
+                : [];
+
+            // Build lookup maps: "eventId:bib" → runner, "eventId:athleteId" → runner
+            const runnerByEventBib = new Map<string, any>();
+            const runnerByEventAthleteId = new Map<string, any>();
+            for (const runner of allRunners) {
+                const evId = String(runner.eventId);
+                if (runner.bib) {
+                    runnerByEventBib.set(`${evId}:${runner.bib}`, runner);
+                }
+                if ((runner as any).athleteId) {
+                    runnerByEventAthleteId.set(`${evId}:${(runner as any).athleteId}`, runner);
+                }
+            }
+            this.logger.log(`Score sync: pre-loaded ${allRunners.length} runners into lookup maps`);
+
+            // Collect all bulkWrite operations to execute at end
+            const bulkOps: Array<{ updateOne: { filter: any; update: any } }> = [];
+
             for (const eid of eidsToFetch) {
                 try {
-                    // Fetch score data (lightweight — contains BIB, status, time, rank)
-                    const { response, parsedBody } = await this.requestRaceTiger(campaign, 'score', 1, eid);
-                    if (!response.ok) continue;
-                    if (!parsedBody || typeof parsedBody !== 'object') continue;
+                    let totalExpected = Infinity;
+                    let totalFetched = 0;
+                    const maxScorePages = 200;
 
-                    const rows = this.extractRowsFromPayload(parsedBody);
-                    if (!rows.length) continue;
+                    for (let page = 1; page <= maxScorePages; page++) {
+                        const { response, parsedBody } = await this.requestRaceTiger(campaign, 'score', page, eid);
+                        if (!response.ok) break;
+                        if (!parsedBody || typeof parsedBody !== 'object') break;
 
-                    // Process each score row — update timing and status for existing runners
-                    for (const row of rows) {
-                        const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib ?? row?.AthleteId ?? row?.athleteId);
-                        if (!bib) continue;
+                        const rows = this.extractRowsFromPayload(parsedBody);
+                        if (!rows.length) break;
 
-                        // Determine the event ID for this runner
-                        const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
-                        let eventId: string | null = null;
-                        if (eid !== undefined) {
-                            eventId = eventResolver.eventIdByRaceTigerEventId.get(eid) || null;
-                        } else if (rtEventId !== null) {
-                            eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
+                        // Log first page's first row to debug field mapping
+                        if (page === 1 && rows.length > 0) {
+                            this.logger.log(`  Score first row keys: [${Object.keys(rows[0]).join(', ')}]`);
+                            this.logger.log(`  Score first row: ${JSON.stringify(rows[0]).substring(0, 600)}`);
                         }
-                        if (!eventId) eventId = eventResolver.fallbackEventId;
-                        if (!eventId) continue;
 
-                        // Find existing runner by event + bib
-                        const existingRunner = await this.runnersService.findByBib(eventId, bib);
-                        if (!existingRunner) continue; // Only update existing runners — don't create new ones
+                        const apiTotal = this.parseNumericValue(parsedBody?.total);
+                        if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
+                        totalFetched += rows.length;
 
-                        // Parse timing fields from score row
-                        const updateData: Record<string, any> = {};
+                        for (const row of rows) {
+                            const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
+                            const athleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId ?? row?.athleteid ?? row?.ATHLETEID);
+                            if (!bib && !athleteId) continue;
 
-                        // Net time (finish time / 净时间)
-                        const netTimeRaw = row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime;
-                        if (netTimeRaw) {
-                            const netTimeMs = this.parseTimeToMs(netTimeRaw);
-                            if (netTimeMs !== null && netTimeMs > 0) {
-                                updateData.netTime = netTimeMs;
+                            // Determine event ID
+                            const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+                            let eventId: string | null = null;
+                            if (eid !== undefined) {
+                                eventId = eventResolver.eventIdByRaceTigerEventId.get(eid) || null;
+                            } else if (rtEventId !== null) {
+                                eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
+                            }
+                            if (!eventId) eventId = eventResolver.fallbackEventId;
+                            if (!eventId) continue;
+
+                            // Fast in-memory lookup (no DB queries!)
+                            let existingRunner: any = null;
+                            if (bib) existingRunner = runnerByEventBib.get(`${eventId}:${bib}`);
+                            if (!existingRunner && athleteId) existingRunner = runnerByEventAthleteId.get(`${eventId}:${athleteId}`);
+                            if (!existingRunner && athleteId && athleteId !== bib) existingRunner = runnerByEventBib.get(`${eventId}:${athleteId}`);
+                            // Fallback: try other events
+                            if (!existingRunner) {
+                                for (const evId of allEventIds) {
+                                    if (evId === eventId) continue;
+                                    if (bib) existingRunner = runnerByEventBib.get(`${evId}:${bib}`);
+                                    if (!existingRunner && athleteId) existingRunner = runnerByEventAthleteId.get(`${evId}:${athleteId}`);
+                                    if (!existingRunner && athleteId && athleteId !== bib) existingRunner = runnerByEventBib.get(`${evId}:${athleteId}`);
+                                    if (existingRunner) break;
+                                }
+                            }
+                            if (!existingRunner) continue;
+
+                            // Parse timing fields from score row
+                            const updateData: Record<string, any> = {};
+
+                            const netTimeRaw = row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime;
+                            if (netTimeRaw) {
+                                const netTimeMs = this.parseTimeToMs(netTimeRaw);
+                                if (netTimeMs !== null && netTimeMs > 0) updateData.netTime = netTimeMs;
+                            }
+
+                            const gunTimeRaw = row?.GunTime ?? row?.gunTime ?? row?.ElapsedTime ?? row?.elapsedTime
+                                ?? row?.RealTime ?? row?.realTime ?? row?.Time ?? row?.time;
+                            if (gunTimeRaw) {
+                                const gunTimeMs = this.parseTimeToMs(gunTimeRaw);
+                                if (gunTimeMs !== null && gunTimeMs > 0) {
+                                    updateData.gunTime = gunTimeMs;
+                                    updateData.elapsedTime = gunTimeMs;
+                                }
+                            }
+
+                            // Status detection
+                            const scoreStatus = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result).toLowerCase();
+                            const hasDnf = scoreStatus.includes('dnf') || scoreStatus.includes('did not finish');
+                            const hasDns = scoreStatus.includes('dns') || scoreStatus.includes('did not start');
+                            const hasFinish = scoreStatus.includes('finish') || scoreStatus.includes('completed');
+
+                            if (hasDnf && existingRunner.status !== 'dnf') {
+                                updateData.status = 'dnf'; result.statusChanges++;
+                            } else if (hasDns && existingRunner.status !== 'dns') {
+                                updateData.status = 'dns'; result.statusChanges++;
+                            } else if ((hasFinish || (updateData.netTime && updateData.netTime > 0)) && existingRunner.status !== 'finished') {
+                                updateData.status = 'finished'; updateData.isStarted = true; result.statusChanges++;
+                            } else if (updateData.gunTime && updateData.gunTime > 0 && existingRunner.status === 'not_started') {
+                                updateData.status = 'in_progress'; updateData.isStarted = true; result.statusChanges++;
+                            }
+
+                            // Rankings (RaceTiger uses *Position naming)
+                            const overallRank = this.parseNumericValue(
+                                row?.OverallPosition ?? row?.overallPosition ?? row?.Rank ?? row?.rank ?? row?.OverallRank ?? row?.overallRank ?? row?.Place ?? row?.place
+                            );
+                            if (overallRank !== null && overallRank > 0) updateData.overallRank = overallRank;
+                            const genderRank = this.parseNumericValue(
+                                row?.GenderPosition ?? row?.genderPosition ?? row?.GenderRank ?? row?.genderRank ?? row?.SexRank ?? row?.sexRank
+                            );
+                            if (genderRank !== null && genderRank > 0) updateData.genderRank = genderRank;
+                            const genderNetRank = this.parseNumericValue(
+                                row?.NetTimeGenderPosition ?? row?.netTimeGenderPosition ?? row?.GenderNetRank ?? row?.genderNetRank ?? row?.SexNetRank ?? row?.sexNetRank
+                            );
+                            if (genderNetRank !== null && genderNetRank > 0) updateData.genderNetRank = genderNetRank;
+                            const categoryRank = this.parseNumericValue(
+                                row?.CategoryPosition ?? row?.categoryPosition ?? row?.CategoryRank ?? row?.categoryRank
+                            );
+                            if (categoryRank !== null && categoryRank > 0) updateData.categoryRank = categoryRank;
+                            const ageGroupRank = this.parseNumericValue(
+                                row?.CategoryGenderPosition ?? row?.categoryGenderPosition ?? row?.AgeGroupRank ?? row?.ageGroupRank
+                            );
+                            if (ageGroupRank !== null && ageGroupRank > 0) updateData.ageGroupRank = ageGroupRank;
+
+                            // Pace
+                            const gunPace = this.toSafeString(row?.GunPace ?? row?.gunPace ?? row?.Pace ?? row?.pace);
+                            if (gunPace) updateData.gunPace = gunPace;
+                            const netPace = this.toSafeString(row?.NetPace ?? row?.netPace ?? row?.ChipPace ?? row?.chipPace);
+                            if (netPace) updateData.netPace = netPace;
+
+                            // Finisher counts
+                            const totalFinishers = this.parseNumericValue(row?.TotalFinishers ?? row?.totalFinishers ?? row?.FinishCount ?? row?.finishCount);
+                            if (totalFinishers !== null && totalFinishers > 0) updateData.totalFinishers = totalFinishers;
+                            const genderFinishers = this.parseNumericValue(row?.GenderFinishers ?? row?.genderFinishers ?? row?.SexFinishCount ?? row?.sexFinishCount);
+                            if (genderFinishers !== null && genderFinishers > 0) updateData.genderFinishers = genderFinishers;
+
+                            // Latest checkpoint
+                            const latestCp = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.LastStation ?? row?.lastStation ?? row?.LatestCheckpoint);
+                            if (latestCp) updateData.latestCheckpoint = latestCp;
+
+                            if (Object.keys(updateData).length > 0) {
+                                bulkOps.push({
+                                    updateOne: {
+                                        filter: { _id: existingRunner._id },
+                                        update: { $set: updateData },
+                                    },
+                                });
+                                result.updated++;
                             }
                         }
 
-                        // Gun time (枪时间)
-                        const gunTimeRaw = row?.GunTime ?? row?.gunTime ?? row?.ElapsedTime ?? row?.elapsedTime
-                            ?? row?.RealTime ?? row?.realTime ?? row?.Time ?? row?.time;
-                        if (gunTimeRaw) {
-                            const gunTimeMs = this.parseTimeToMs(gunTimeRaw);
-                            if (gunTimeMs !== null && gunTimeMs > 0) {
-                                updateData.gunTime = gunTimeMs;
-                                updateData.elapsedTime = gunTimeMs; // Keep elapsedTime in sync
-                            }
-                        }
-
-                        // Status detection from score data
-                        const scoreStatus = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result).toLowerCase();
-                        const hasDnf = scoreStatus.includes('dnf') || scoreStatus.includes('did not finish');
-                        const hasDns = scoreStatus.includes('dns') || scoreStatus.includes('did not start');
-                        const hasFinish = scoreStatus.includes('finish') || scoreStatus.includes('completed');
-
-                        if (hasDnf && existingRunner.status !== 'dnf') {
-                            updateData.status = 'dnf';
-                            result.statusChanges++;
-                        } else if (hasDns && existingRunner.status !== 'dns') {
-                            updateData.status = 'dns';
-                            result.statusChanges++;
-                        } else if ((hasFinish || (updateData.netTime && updateData.netTime > 0)) && existingRunner.status !== 'finished') {
-                            updateData.status = 'finished';
-                            updateData.isStarted = true;
-                            result.statusChanges++;
-                        } else if (updateData.gunTime && updateData.gunTime > 0 && existingRunner.status === 'not_started') {
-                            updateData.status = 'in_progress';
-                            updateData.isStarted = true;
-                            result.statusChanges++;
-                        }
-
-                        // Rankings
-                        const overallRank = this.parseNumericValue(row?.Rank ?? row?.rank ?? row?.OverallRank ?? row?.overallRank ?? row?.Place ?? row?.place);
-                        if (overallRank !== null && overallRank > 0) {
-                            updateData.overallRank = overallRank;
-                        }
-                        const genderRank = this.parseNumericValue(row?.GenderRank ?? row?.genderRank ?? row?.SexRank ?? row?.sexRank);
-                        if (genderRank !== null && genderRank > 0) {
-                            updateData.genderRank = genderRank;
-                        }
-                        const genderNetRank = this.parseNumericValue(row?.GenderNetRank ?? row?.genderNetRank ?? row?.SexNetRank ?? row?.sexNetRank);
-                        if (genderNetRank !== null && genderNetRank > 0) {
-                            updateData.genderNetRank = genderNetRank;
-                        }
-
-                        // Pace (配速) — stored as string e.g. "04:03"
-                        const gunPace = this.toSafeString(row?.GunPace ?? row?.gunPace ?? row?.Pace ?? row?.pace);
-                        if (gunPace) updateData.gunPace = gunPace;
-
-                        const netPace = this.toSafeString(row?.NetPace ?? row?.netPace ?? row?.ChipPace ?? row?.chipPace);
-                        if (netPace) updateData.netPace = netPace;
-
-                        // Finishers count (完赛人数)
-                        const totalFinishers = this.parseNumericValue(row?.TotalFinishers ?? row?.totalFinishers ?? row?.FinishCount ?? row?.finishCount);
-                        if (totalFinishers !== null && totalFinishers > 0) {
-                            updateData.totalFinishers = totalFinishers;
-                        }
-                        const genderFinishers = this.parseNumericValue(row?.GenderFinishers ?? row?.genderFinishers ?? row?.SexFinishCount ?? row?.sexFinishCount);
-                        if (genderFinishers !== null && genderFinishers > 0) {
-                            updateData.genderFinishers = genderFinishers;
-                        }
-
-                        // Latest checkpoint / station
-                        const latestCp = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.LastStation ?? row?.lastStation ?? row?.LatestCheckpoint);
-                        if (latestCp) {
-                            updateData.latestCheckpoint = latestCp;
-                        }
-
-                        // Only update if there are actual changes
-                        if (Object.keys(updateData).length > 0) {
-                            await this.runnersService.update(String(existingRunner._id), updateData);
-                            result.updated++;
-                        }
+                        if (totalFetched >= totalExpected) break;
                     }
                 } catch (err: any) {
                     result.errors.push(`EID ${eid ?? 'all'}: ${err?.message}`);
                 }
+            }
+
+            // Execute all updates in a single batch
+            if (bulkOps.length > 0) {
+                await this.runnersService.bulkUpdateTiming(
+                    bulkOps.map(op => ({ id: op.updateOne.filter._id, data: op.updateOne.update.$set })),
+                );
+                this.logger.log(`Score sync: batch-updated ${bulkOps.length} runners`);
             }
         } catch (err: any) {
             result.errors.push(err?.message || 'syncTimingOnly failed');

@@ -22,6 +22,7 @@ export class SharedController {
         @Query('status') status?: string,
         @Query('search') search?: string,
         @Query('checkpoint') checkpoint?: string,
+        
     ) {
         let event;
 

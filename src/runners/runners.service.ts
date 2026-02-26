@@ -340,6 +340,13 @@ export class RunnersService {
         }).lean().exec() as Promise<RunnerDocument | null>;
     }
 
+    async findByAthleteId(eventId: string, athleteId: string): Promise<RunnerDocument | null> {
+        return this.runnerModel.findOne({
+            eventId: new Types.ObjectId(eventId),
+            athleteId,
+        }).lean().exec() as Promise<RunnerDocument | null>;
+    }
+
     async findByRfid(eventId: string, rfidTag: string): Promise<RunnerDocument | null> {
         return this.runnerModel.findOne({
             eventId: new Types.ObjectId(eventId),
@@ -352,6 +359,25 @@ export class RunnersService {
             eventId: new Types.ObjectId(eventId),
             chipCode,
         }).lean().exec() as Promise<RunnerDocument | null>;
+    }
+
+    /** Batch-update timing/score fields for multiple runners in a single bulkWrite */
+    async bulkUpdateTiming(ops: Array<{ id: any; data: Record<string, any> }>): Promise<number> {
+        if (!ops.length) return 0;
+        const bulkOps = ops.map(op => ({
+            updateOne: {
+                filter: { _id: op.id },
+                update: { $set: op.data },
+            },
+        }));
+        const BATCH_SIZE = 500;
+        let modified = 0;
+        for (let i = 0; i < bulkOps.length; i += BATCH_SIZE) {
+            const batch = bulkOps.slice(i, i + BATCH_SIZE);
+            const res = await this.runnerModel.bulkWrite(batch as any, { ordered: false });
+            modified += res.modifiedCount || 0;
+        }
+        return modified;
     }
 
     async update(id: string, updateData: any): Promise<RunnerDocument | null> {

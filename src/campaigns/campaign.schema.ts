@@ -144,6 +144,11 @@ export class Campaign {
     /** When true, RaceTiger data auto-syncs every 15 seconds */
     @Prop({ default: false })
     autoSync: boolean;
+
+    /** Admin-controlled column visibility for public event page.
+     *  Array of column keys to display. Empty = show all. */
+    @Prop({ type: [String], default: [] })
+    displayColumns: string[];
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);
