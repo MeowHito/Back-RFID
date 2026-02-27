@@ -146,4 +146,20 @@ export class CreateCampaignDto {
     @Type(() => Date)
     @IsDate()
     countdownDate?: Date;
+
+    @IsOptional()
+    @IsString()
+    eslipTemplate?: string;
+
+    @IsOptional()
+    @IsString()
+    eslipCustomHtml?: string;
+
+    @IsOptional()
+    @IsString()
+    certBackgroundImage?: string;
+
+    @IsOptional()
+    @IsString()
+    certTextColor?: string;
 }

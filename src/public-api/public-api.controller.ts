@@ -369,6 +369,47 @@ export class PublicApiController {
         }
     }
 
+    // ========== Runner Profile (for public runner detail page) ==========
+
+    @Get('runner/:id')
+    async getRunnerProfile(@Param('id') id: string) {
+        try {
+            const runner = await this.runnersService.findOne(id);
+            if (!runner) return this.errorResponse('404', 'Runner not found');
+
+            const eventId = String(runner.eventId);
+            const runnerId = String(runner._id);
+
+            // Fetch timing records for this runner
+            const timingRecords = await this.timingService.getRunnerRecords(eventId, runnerId);
+
+            // Fetch event to get campaign info
+            const event = await this.eventsService.findOne(eventId).catch(() => null);
+            let campaign: any = null;
+            if (event) {
+                campaign = await this.campaignsService.findById(String(event.campaignId)).catch(() => null);
+            }
+
+            return this.successResponse({
+                runner,
+                timingRecords,
+                event,
+                campaign: campaign ? {
+                    _id: campaign._id,
+                    name: campaign.name,
+                    slug: campaign.slug,
+                    eventDate: campaign.eventDate,
+                    location: campaign.location,
+                    pictureUrl: campaign.pictureUrl,
+                    categories: campaign.categories,
+                    eslipTemplate: campaign.eslipTemplate || 'template1',
+                } : null,
+            });
+        } catch (error) {
+            return this.errorResponse('500', error.message);
+        }
+    }
+
     // ========== Dev/Testing: Seed Sample Runners ==========
 
     @Post('seed/runners')

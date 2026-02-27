@@ -2097,9 +2097,7 @@ export class SyncService {
                 },
 
             });
-
-
-
+            
             if (
 
                 error instanceof BadRequestException
@@ -2516,6 +2514,13 @@ export class SyncService {
 
             // Pre-fetch SCORE data to identify BIBs with race results — only import those
             const scoreBibSet = await this.fetchScoreBibSet(campaign, raceTigerEids);
+            this.logger.log(`Score pre-filter: ${scoreBibSet.size} BIBs with race results found`);
+
+            // CLEAN SLATE: delete ALL existing RaceTiger runners before re-importing
+            const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
+            if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
+            const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
+            this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
 
             const fetchBioForEid = async (eid: number | undefined) => {
 
@@ -2558,7 +2563,8 @@ export class SyncService {
                         // Pre-filter: skip BIO rows for runners without race results in SCORE data
                         const rowBib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
                         const rowAthleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId);
-                        if (scoreBibSet.size > 0 && !scoreBibSet.has(rowBib) && !scoreBibSet.has(rowAthleteId)) {
+                        const hasScoreResult = (rowBib && scoreBibSet.has(rowBib)) || (rowAthleteId && scoreBibSet.has(rowAthleteId));
+                        if (!hasScoreResult) {
                             bioSkippedNoResult++;
                             continue;
                         }
@@ -3216,13 +3222,6 @@ export class SyncService {
 
             }
 
-            // Cleanup: remove runners imported from RaceTiger BIO that did NOT finish
-            const importEventIds = [...eventResolver.categoryByEventId.keys()];
-            if (eventResolver.fallbackEventId) importEventIds.push(eventResolver.fallbackEventId);
-            const removedCount = await this.runnersService.deleteNonFinishedBySource(importEventIds, 'RaceTiger BIO sync');
-            this.logger.log(`Cleanup: removed ${removedCount} non-finished RaceTiger runners`);
-            syncResult.runners.removed = removedCount;
-
             // ---- Step 4.5: Sync split/checkpoint timing records ----
             this.logger.log('=== Syncing split timing records from RaceTiger (/Dif/split) ===');
             try {
@@ -3418,7 +3417,14 @@ export class SyncService {
 
             // Pre-fetch SCORE data to identify BIBs with race results — only import those
             const scoreBibSet = await this.fetchScoreBibSet(campaign, uniqueRaceTigerEids);
+            this.logger.log(`Score pre-filter: ${scoreBibSet.size} BIBs with race results found`);
             let skippedNoResult = 0;
+
+            // CLEAN SLATE: delete ALL existing RaceTiger runners before re-importing
+            const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
+            if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
+            const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
+            this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
 
             const eidsToFetch: Array<number | undefined> = uniqueRaceTigerEids.length > 0
 
@@ -3483,7 +3489,8 @@ export class SyncService {
                         // Pre-filter: skip BIO rows for runners without race results in SCORE data
                         const rowBib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
                         const rowAthleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId);
-                        if (scoreBibSet.size > 0 && !scoreBibSet.has(rowBib) && !scoreBibSet.has(rowAthleteId)) {
+                        const hasScoreResult = (rowBib && scoreBibSet.has(rowBib)) || (rowAthleteId && scoreBibSet.has(rowAthleteId));
+                        if (!hasScoreResult) {
                             skippedNoResult++;
                             continue;
                         }
@@ -3614,12 +3621,6 @@ export class SyncService {
 
 
 
-            // Safety net: also remove any leftover non-finished RaceTiger runners
-            const allSyncedEventIds = [...eventResolver.categoryByEventId.keys()];
-            if (eventResolver.fallbackEventId) allSyncedEventIds.push(eventResolver.fallbackEventId);
-            const removedCount = await this.runnersService.deleteNonFinishedBySource(allSyncedEventIds, 'RaceTiger BIO sync');
-            if (removedCount > 0) this.logger.log(`Safety cleanup: removed ${removedCount} non-finished RaceTiger runners`);
-
             this.logger.log(`Pre-filter: skipped ${skippedNoResult} BIO rows with no race results in SCORE data`);
 
             const result = {
@@ -3642,7 +3643,7 @@ export class SyncService {
 
                     updated,
 
-                    removed: removedCount,
+                    removedBeforeImport: preCleanRemoved,
 
                     errors: processingErrors,
 
@@ -3888,7 +3889,8 @@ export class SyncService {
     }
 
     /**
-     * Pre-fetch all BIBs/AthleteIds that appear in RaceTiger SCORE data.
+     * Pre-fetch BIBs/AthleteIds of FINISHED runners from RaceTiger SCORE data.
+     * Only includes runners who have a valid NetTime/GunTime and are NOT DNF/DNS.
      * Returns a Set of identifier strings so the BIO import can skip
      * runners who have no race results at all.
      */
@@ -3899,6 +3901,8 @@ export class SyncService {
         const bibSet = new Set<string>();
         const eidsToFetch: Array<number | undefined> = raceTigerEids.length > 0 ? raceTigerEids : [undefined];
         const maxPages = 200;
+        let totalScoreRows = 0;
+        let skippedDnfDns = 0;
 
         for (const eid of eidsToFetch) {
             try {
@@ -3915,8 +3919,29 @@ export class SyncService {
                     const apiTotal = this.parseNumericValue(parsedBody?.total);
                     if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
                     totalFetched += rows.length;
+                    totalScoreRows += rows.length;
 
                     for (const row of rows) {
+                        // Check if runner actually finished — skip DNF/DNS/no-time
+                        const status = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result).toLowerCase();
+                        const hasDnf = status.includes('dnf') || status.includes('did not finish');
+                        const hasDns = status.includes('dns') || status.includes('did not start');
+                        if (hasDnf || hasDns) {
+                            skippedDnfDns++;
+                            continue;
+                        }
+
+                        const netTime = row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime;
+                        const gunTime = row?.GunTime ?? row?.gunTime ?? row?.ElapsedTime ?? row?.elapsedTime ?? row?.RealTime ?? row?.realTime ?? row?.Time ?? row?.time;
+                        const netTimeMs = this.parseTimeToMs(netTime);
+                        const gunTimeMs = this.parseTimeToMs(gunTime);
+                        const hasValidTime = (netTimeMs !== null && netTimeMs > 0) || (gunTimeMs !== null && gunTimeMs > 0);
+
+                        if (!hasValidTime) {
+                            skippedDnfDns++;
+                            continue;
+                        }
+
                         const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
                         const athleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId ?? row?.athleteid);
                         if (bib) bibSet.add(bib);
@@ -3930,7 +3955,7 @@ export class SyncService {
             }
         }
 
-        this.logger.log(`fetchScoreBibSet: found ${bibSet.size} unique BIBs/AthleteIds with race results`);
+        this.logger.log(`fetchScoreBibSet: ${totalScoreRows} score rows → ${bibSet.size} finished BIBs/AthleteIds (skipped ${skippedDnfDns} DNF/DNS/no-time)`);
         return bibSet;
     }
 

@@ -34,7 +34,7 @@ export class RunnersService {
 
     // Get all runners without filter (for debugging/checking data)
     async findAll(limit: number = 100): Promise<RunnerDocument[]> {
-        return this.runnerModel.find().limit(limit).sort({ createdAt: -1 }).exec();
+        return this.runnerModel.find().limit(limit).sort({ createdAt: -1 }).lean().exec() as Promise<RunnerDocument[]>;
     }
 
     async create(createRunnerDto: CreateRunnerDto): Promise<RunnerDocument> {
@@ -562,6 +562,14 @@ export class RunnersService {
         const result = await this.runnerModel.deleteMany({
             eventId: { $in: eventIds.map(id => new Types.ObjectId(id)) },
             status: { $nin: ['finished'] },
+            sourceFile,
+        }).exec();
+        return result.deletedCount || 0;
+    }
+
+    async deleteAllBySource(eventIds: string[], sourceFile: string): Promise<number> {
+        const result = await this.runnerModel.deleteMany({
+            eventId: { $in: eventIds.map(id => new Types.ObjectId(id)) },
             sourceFile,
         }).exec();
         return result.deletedCount || 0;

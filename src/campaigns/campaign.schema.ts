@@ -133,6 +133,9 @@ export class Campaign {
     @Prop()
     certTextColor: string;
 
+    @Prop()
+    certBackgroundImage: string;
+
     // Race categories (100K, 50K, etc.)
     @Prop({ type: [Object], default: [] })
     categories: RaceCategory[];
@@ -149,6 +152,14 @@ export class Campaign {
      *  Array of column keys to display. Empty = show all. */
     @Prop({ type: [String], default: [] })
     displayColumns: string[];
+
+    /** E-Slip template selected by admin: 'template1' | 'template2' | 'template3' | 'custom' */
+    @Prop({ default: 'template1' })
+    eslipTemplate: string;
+
+    /** Custom E-Slip template HTML uploaded by admin (used when eslipTemplate='custom') */
+    @Prop()
+    eslipCustomHtml: string;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);
