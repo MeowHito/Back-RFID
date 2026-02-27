@@ -34,6 +34,15 @@ export class TimingRecord {
 
     @Prop()
     elapsedTime: number; // Time from start in ms
+
+    @Prop()
+    distanceFromStart: number; // Distance from start in km
+
+    @Prop()
+    netTime: number; // Net time (chip time) in ms
+
+    @Prop()
+    gunTime: number; // Gun time in ms
 }
 
 export const TimingRecordSchema = SchemaFactory.createForClass(TimingRecord);

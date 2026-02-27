@@ -140,8 +140,20 @@ export class Runner {
     @Prop()
     gunTime: number; // Gun time in milliseconds (枪时间)
 
+    @Prop()
+    netTimeStr: string; // Raw net time string from RaceTiger e.g. "01:30:00"
+
+    @Prop()
+    gunTimeStr: string; // Raw gun time string from RaceTiger e.g. "01:32:17"
+
     @Prop({ default: 0 })
     genderNetRank: number; // Gender net time rank (性别净排名)
+
+    @Prop({ default: 0 })
+    categoryNetRank: number; // Category net time rank
+
+    @Prop({ default: 0 })
+    ageGroupNetRank: number; // Age group net time rank
 
     @Prop()
     gunPace: string; // Gun time pace e.g. "04:03" (枪时配速)

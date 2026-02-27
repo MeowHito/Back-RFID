@@ -557,4 +557,13 @@ export class RunnersService {
     async deleteAllParticipants(eventId: string): Promise<void> {
         await this.deleteByEvent(eventId);
     }
+
+    async deleteNonFinishedBySource(eventIds: string[], sourceFile: string): Promise<number> {
+        const result = await this.runnerModel.deleteMany({
+            eventId: { $in: eventIds.map(id => new Types.ObjectId(id)) },
+            status: { $nin: ['finished'] },
+            sourceFile,
+        }).exec();
+        return result.deletedCount || 0;
+    }
 }
