@@ -3852,6 +3852,7 @@ export class SyncService {
                                         eventId: new Types.ObjectId(eventId),
                                         runnerId: runner._id,
                                         checkpoint: tpName,
+                                        order: sortOrder, // Include order so each lap pass is stored separately
                                     },
                                     update: {
                                         $set: {
@@ -3884,21 +3885,53 @@ export class SyncService {
                 result.upserted = bulkOps.length;
                 this.logger.log(`  Split sync: upserted ${bulkOps.length} timing records`);
 
-                // Update passedCount on runners based on unique checkpoints in timing records
-                const passedCountByRunner = new Map<string, Set<string>>();
+                // Compute passedCount (unique checkpoints) and lap summary stats per runner
+                interface RunnerLapAcc {
+                    uniqueCps: Set<string>;
+                    lapCount: number;
+                    splitTimes: number[];
+                    lastScanTime: Date | null;
+                    lastSplitTime: number | null;
+                }
+                const lapAccByRunner = new Map<string, RunnerLapAcc>();
                 for (const op of bulkOps) {
                     const rId = String(op.updateOne.filter.runnerId);
-                    const cp = op.updateOne.filter.checkpoint;
-                    if (!passedCountByRunner.has(rId)) passedCountByRunner.set(rId, new Set());
-                    passedCountByRunner.get(rId)!.add(cp);
+                    const cp: string = op.updateOne.filter.checkpoint;
+                    const $set = op.updateOne.update.$set;
+                    if (!lapAccByRunner.has(rId)) {
+                        lapAccByRunner.set(rId, { uniqueCps: new Set(), lapCount: 0, splitTimes: [], lastScanTime: null, lastSplitTime: null });
+                    }
+                    const acc = lapAccByRunner.get(rId)!;
+                    acc.uniqueCps.add(cp);
+                    acc.lapCount += 1;
+                    if ($set.splitTime && $set.splitTime > 0) acc.splitTimes.push($set.splitTime);
+                    if ($set.scanTime) {
+                        const t = $set.scanTime instanceof Date ? $set.scanTime : new Date($set.scanTime);
+                        if (!acc.lastScanTime || t > acc.lastScanTime) {
+                            acc.lastScanTime = t;
+                            acc.lastSplitTime = $set.splitTime || null;
+                        }
+                    }
                 }
-                const runnerPassedOps = Array.from(passedCountByRunner.entries()).map(([rId, cps]) => ({
-                    id: new Types.ObjectId(rId),
-                    data: { passedCount: cps.size },
-                }));
+                const runnerPassedOps = Array.from(lapAccByRunner.entries()).map(([rId, acc]) => {
+                    const validSplits = acc.splitTimes.filter(s => s > 0);
+                    const bestLap = validSplits.length > 0 ? Math.min(...validSplits) : undefined;
+                    const avgLap = validSplits.length > 0 ? Math.round(validSplits.reduce((a, b) => a + b, 0) / validSplits.length) : undefined;
+                    return {
+                        id: new Types.ObjectId(rId),
+                        data: {
+                            passedCount: acc.uniqueCps.size,
+                            lapCount: acc.lapCount,
+                            ...(bestLap !== undefined ? { bestLapTime: bestLap } : {}),
+                            ...(avgLap !== undefined ? { avgLapTime: avgLap } : {}),
+                            ...(acc.lastSplitTime !== null ? { lastLapTime: acc.lastSplitTime } : {}),
+                            ...(acc.lastScanTime !== null ? { lastPassTime: acc.lastScanTime } : {}),
+                        },
+                    };
+                });
                 if (runnerPassedOps.length > 0) {
                     await this.runnersService.bulkUpdateTiming(runnerPassedOps);
-                    this.logger.log(`  Split sync: updated passedCount on ${runnerPassedOps.length} runners`);
+                    this.logger.log(`  Split sync: updated passedCount + lap stats on ${runnerPassedOps.length} runners`);
                 }
             }
         } catch (err: any) {

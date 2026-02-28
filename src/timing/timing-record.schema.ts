@@ -53,3 +53,4 @@ TimingRecordSchema.index({ eventId: 1, bib: 1, checkpoint: 1 });
 TimingRecordSchema.index({ scanTime: -1 });
 TimingRecordSchema.index({ eventId: 1, checkpoint: 1, scanTime: -1 }); // Per-checkpoint queries
 TimingRecordSchema.index({ runnerId: 1, order: 1 }); // Runner timeline
+TimingRecordSchema.index({ eventId: 1, runnerId: 1, checkpoint: 1, order: 1 }, { unique: true }); // Upsert key (per-lap)

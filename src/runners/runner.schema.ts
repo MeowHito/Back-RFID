@@ -169,6 +169,22 @@ export class Runner {
 
     @Prop({ default: 0 })
     genderFinishers: number; // Gender-specific finishers count (完赛性别人数)
+
+    // === Lab / Lap summary fields (populated by split sync) ===
+    @Prop({ default: 0 })
+    lapCount: number; // Total laps completed (same as passedCount for lab events)
+
+    @Prop()
+    bestLapTime: number; // Best (fastest) lap time in ms
+
+    @Prop()
+    avgLapTime: number; // Average lap time in ms
+
+    @Prop()
+    lastLapTime: number; // Most recent lap time in ms
+
+    @Prop()
+    lastPassTime: Date; // Timestamp of most recent checkpoint pass
 }
 
 export const RunnerSchema = SchemaFactory.createForClass(Runner);
