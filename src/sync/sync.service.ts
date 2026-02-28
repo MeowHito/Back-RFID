@@ -1806,11 +1806,11 @@ export class SyncService {
 
     async getAllCampaignSyncErrors(): Promise<any[]> {
 
+        // Only report a campaign as "error" if its MOST RECENT log is an error
+        // (so a successful re-sync clears the error state)
         const errorLogs = await this.syncLogModel
 
             .aggregate([
-
-                { $match: { status: 'error' } },
 
                 { $sort: { createdAt: -1 } },
 
@@ -1820,11 +1820,13 @@ export class SyncService {
 
                         _id: '$campaignId',
 
-                        lastError: { $first: '$$ROOT' },
+                        lastLog: { $first: '$$ROOT' },
 
                     },
 
                 },
+
+                { $match: { 'lastLog.status': 'error' } },
 
                 {
 
@@ -1856,7 +1858,7 @@ export class SyncService {
 
             campaignName: log.campaign?.name,
 
-            error: log.lastError,
+            error: log.lastLog,
 
         }));
 
@@ -3919,7 +3921,6 @@ export class SyncService {
         const eidsToFetch: Array<number | undefined> = raceTigerEids.length > 0 ? raceTigerEids : [undefined];
         const maxPages = 200;
         let totalScoreRows = 0;
-        let skippedDnfDns = 0;
 
         for (const eid of eidsToFetch) {
             try {
@@ -3939,26 +3940,8 @@ export class SyncService {
                     totalScoreRows += rows.length;
 
                     for (const row of rows) {
-                        // Check if runner actually finished — skip DNF/DNS/no-time
-                        const status = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result).toLowerCase();
-                        const hasDnf = status.includes('dnf') || status.includes('did not finish');
-                        const hasDns = status.includes('dns') || status.includes('did not start');
-                        if (hasDnf || hasDns) {
-                            skippedDnfDns++;
-                            continue;
-                        }
-
-                        const netTime = row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime;
-                        const gunTime = row?.GunTime ?? row?.gunTime ?? row?.ElapsedTime ?? row?.elapsedTime ?? row?.RealTime ?? row?.realTime ?? row?.Time ?? row?.time;
-                        const netTimeMs = this.parseTimeToMs(netTime);
-                        const gunTimeMs = this.parseTimeToMs(gunTime);
-                        const hasValidTime = (netTimeMs !== null && netTimeMs > 0) || (gunTimeMs !== null && gunTimeMs > 0);
-
-                        if (!hasValidTime) {
-                            skippedDnfDns++;
-                            continue;
-                        }
-
+                        // Include ALL runners from SCORE data (including DNF/DNS)
+                        // so they appear on the /event/ page with their actual status
                         const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
                         const athleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId ?? row?.athleteid);
                         if (bib) bibSet.add(bib);
@@ -3972,7 +3955,7 @@ export class SyncService {
             }
         }
 
-        this.logger.log(`fetchScoreBibSet: ${totalScoreRows} score rows → ${bibSet.size} finished BIBs/AthleteIds (skipped ${skippedDnfDns} DNF/DNS/no-time)`);
+        this.logger.log(`fetchScoreBibSet: ${totalScoreRows} score rows → ${bibSet.size} unique BIBs/AthleteIds (includes DNF/DNS)`);
         return bibSet;
     }
 

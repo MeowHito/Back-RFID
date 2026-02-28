@@ -152,10 +152,19 @@ export class Campaign {
     @Prop({ default: false })
     autoSync: boolean;
 
-    /** Admin-controlled column visibility for public event page.
+    /** Admin-controlled column visibility for public event page (Marathon mode).
      *  Array of column keys to display. Empty = show all. */
     @Prop({ type: [String], default: [] })
     displayColumns: string[];
+
+    /** Admin-controlled column visibility for public event page (Lab mode).
+     *  Array of column keys to display. Empty = show all. */
+    @Prop({ type: [String], default: [] })
+    displayColumnsLab: string[];
+
+    /** Display mode for the live event page: 'marathon' or 'lab' */
+    @Prop({ default: 'marathon' })
+    displayMode: string;
 
     /** E-Slip template selected by admin: 'template1' | 'template2' | 'template3' | 'custom' */
     @Prop({ default: 'template1' })
