@@ -390,9 +390,16 @@ export class PublicApiController {
                 campaign = await this.campaignsService.findById(String(event.campaignId)).catch(() => null);
             }
 
+            // Fetch checkpoint mappings for this event (with distances from RaceTiger sync)
+            let checkpointMappings: any[] = [];
+            try {
+                checkpointMappings = await this.checkpointsService.findMappingsByEvent(eventId);
+            } catch { /* no mappings */ }
+
             return this.successResponse({
                 runner,
                 timingRecords,
+                checkpointMappings,
                 event,
                 campaign: campaign ? {
                     _id: campaign._id,
