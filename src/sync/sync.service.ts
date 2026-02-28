@@ -3881,6 +3881,23 @@ export class SyncService {
                 }
                 result.upserted = bulkOps.length;
                 this.logger.log(`  Split sync: upserted ${bulkOps.length} timing records`);
+
+                // Update passedCount on runners based on unique checkpoints in timing records
+                const passedCountByRunner = new Map<string, Set<string>>();
+                for (const op of bulkOps) {
+                    const rId = String(op.updateOne.filter.runnerId);
+                    const cp = op.updateOne.filter.checkpoint;
+                    if (!passedCountByRunner.has(rId)) passedCountByRunner.set(rId, new Set());
+                    passedCountByRunner.get(rId)!.add(cp);
+                }
+                const runnerPassedOps = Array.from(passedCountByRunner.entries()).map(([rId, cps]) => ({
+                    id: new Types.ObjectId(rId),
+                    data: { passedCount: cps.size },
+                }));
+                if (runnerPassedOps.length > 0) {
+                    await this.runnersService.bulkUpdateTiming(runnerPassedOps);
+                    this.logger.log(`  Split sync: updated passedCount on ${runnerPassedOps.length} runners`);
+                }
             }
         } catch (err: any) {
             result.errors.push(err?.message || 'syncSplitTimingRecords failed');
@@ -4295,6 +4312,15 @@ export class SyncService {
                             const latestCp = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.LastStation ?? row?.lastStation ?? row?.LatestCheckpoint);
 
                             if (latestCp) updateData.latestCheckpoint = latestCp;
+
+                            // Passed count (number of checkpoints passed)
+                            const passedCount = this.parseNumericValue(
+                                row?.PassedCount ?? row?.passedCount ?? row?.PassCount ?? row?.passCount
+                                ?? row?.Passedcount ?? row?.passedcount
+                                ?? row?.CheckpointCount ?? row?.checkpointCount
+                                ?? row?.TpCount ?? row?.tpCount
+                            );
+                            if (passedCount !== null && passedCount >= 0) updateData.passedCount = passedCount;
 
 
 

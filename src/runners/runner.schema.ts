@@ -74,6 +74,9 @@ export class Runner {
     @Prop()
     latestCheckpoint: string;
 
+    @Prop({ default: 0 })
+    passedCount: number;
+
     // New fields from reference
     @Prop()
     chipCode: string; // Alternative RFID chip code

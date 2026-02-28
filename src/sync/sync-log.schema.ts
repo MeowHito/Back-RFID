@@ -36,3 +36,5 @@ export const SyncLogSchema = SchemaFactory.createForClass(SyncLog);
 SyncLogSchema.index({ campaignId: 1, createdAt: -1 });
 SyncLogSchema.index({ status: 1 });
 SyncLogSchema.index({ campaignId: 1, status: 1 }); // getSyncData count queries
+// Auto-delete logs after 1 hour
+SyncLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 3600 });
