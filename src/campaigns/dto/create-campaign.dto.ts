@@ -162,4 +162,8 @@ export class CreateCampaignDto {
     @IsOptional()
     @IsString()
     certTextColor?: string;
+
+    @IsOptional()
+    @IsString()
+    cardColor?: string;
 }

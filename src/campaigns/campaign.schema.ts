@@ -136,6 +136,10 @@ export class Campaign {
     @Prop()
     certBackgroundImage: string;
 
+    /** Card strip color on homepage (hex). Falls back to first category badgeColor. */
+    @Prop()
+    cardColor: string;
+
     // Race categories (100K, 50K, etc.)
     @Prop({ type: [Object], default: [] })
     categories: RaceCategory[];
