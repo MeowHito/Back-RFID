@@ -166,4 +166,11 @@ export class CreateCampaignDto {
     @IsOptional()
     @IsString()
     cardColor?: string;
+
+    @IsOptional()
+    @IsArray()
+    eslipTemplates?: string[];
+
+    @IsOptional()
+    excludeOverallFromAgeGroup?: number;
 }

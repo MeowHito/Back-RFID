@@ -164,6 +164,16 @@ export class Campaign {
     /** Custom E-Slip template HTML uploaded by admin (used when eslipTemplate='custom') */
     @Prop()
     eslipCustomHtml: string;
+
+    /** Admin-selected E-Slip templates available for users. Array of template IDs.
+     *  Empty = all templates available. e.g. ['template1', 'template2'] */
+    @Prop({ type: [String], default: [] })
+    eslipTemplates: string[];
+
+    /** Exclude top N overall winners from age group rankings on Result-Winners page.
+     *  0 = no exclusion, 3 = exclude top 3, 5 = exclude top 5 */
+    @Prop({ default: 0 })
+    excludeOverallFromAgeGroup: number;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);

@@ -403,6 +403,7 @@ export class PublicApiController {
                     pictureUrl: campaign.pictureUrl,
                     categories: campaign.categories,
                     eslipTemplate: campaign.eslipTemplate || 'template1',
+                    eslipTemplates: (campaign as any).eslipTemplates || [],
                 } : null,
             });
         } catch (error) {
