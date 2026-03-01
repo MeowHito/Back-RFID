@@ -108,8 +108,11 @@ export class RunnersController {
     }
 
     @Put(':id/status')
-    updateStatus(@Param('id') id: string, @Body('status') status: string) {
-        return this.runnersService.updateStatus(id, status);
+    updateStatus(
+        @Param('id') id: string,
+        @Body() body: { status: string; statusCheckpoint?: string; statusNote?: string; changedBy?: string },
+    ) {
+        return this.runnersService.updateStatus(id, body);
     }
 
     @Delete(':id')

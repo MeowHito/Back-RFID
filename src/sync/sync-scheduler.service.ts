@@ -22,6 +22,7 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
     private intervalId: NodeJS.Timeout | null = null;
     private isSyncing = false;
     private syncCount = 0;
+    private splitSyncTick = 0; // Run split sync every 4th tick (~60s)
 
     constructor(
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
@@ -29,13 +30,13 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
     ) { }
 
     onModuleInit() {
-        // Start auto-sync interval (15 seconds)
+        // Start auto-sync interval (5 seconds)
         this.intervalId = setInterval(() => {
             this.runAutoSync().catch(err => {
                 this.logger.error('Auto-sync error', err?.message || err);
             });
-        }, 15_000);
-        this.logger.log('RaceTiger auto-sync scheduler initialized (15s interval)');
+        }, 5_000);
+        this.logger.log('RaceTiger auto-sync scheduler initialized (5s score / 15s split)');
     }
 
     /**
@@ -63,16 +64,28 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
 
             if (campaigns.length === 0) return;
 
+            this.splitSyncTick++;
+            const runSplitSync = this.splitSyncTick % 3 === 0; // every 3rd tick = ~15s
+
             for (const campaign of campaigns) {
                 const cid = String(campaign._id);
                 try {
+                    // Score sync every 5s (rank, time, status, pace)
                     const result = await this.syncService.syncTimingOnly(cid);
-                    // Only log when there are actual changes (to reduce noise)
                     if (result.updated > 0 || result.statusChanges > 0) {
                         this.logger.log(
                             `Auto-sync [${campaign.name || cid}]: ` +
                             `${result.updated} timing updates, ${result.statusChanges} status changes`
                         );
+                    }
+                    // Split sync every 60s (checkpoint passes, lap data, progress)
+                    if (runSplitSync) {
+                        const splitResult = await this.syncService.syncSplitOnly(cid);
+                        if (splitResult.upserted > 0) {
+                            this.logger.log(
+                                `Auto-split-sync [${campaign.name || cid}]: ${splitResult.upserted} timing records upserted`
+                            );
+                        }
                     }
                     this.syncCount++;
                 } catch (err: any) {

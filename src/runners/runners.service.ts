@@ -384,9 +384,7 @@ export class RunnersService {
         return this.runnerModel.findByIdAndUpdate(id, updateData, { new: true }).exec();
     }
 
-    async updateStatus(id: string, status: string): Promise<RunnerDocument | null> {
-        return this.runnerModel.findByIdAndUpdate(id, { status }, { new: true }).exec();
-    }
+    // Old updateStatus removed — replaced by new version at bottom with checkpoint + note support
 
     async updateTiming(
         id: string,
@@ -573,5 +571,29 @@ export class RunnersService {
             sourceFile,
         }).exec();
         return result.deletedCount || 0;
+    }
+
+    /** Update runner status with optional checkpoint + note (admin live edit) */
+    async updateStatus(
+        runnerId: string,
+        data: {
+            status: string;
+            statusCheckpoint?: string;
+            statusNote?: string;
+            changedBy?: string;
+        },
+    ): Promise<RunnerDocument | null> {
+        const validStatuses = ['not_started', 'in_progress', 'finished', 'dnf', 'dns', 'dq'];
+        if (!validStatuses.includes(data.status)) {
+            throw new NotFoundException(`Invalid status: ${data.status}`);
+        }
+        const update: any = {
+            status: data.status,
+            statusChangedAt: new Date(),
+        };
+        if (data.statusCheckpoint !== undefined) update.statusCheckpoint = data.statusCheckpoint;
+        if (data.statusNote !== undefined) update.statusNote = data.statusNote;
+        if (data.changedBy) update.statusChangedBy = data.changedBy;
+        return this.runnerModel.findByIdAndUpdate(runnerId, { $set: update }, { new: true }).lean().exec() as Promise<RunnerDocument | null>;
     }
 }
