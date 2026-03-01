@@ -172,5 +172,9 @@ export class CreateCampaignDto {
     eslipTemplates?: string[];
 
     @IsOptional()
+    @IsArray()
+    eslipVisibleFields?: string[];
+
+    @IsOptional()
     excludeOverallFromAgeGroup?: number;
 }

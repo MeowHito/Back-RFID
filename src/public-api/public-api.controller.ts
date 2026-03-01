@@ -411,6 +411,7 @@ export class PublicApiController {
                     categories: campaign.categories,
                     eslipTemplate: campaign.eslipTemplate || 'template1',
                     eslipTemplates: (campaign as any).eslipTemplates || [],
+                    eslipVisibleFields: (campaign as any).eslipVisibleFields || [],
                 } : null,
             });
         } catch (error) {

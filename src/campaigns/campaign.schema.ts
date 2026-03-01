@@ -179,6 +179,12 @@ export class Campaign {
     @Prop({ type: [String], default: [] })
     eslipTemplates: string[];
 
+    /** Admin-controlled visibility of data fields on E-Slip.
+     *  Array of field keys to display. Empty = show all.
+     *  Keys: 'overallRank','genderRank','categoryRank','gunTime','netTime','distance','pace' */
+    @Prop({ type: [String], default: [] })
+    eslipVisibleFields: string[];
+
     /** Exclude top N overall winners from age group rankings on Result-Winners page.
      *  0 = no exclusion, 3 = exclude top 3, 5 = exclude top 5 */
     @Prop({ default: 0 })
