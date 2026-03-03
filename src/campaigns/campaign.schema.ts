@@ -189,6 +189,11 @@ export class Campaign {
      *  0 = no exclusion, 3 = exclude top 3, 5 = exclude top 5 */
     @Prop({ default: 0 })
     excludeOverallFromAgeGroup: number;
+
+    /** When true, race is finished → show Finish List view.
+     *  When false (default), race is ongoing → show Pass Time (live) view. */
+    @Prop({ default: false })
+    raceFinished: boolean;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);

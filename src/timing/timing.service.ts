@@ -117,6 +117,77 @@ export class TimingService {
             .exec() as Promise<TimingRecordDocument[]>;
     }
 
+    /** Get the latest timing record per runner for given eventIds (for PassTime live view).
+     *  Returns runner info merged with their most recent checkpoint pass. */
+    async getLatestPerRunner(eventIds: string[]): Promise<any[]> {
+        const objectIds = eventIds.map(id => new Types.ObjectId(id));
+        return this.timingModel.aggregate([
+            { $match: { eventId: { $in: objectIds } } },
+            { $sort: { scanTime: -1 } },
+            {
+                $group: {
+                    _id: '$runnerId',
+                    eventId: { $first: '$eventId' },
+                    bib: { $first: '$bib' },
+                    checkpoint: { $first: '$checkpoint' },
+                    scanTime: { $first: '$scanTime' },
+                    netTime: { $first: '$netTime' },
+                    gunTime: { $first: '$gunTime' },
+                    splitTime: { $first: '$splitTime' },
+                    distanceFromStart: { $first: '$distanceFromStart' },
+                    order: { $first: '$order' },
+                    totalPasses: { $sum: 1 },
+                },
+            },
+            {
+                $lookup: {
+                    from: 'runners',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'runner',
+                },
+            },
+            { $unwind: { path: '$runner', preserveNullAndEmptyArrays: true } },
+            {
+                $project: {
+                    _id: '$runner._id',
+                    eventId: 1,
+                    bib: 1,
+                    firstName: '$runner.firstName',
+                    lastName: '$runner.lastName',
+                    firstNameTh: '$runner.firstNameTh',
+                    lastNameTh: '$runner.lastNameTh',
+                    gender: '$runner.gender',
+                    category: '$runner.category',
+                    ageGroup: '$runner.ageGroup',
+                    age: '$runner.age',
+                    nationality: '$runner.nationality',
+                    team: '$runner.team',
+                    teamName: '$runner.teamName',
+                    status: '$runner.status',
+                    latestCheckpoint: '$checkpoint',
+                    passedCount: '$totalPasses',
+                    scanTime: 1,
+                    netTime: 1,
+                    gunTime: 1,
+                    splitTime: 1,
+                    distanceFromStart: 1,
+                    order: 1,
+                    overallRank: '$runner.overallRank',
+                    genderRank: '$runner.genderRank',
+                    categoryRank: '$runner.categoryRank',
+                    netTimeStr: '$runner.netTimeStr',
+                    gunTimeStr: '$runner.gunTimeStr',
+                    gunPace: '$runner.gunPace',
+                    netPace: '$runner.netPace',
+                    statusCheckpoint: '$runner.statusCheckpoint',
+                    statusNote: '$runner.statusNote',
+                },
+            },
+            { $sort: { scanTime: -1 } },
+        ]).exec();
+    }
+
     async deleteRecord(id: string): Promise<void> {
         await this.timingModel.findByIdAndDelete(id).exec();
     }

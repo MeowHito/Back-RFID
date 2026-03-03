@@ -40,10 +40,11 @@ export class RunnersController {
         @Query('search') search: string,
         @Query('page') page: number,
         @Query('limit') limit: number,
+        @Query('skipStatusCounts') skipStatusCounts: string,
     ) {
         const filter: RunnerFilter = { eventId, campaignId, category, gender, ageGroup, status, chipStatus, runnerStatus, sortBy, sortOrder, search };
         const paging: PagingData = { page: page || 1, limit: limit || 50, search };
-        return this.runnersService.findByEventWithPaging(filter, paging);
+        return this.runnersService.findByEventWithPaging(filter, paging, skipStatusCounts === 'true');
     }
 
     @Delete('bulk')

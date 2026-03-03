@@ -207,6 +207,64 @@ export class PublicApiController {
         return this.successResponse({ data, total: data.length });
     }
 
+    @Get('campaign/getPassTimeByEvent')
+    async getPassTimeByEvent(
+        @Query('id') id: string,
+    ) {
+        const campaignId = await this.resolveCampaignObjectId(id);
+        const events = await this.eventsService.findByCampaign(campaignId);
+        const eventIds = Array.from(
+            new Set([
+                campaignId,
+                ...events.map((event: any) => String(event?._id || '')).filter(Boolean),
+            ]),
+        );
+
+        // 1. Run both queries in parallel for speed
+        const [timingData, allRunners] = await Promise.all([
+            this.timingService.getLatestPerRunner(eventIds),
+            this.runnersService.findByEventIds(eventIds),
+        ]);
+        const timingRunnerIds = new Set(timingData.map((r: any) => String(r._id)));
+
+        // 3. Merge: for runners NOT in timing data, add them from Runner collection
+        const extraRunners = allRunners
+            .filter((r: any) => !timingRunnerIds.has(String(r._id)))
+            .map((r: any) => ({
+                _id: r._id,
+                eventId: r.eventId,
+                bib: r.bib,
+                firstName: r.firstName,
+                lastName: r.lastName,
+                firstNameTh: r.firstNameTh,
+                lastNameTh: r.lastNameTh,
+                gender: r.gender,
+                category: r.category,
+                ageGroup: r.ageGroup,
+                age: r.age,
+                nationality: r.nationality,
+                team: r.team,
+                teamName: r.teamName,
+                status: r.status,
+                latestCheckpoint: r.latestCheckpoint,
+                passedCount: r.passedCount || 0,
+                netTime: r.netTime,
+                gunTime: r.gunTime,
+                overallRank: r.overallRank,
+                genderRank: r.genderRank,
+                categoryRank: r.categoryRank,
+                netTimeStr: r.netTimeStr,
+                gunTimeStr: r.gunTimeStr,
+                gunPace: r.gunPace,
+                netPace: r.netPace,
+                statusCheckpoint: r.statusCheckpoint,
+                statusNote: r.statusNote,
+            }));
+
+        const merged = [...timingData, ...extraRunners];
+        return this.successResponse({ data: merged, total: merged.length });
+    }
+
     @Get('campaign/getAllStatusByEvent')
     async getAllStatusByEvent(@Query('id') id: string) {
         const eventId = await this.resolveCampaignObjectId(id);

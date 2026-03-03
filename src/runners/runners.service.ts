@@ -200,7 +200,7 @@ export class RunnersService {
             .exec() as Promise<RunnerDocument[]>;
     }
 
-    async findByEventWithPaging(filter: RunnerFilter, paging?: PagingData): Promise<{ data: RunnerDocument[]; total: number; dupBibs?: string[]; dupChips?: string[]; statusCounts?: Record<string, number> }> {
+    async findByEventWithPaging(filter: RunnerFilter, paging?: PagingData, skipStatusCounts = false): Promise<{ data: RunnerDocument[]; total: number; dupBibs?: string[]; dupChips?: string[]; statusCounts?: Record<string, number> }> {
         let eventOidFilter: any;
         if (filter.campaignId && Types.ObjectId.isValid(filter.campaignId)) {
             // Query all events belonging to this campaign, then match runners by those event IDs
@@ -216,41 +216,52 @@ export class RunnersService {
         const baseMatch: any = { eventId: eventOidFilter };
         if (filter.category) baseMatch.category = filter.category;
 
-        // Pre-compute duplicate BIBs and ChipCodes for this event+category
-        const [bibDups, chipDups] = await Promise.all([
-            this.runnerModel.aggregate([
-                { $match: { ...baseMatch, bib: { $exists: true, $nin: ['', null] } } },
-                { $group: { _id: '$bib', count: { $sum: 1 } } },
-                { $match: { count: { $gt: 1 } } },
-            ]).exec(),
-            this.runnerModel.aggregate([
-                { $match: { ...baseMatch, chipCode: { $exists: true, $nin: ['', null] } } },
-                { $group: { _id: '$chipCode', count: { $sum: 1 } } },
-                { $match: { count: { $gt: 1 } } },
-            ]).exec(),
-        ]);
-        const dupBibs = bibDups.map(d => d._id);
-        const dupChips = chipDups.map(d => d._id);
-
-        // Count statuses for filter badges
+        let dupBibs: string[] = [];
+        let dupChips: string[] = [];
+        let statusCounts: Record<string, number> | undefined;
         const emptyCond = (field: string) => ({ $or: [{ [field]: { $exists: false } }, { [field]: '' }, { [field]: null }] });
-        const [noBibCount, dupBibCount, noChipCount, dupChipCount, noNameCount, noGenderCount, noNatCount, noAgeCount, totalAll] = await Promise.all([
-            this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('bib') }).exec(),
-            dupBibs.length > 0 ? this.runnerModel.countDocuments({ ...baseMatch, bib: { $in: dupBibs } }).exec() : Promise.resolve(0),
-            this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('chipCode') }).exec(),
-            dupChips.length > 0 ? this.runnerModel.countDocuments({ ...baseMatch, chipCode: { $in: dupChips } }).exec() : Promise.resolve(0),
-            this.runnerModel.countDocuments({ ...baseMatch, $or: [{ firstName: { $exists: false } }, { firstName: '' }, { firstName: null }] }).exec(),
-            this.runnerModel.countDocuments({ ...baseMatch, $or: [{ gender: { $exists: false } }, { gender: '' }, { gender: null }] }).exec(),
-            this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('nationality') }).exec(),
-            this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('ageGroup') }).exec(),
-            this.runnerModel.countDocuments(baseMatch).exec(),
-        ]);
-        const readyCount = totalAll - noBibCount - dupBibCount - noChipCount - dupChipCount;
-        const statusCounts: Record<string, number> = {
-            no_bib: noBibCount, dup_bib: dupBibCount, no_chip: noChipCount, dup_chip: dupChipCount,
-            no_name: noNameCount, no_gender: noGenderCount, no_nat: noNatCount, no_age: noAgeCount,
-            ready: Math.max(0, readyCount),
-        };
+
+        // Only compute heavy dup/status queries when requested (admin participants page)
+        const needStatusCounts = !skipStatusCounts && (
+            filter.runnerStatus || filter.chipStatus // These filters require dup data
+        );
+
+        if (!skipStatusCounts) {
+            // Pre-compute duplicate BIBs and ChipCodes for this event+category
+            const [bibDupsResult, chipDupsResult] = await Promise.all([
+                this.runnerModel.aggregate([
+                    { $match: { ...baseMatch, bib: { $exists: true, $nin: ['', null] } } },
+                    { $group: { _id: '$bib', count: { $sum: 1 } } },
+                    { $match: { count: { $gt: 1 } } },
+                ]).exec(),
+                this.runnerModel.aggregate([
+                    { $match: { ...baseMatch, chipCode: { $exists: true, $nin: ['', null] } } },
+                    { $group: { _id: '$chipCode', count: { $sum: 1 } } },
+                    { $match: { count: { $gt: 1 } } },
+                ]).exec(),
+            ]);
+            dupBibs = bibDupsResult.map(d => d._id);
+            dupChips = chipDupsResult.map(d => d._id);
+
+            // Count statuses for filter badges
+            const [noBibCount, dupBibCount, noChipCount, dupChipCount, noNameCount, noGenderCount, noNatCount, noAgeCount, totalAll] = await Promise.all([
+                this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('bib') }).exec(),
+                dupBibs.length > 0 ? this.runnerModel.countDocuments({ ...baseMatch, bib: { $in: dupBibs } }).exec() : Promise.resolve(0),
+                this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('chipCode') }).exec(),
+                dupChips.length > 0 ? this.runnerModel.countDocuments({ ...baseMatch, chipCode: { $in: dupChips } }).exec() : Promise.resolve(0),
+                this.runnerModel.countDocuments({ ...baseMatch, $or: [{ firstName: { $exists: false } }, { firstName: '' }, { firstName: null }] }).exec(),
+                this.runnerModel.countDocuments({ ...baseMatch, $or: [{ gender: { $exists: false } }, { gender: '' }, { gender: null }] }).exec(),
+                this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('nationality') }).exec(),
+                this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('ageGroup') }).exec(),
+                this.runnerModel.countDocuments(baseMatch).exec(),
+            ]);
+            const readyCount = totalAll - noBibCount - dupBibCount - noChipCount - dupChipCount;
+            statusCounts = {
+                no_bib: noBibCount, dup_bib: dupBibCount, no_chip: noChipCount, dup_chip: dupChipCount,
+                no_name: noNameCount, no_gender: noGenderCount, no_nat: noNatCount, no_age: noAgeCount,
+                ready: Math.max(0, readyCount),
+            };
+        }
 
         // Build main query
         const query: any = { ...baseMatch };
