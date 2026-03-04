@@ -90,7 +90,20 @@ export class UsersService {
         await this.userModel.findByIdAndUpdate(user._id, { password: hashedPassword }).exec();
     }
 
-    async updateRole(id: string, role: string): Promise<UserDocument> {
+    async updateRole(id: string, role: string, requestorRole?: string): Promise<UserDocument> {
+        // admin_master can only be set directly in the database
+        if (role === 'admin_master') {
+            throw new ConflictException('admin_master can only be assigned directly in the database');
+        }
+
+        // Check if target user is admin_master — only admin_master can change admin_master
+        const targetUser = await this.userModel.findById(id).select('role').exec();
+        if (!targetUser) throw new NotFoundException('User not found');
+
+        if (targetUser.role === 'admin_master' && requestorRole !== 'admin_master') {
+            throw new ConflictException('Cannot modify admin_master role');
+        }
+
         const user = await this.userModel.findByIdAndUpdate(id, { role }, { new: true }).select('-password').exec();
         if (!user) throw new NotFoundException('User not found');
         return user;

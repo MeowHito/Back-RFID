@@ -23,7 +23,7 @@ export class User {
     @Prop()
     lastName: string;
 
-    @Prop({ default: 'user', enum: ['admin', 'organizer', 'user', 'station'] })
+    @Prop({ default: 'user', enum: ['admin_master', 'admin', 'organizer', 'user', 'station'] })
     role: string;
 
     @Prop({ default: true })

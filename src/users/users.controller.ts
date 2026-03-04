@@ -33,8 +33,8 @@ export class UsersController {
     }
 
     @Put(':id/role')
-    updateRole(@Param('id') id: string, @Body('role') role: string) {
-        return this.usersService.updateRole(id, role);
+    updateRole(@Param('id') id: string, @Body('role') role: string, @Body('requestorRole') requestorRole?: string) {
+        return this.usersService.updateRole(id, role, requestorRole);
     }
 
     @Post('update-password')
