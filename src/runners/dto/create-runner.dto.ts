@@ -59,6 +59,10 @@ export class CreateRunnerDto {
 
     @IsOptional()
     @IsString()
+    printingCode?: string; // Code printed on athlete shirt
+
+    @IsOptional()
+    @IsString()
     nationality?: string;
 
     @IsOptional()

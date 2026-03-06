@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Types } from 'mongoose';
 import { RunnersService } from './runners.service';
 import type { RunnerFilter, PagingData } from './runners.service';
 import { CreateRunnerDto } from './dto/create-runner.dto';
@@ -86,6 +87,18 @@ export class RunnersController {
         @Query('ageGroup') ageGroup: string,
     ) {
         return this.runnersService.getLatestParticipantByCheckpoint(eventId, checkpoint, gender, ageGroup);
+    }
+
+    @Get('lookup')
+    async lookupByCode(
+        @Query('campaignId') campaignId: string,
+        @Query('code') code: string,
+    ) {
+        if (!code) {
+            return { found: false, runner: null };
+        }
+        const runner = await this.runnersService.findByAnyCodeGlobal(code.trim());
+        return { found: !!runner, runner };
     }
 
     @Get(':id')

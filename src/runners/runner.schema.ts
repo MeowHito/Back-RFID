@@ -79,7 +79,10 @@ export class Runner {
 
     // New fields from reference
     @Prop()
-    chipCode: string; // Alternative RFID chip code
+    chipCode: string; // RFID chip code (from RaceTiger ChipCode)
+
+    @Prop()
+    printingCode: string; // Code printed on athlete shirt, scanned at checkpoints (from RaceTiger PrintingCode)
 
     @Prop()
     nationality: string;
@@ -206,6 +209,7 @@ export const RunnerSchema = SchemaFactory.createForClass(Runner);
 RunnerSchema.index({ eventId: 1, bib: 1 }, { unique: true });
 RunnerSchema.index({ eventId: 1, rfidTag: 1 });
 RunnerSchema.index({ eventId: 1, chipCode: 1 });
+RunnerSchema.index({ eventId: 1, printingCode: 1 });
 RunnerSchema.index({ eventId: 1, status: 1 });
 RunnerSchema.index({ eventId: 1, category: 1, netTime: 1 });
 // Additional performance indexes

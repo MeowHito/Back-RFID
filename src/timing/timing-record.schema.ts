@@ -43,8 +43,65 @@ export class TimingRecord {
 
     @Prop()
     gunTime: number; // Gun time in ms
-}
 
+    // === Additional RaceTiger Pass Time fields ===
+    @Prop()
+    splitNo: number; // Split number/order from RaceTiger
+
+    @Prop()
+    splitDesc: string; // Split description
+
+    @Prop()
+    netPace: string; // Net pace e.g. "05:25"
+
+    @Prop()
+    gunPace: string; // Gun pace e.g. "05:30"
+
+    @Prop()
+    splitPace: string; // Split pace
+
+    @Prop()
+    gunTimeMs: number; // Gun time in ms (raw RaceTiger value)
+
+    @Prop()
+    netTimeMs: number; // Net time in ms (raw RaceTiger value)
+
+    @Prop()
+    totalGunTime: number; // Total cumulative gun time in ms
+
+    @Prop()
+    totalNetTime: number; // Total cumulative net time in ms
+
+    @Prop()
+    totalGunTimeMs: number; // Total gun time in ms (raw)
+
+    @Prop()
+    totalNetTimeMs: number; // Total net time in ms (raw)
+
+    @Prop()
+    chipCode: string; // Chip code from RFID scan
+
+    @Prop()
+    printingCode: string; // Printing code on athlete shirt
+
+    @Prop()
+    supplement: string; // Supplement data
+
+    @Prop()
+    cutOff: string; // Cut-off status
+
+    @Prop()
+    legTime: number; // Leg time in ms
+
+    @Prop()
+    legPace: string; // Leg pace
+
+    @Prop()
+    legDistance: number; // Leg distance in km
+
+    @Prop()
+    lagMs: number; // Lag in ms
+}
 export const TimingRecordSchema = SchemaFactory.createForClass(TimingRecord);
 
 // Index for quick lookups

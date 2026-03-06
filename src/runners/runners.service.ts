@@ -372,6 +372,41 @@ export class RunnersService {
         }).lean().exec() as Promise<RunnerDocument | null>;
     }
 
+    /** Lookup runner by BIB, chipCode, or printingCode across all events in a campaign */
+    async findByAnyCode(
+        eventIds: string[],
+        code: string,
+    ): Promise<RunnerDocument | null> {
+        const objectIds = eventIds
+            .filter((id): id is string => Boolean(id) && Types.ObjectId.isValid(id))
+            .map((id) => new Types.ObjectId(id));
+        if (!objectIds.length) return null;
+
+        return this.runnerModel.findOne({
+            eventId: { $in: objectIds },
+            $or: [
+                { bib: code },
+                { chipCode: code },
+                { printingCode: code },
+                { rfidTag: code },
+            ],
+        }).lean().exec() as Promise<RunnerDocument | null>;
+    }
+
+    /** Global lookup: find runner by BIB, chipCode, printingCode or rfidTag (case-insensitive) */
+    async findByAnyCodeGlobal(code: string): Promise<RunnerDocument | null> {
+        if (!code) return null;
+        const caseInsensitive = new RegExp(`^${code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+        return this.runnerModel.findOne({
+            $or: [
+                { bib: code },
+                { chipCode: caseInsensitive },
+                { printingCode: caseInsensitive },
+                { rfidTag: caseInsensitive },
+            ],
+        }).lean().exec() as Promise<RunnerDocument | null>;
+    }
+
     /** Batch-update timing/score fields for multiple runners in a single bulkWrite */
     async bulkUpdateTiming(ops: Array<{ id: any; data: Record<string, any> }>): Promise<number> {
         if (!ops.length) return 0;

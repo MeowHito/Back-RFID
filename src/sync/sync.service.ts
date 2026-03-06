@@ -586,7 +586,18 @@ export class SyncService {
             || this.toSafeString(row?.AgeGroup ?? row?.ageGroup)
             || (isAgeGroupPattern ? rawCategory : '')
             || undefined;
-        const chipCode = this.toSafeString(row?.ChipCode ?? row?.chipCode);
+        const chipCode = this.toSafeString(
+            row?.ChipCode ?? row?.chipCode ?? row?.Chipcode ?? row?.chipcode
+            ?? row?.chip_code ?? row?.Chip_Code ?? row?.CHIPCODE
+            ?? row?.TagNo ?? row?.tagNo ?? row?.TagId ?? row?.tagId
+            ?? this.findRowValueByNormalizedKeys(row, ['chipcode', 'chip_code', 'tagno', 'tagid', 'rfidtag', 'rfid_tag']),
+        );
+        const printingCode = this.toSafeString(
+            row?.PrintingCode ?? row?.printingCode ?? row?.Printingcode ?? row?.printingcode
+            ?? row?.PrintCode ?? row?.printCode ?? row?.Printcode ?? row?.printcode
+            ?? row?.printing_code ?? row?.print_code ?? row?.PRINTINGCODE ?? row?.PRINTCODE
+            ?? this.findRowValueByNormalizedKeys(row, ['printingcode', 'printing_code', 'printcode', 'print_code']),
+        );
         const teamName = this.toSafeString(row?.TeamName ?? row?.teamName);
         const athleteId = this.toSafeString(
             row?.AthleteId ?? row?.athleteId ?? row?.athleteid ?? row?.ATHLETEID,
@@ -615,6 +626,7 @@ export class SyncService {
             teamName: teamName || undefined,
             chipCode: chipCode || undefined,
             rfidTag: chipCode || undefined,
+            printingCode: printingCode || undefined,
             nationality: this.toSafeString(
                 row?.CountryRegion ?? row?.countryRegion
                 ?? row?.Country ?? row?.country
@@ -781,7 +793,7 @@ export class SyncService {
         }
         return campaign;
     }
-    
+
     async wasLastSyncError(campaignId: string): Promise<boolean> {
         const lastSync = await this.syncLogModel
             .findOne({ campaignId: this.toCampaignObjectId(campaignId) })
@@ -1760,6 +1772,32 @@ export class SyncService {
                             // Get distance from the timingPointDistances map
                             const tpKey = `${rtEventId ?? eid ?? 'all'}:${tpName}`;
                             const distance = timingPointDistances.get(tpKey) ?? undefined;
+
+                            // === Extract all RaceTiger Pass Time fields ===
+                            const splitNo = this.parseNumericValue(row?.SplitNo ?? row?.splitNo ?? row?.No ?? row?.no);
+                            const splitDesc = this.toSafeString(row?.SplitDesc ?? row?.splitDesc ?? row?.Description ?? row?.description);
+                            const netPace = this.toSafeString(row?.NetPace ?? row?.netPace);
+                            const gunPace = this.toSafeString(row?.GunPace ?? row?.gunPace);
+                            const splitPace = this.toSafeString(row?.SplitPace ?? row?.splitPace ?? row?.Pace ?? row?.pace);
+                            const gunTimeMsRaw = this.parseNumericValue(row?.['GunTime(ms)'] ?? row?.['gunTime(ms)'] ?? row?.GunTimeMs ?? row?.gunTimeMs);
+                            const netTimeMsRaw = this.parseNumericValue(row?.['NetTime(ms)'] ?? row?.['netTime(ms)'] ?? row?.NetTimeMs ?? row?.netTimeMs);
+                            const totalGunTimeMs = this.parseTimeToMs(row?.TotalGunTime ?? row?.totalGunTime ?? row?.['Total Gun Time'] ?? row?.totalguntime);
+                            const totalNetTimeMs = this.parseTimeToMs(row?.TotalNetTime ?? row?.totalNetTime ?? row?.['Total Net Time'] ?? row?.totalnettime);
+                            const totalGunTimeMsRaw = this.parseNumericValue(row?.['TotalGun(ms.)'] ?? row?.['Total Gun (ms.)'] ?? row?.TotalGunMs ?? row?.totalGunMs);
+                            const totalNetTimeMsRaw = this.parseNumericValue(row?.['TotalNet(ms.)'] ?? row?.['Total Net (ms.)'] ?? row?.TotalNetMs ?? row?.totalNetMs);
+                            const chipCodeVal = this.toSafeString(row?.ChipCode ?? row?.chipCode ?? row?.Chipcode ?? row?.chipcode);
+                            const printingCodeVal = this.toSafeString(row?.PrintingCode ?? row?.printingCode ?? row?.Printingcode ?? row?.printingcode);
+                            const supplement = this.toSafeString(row?.Supplement ?? row?.supplement);
+                            const cutOff = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']);
+                            const legTimeMs = this.parseTimeToMs(row?.LegTime ?? row?.legTime ?? row?.['Leg Time']);
+                            const legPace = this.toSafeString(row?.LegPace ?? row?.legPace ?? row?.['Leg Pace']);
+                            const legDistVal = this.parseDistanceValue(row?.LegDistance ?? row?.legDistance ?? row?.['Leg Distance']);
+                            const lagMsVal = this.parseNumericValue(row?.LagMS ?? row?.lagMS ?? row?.lagMs ?? row?.['Lag MS'] ?? row?.LagMs);
+                            const distFromStartVal = this.parseDistanceValue(
+                                row?.DistanceFromStart ?? row?.distanceFromStart
+                                ?? row?.['Distance from start'] ?? row?.distancefromstart
+                            );
+
                             bulkOps.push({
                                 updateOne: {
                                     filter: {
@@ -1777,6 +1815,27 @@ export class SyncService {
                                             ...(gunTimeMs !== null && gunTimeMs > 0 ? { gunTime: gunTimeMs } : {}),
                                             ...(splitTimeMs !== null && splitTimeMs > 0 ? { splitTime: splitTimeMs } : {}),
                                             ...(distance !== undefined ? { distanceFromStart: distance } : {}),
+                                            ...(distFromStartVal !== null ? { distanceFromStart: distFromStartVal } : {}),
+                                            // New RaceTiger fields
+                                            ...(splitNo !== null ? { splitNo } : {}),
+                                            ...(splitDesc ? { splitDesc } : {}),
+                                            ...(netPace ? { netPace } : {}),
+                                            ...(gunPace ? { gunPace } : {}),
+                                            ...(splitPace ? { splitPace } : {}),
+                                            ...(gunTimeMsRaw !== null ? { gunTimeMs: gunTimeMsRaw } : {}),
+                                            ...(netTimeMsRaw !== null ? { netTimeMs: netTimeMsRaw } : {}),
+                                            ...(totalGunTimeMs !== null && totalGunTimeMs > 0 ? { totalGunTime: totalGunTimeMs } : {}),
+                                            ...(totalNetTimeMs !== null && totalNetTimeMs > 0 ? { totalNetTime: totalNetTimeMs } : {}),
+                                            ...(totalGunTimeMsRaw !== null ? { totalGunTimeMs: totalGunTimeMsRaw } : {}),
+                                            ...(totalNetTimeMsRaw !== null ? { totalNetTimeMs: totalNetTimeMsRaw } : {}),
+                                            ...(chipCodeVal ? { chipCode: chipCodeVal } : {}),
+                                            ...(printingCodeVal ? { printingCode: printingCodeVal } : {}),
+                                            ...(supplement ? { supplement } : {}),
+                                            ...(cutOff ? { cutOff } : {}),
+                                            ...(legTimeMs !== null && legTimeMs > 0 ? { legTime: legTimeMs } : {}),
+                                            ...(legPace ? { legPace } : {}),
+                                            ...(legDistVal !== null ? { legDistance: legDistVal } : {}),
+                                            ...(lagMsVal !== null ? { lagMs: lagMsVal } : {}),
                                         },
                                     },
                                     upsert: true,
@@ -1804,6 +1863,8 @@ export class SyncService {
                     lastScanTime: Date | null;
                     lastSplitTime: number | null;
                     lastCheckpointName: string | null;
+                    chipCode: string | null;
+                    printingCode: string | null;
                 }
                 const lapAccByRunner = new Map<string, RunnerLapAcc>();
                 for (const op of bulkOps) {
@@ -1811,11 +1872,14 @@ export class SyncService {
                     const cp: string = op.updateOne.filter.checkpoint;
                     const $set = op.updateOne.update.$set;
                     if (!lapAccByRunner.has(rId)) {
-                        lapAccByRunner.set(rId, { uniqueCps: new Set(), lapCount: 0, splitTimes: [], lastScanTime: null, lastSplitTime: null, lastCheckpointName: null });
+                        lapAccByRunner.set(rId, { uniqueCps: new Set(), lapCount: 0, splitTimes: [], lastScanTime: null, lastSplitTime: null, lastCheckpointName: null, chipCode: null, printingCode: null });
                     }
                     const acc = lapAccByRunner.get(rId)!;
                     acc.uniqueCps.add(cp);
                     acc.lapCount += 1;
+                    // Track chipCode/printingCode from passtime data
+                    if ($set.chipCode && !acc.chipCode) acc.chipCode = $set.chipCode;
+                    if ($set.printingCode && !acc.printingCode) acc.printingCode = $set.printingCode;
                     if ($set.splitTime && $set.splitTime > 0) acc.splitTimes.push($set.splitTime);
                     if ($set.scanTime) {
                         const t = $set.scanTime instanceof Date ? $set.scanTime : new Date($set.scanTime);
@@ -1847,6 +1911,9 @@ export class SyncService {
                             ...(acc.lastScanTime !== null ? { lastPassTime: acc.lastScanTime } : {}),
                             ...(acc.lastCheckpointName !== null ? { latestCheckpoint: acc.lastCheckpointName } : {}),
                             ...(shouldMarkInProgress ? { status: 'in_progress', isStarted: true } : {}),
+                            // Propagate chipCode/printingCode from passtime to runner
+                            ...(acc.chipCode ? { chipCode: acc.chipCode, rfidTag: acc.chipCode } : {}),
+                            ...(acc.printingCode ? { printingCode: acc.printingCode } : {}),
                         },
                     };
                 });
