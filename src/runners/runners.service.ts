@@ -393,18 +393,55 @@ export class RunnersService {
         }).lean().exec() as Promise<RunnerDocument | null>;
     }
 
-    /** Global lookup: find runner by BIB, chipCode, printingCode or rfidTag (case-insensitive) */
+    /** Global lookup: find runner by BIB, chipCode, printingCode or rfidTag (case-insensitive).
+     *  RFID scanners output the full tag (e.g. 24 hex chars) but the DB may store
+     *  only the last 8 chars as chipCode. Handles both directions of partial matching. */
     async findByAnyCodeGlobal(code: string): Promise<RunnerDocument | null> {
         if (!code) return null;
-        const caseInsensitive = new RegExp(`^${code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
-        return this.runnerModel.findOne({
+        const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const exactCI = new RegExp(`^${escaped}$`, 'i');
+
+        // 1. Try exact match first (BIB, full chipCode, printingCode, rfidTag)
+        const exact = await this.runnerModel.findOne({
             $or: [
                 { bib: code },
-                { chipCode: caseInsensitive },
-                { printingCode: caseInsensitive },
-                { rfidTag: caseInsensitive },
+                { chipCode: exactCI },
+                { printingCode: exactCI },
+                { rfidTag: exactCI },
             ],
-        }).lean().exec() as Promise<RunnerDocument | null>;
+        }).lean().exec() as RunnerDocument | null;
+        if (exact) return exact;
+
+        // 2. Partial matching for hex codes (scanner ↔ DB partial match)
+        if (code.length >= 6 && /^[0-9A-Fa-f]+$/.test(code)) {
+            // 2a. Extract last 8 chars from scanned code, match against shorter chipCode in DB
+            //     e.g. scanned "026F86D3E49528760204FE69" → try chipCode = "0204FE69"
+            if (code.length > 8) {
+                const last8 = code.slice(-8);
+                const last8Escaped = last8.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const last8CI = new RegExp(`^${last8Escaped}$`, 'i');
+                const byLast8 = await this.runnerModel.findOne({
+                    $or: [
+                        { chipCode: last8CI },
+                        { printingCode: last8CI },
+                        { rfidTag: last8CI },
+                    ],
+                }).lean().exec() as RunnerDocument | null;
+                if (byLast8) return byLast8;
+            }
+
+            // 2b. Also try: DB chipCode ends with scanned code (opposite direction)
+            const endsWith = new RegExp(`${escaped}$`, 'i');
+            const partial = await this.runnerModel.findOne({
+                $or: [
+                    { chipCode: endsWith },
+                    { rfidTag: endsWith },
+                ],
+            }).lean().exec() as RunnerDocument | null;
+            if (partial) return partial;
+        }
+
+        return null;
     }
 
     /** Batch-update timing/score fields for multiple runners in a single bulkWrite */
