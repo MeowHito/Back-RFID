@@ -209,7 +209,9 @@ export class RunnersService {
                 .find({ $or: [{ campaignId: campaignOid }, { campaignId: filter.campaignId }] })
                 .select('_id').lean().exec();
             const eventIds = events.map((e: any) => new Types.ObjectId(String(e._id)));
-            eventOidFilter = eventIds.length > 0 ? { $in: eventIds } : { $in: [] };
+            // Also include campaignId itself so runners saved with eventId=campaignId (e.g. ID card import) are found
+            eventIds.push(campaignOid);
+            eventOidFilter = { $in: eventIds };
         } else {
             eventOidFilter = new Types.ObjectId(filter.eventId);
         }
