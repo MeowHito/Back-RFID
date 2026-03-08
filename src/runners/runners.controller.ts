@@ -26,6 +26,11 @@ export class RunnersController {
         return this.runnersService.findByEvent(filter);
     }
 
+    @Get('counts')
+    getCounts(@Query('campaignId') campaignId: string) {
+        return this.runnersService.countByEventGrouped(campaignId);
+    }
+
     @Get('paged')
     findByEventWithPaging(
         @Query('eventId') eventId: string,

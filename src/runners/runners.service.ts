@@ -133,6 +133,30 @@ export class RunnersService {
         }).exec();
     }
 
+    /** Count runners grouped by category for a campaign — single aggregation instead of N requests */
+    async countByEventGrouped(campaignId: string): Promise<Record<string, number>> {
+        const campaignOid = new Types.ObjectId(campaignId);
+        const events = await (this.runnerModel.db.model('Event') as any)
+            .find({ $or: [{ campaignId: campaignOid }, { campaignId: campaignId }] })
+            .select('_id').lean().exec();
+        const eventIds = events.map((e: any) => new Types.ObjectId(String(e._id)));
+        eventIds.push(campaignOid);
+
+        const results = await this.runnerModel.aggregate([
+            { $match: { eventId: { $in: eventIds } } },
+            { $group: { _id: '$category', count: { $sum: 1 } } },
+        ]).exec();
+
+        const counts: Record<string, number> = {};
+        let total = 0;
+        for (const r of results) {
+            counts[r._id] = r.count;
+            total += r.count;
+        }
+        counts['__all__'] = total;
+        return counts;
+    }
+
     /** List runners by event – capped at 2000 to avoid slow responses. Use findByEventWithPaging for large lists. */
     async findByEvent(filter: RunnerFilter, limitCap: number = 2000): Promise<RunnerDocument[]> {
         const query: any = { eventId: new Types.ObjectId(filter.eventId) };
@@ -201,15 +225,16 @@ export class RunnersService {
     }
 
     async findByEventWithPaging(filter: RunnerFilter, paging?: PagingData, skipStatusCounts = false): Promise<{ data: RunnerDocument[]; total: number; dupBibs?: string[]; dupChips?: string[]; statusCounts?: Record<string, number> }> {
+        const t0 = Date.now();
+
+        // --- 1. Resolve event IDs (1 DB call) ---
         let eventOidFilter: any;
         if (filter.campaignId && Types.ObjectId.isValid(filter.campaignId)) {
-            // Query all events belonging to this campaign, then match runners by those event IDs
             const campaignOid = new Types.ObjectId(filter.campaignId);
             const events = await (this.runnerModel.db.model('Event') as any)
                 .find({ $or: [{ campaignId: campaignOid }, { campaignId: filter.campaignId }] })
                 .select('_id').lean().exec();
             const eventIds = events.map((e: any) => new Types.ObjectId(String(e._id)));
-            // Also include campaignId itself so runners saved with eventId=campaignId (e.g. ID card import) are found
             eventIds.push(campaignOid);
             eventOidFilter = { $in: eventIds };
         } else {
@@ -218,77 +243,113 @@ export class RunnersService {
         const baseMatch: any = { eventId: eventOidFilter };
         if (filter.category) baseMatch.category = filter.category;
 
-        let dupBibs: string[] = [];
-        let dupChips: string[] = [];
-        let statusCounts: Record<string, number> | undefined;
         const emptyCond = (field: string) => ({ $or: [{ [field]: { $exists: false } }, { [field]: '' }, { [field]: null }] });
 
-        // Only compute heavy dup/status queries when requested (admin participants page)
-        const needStatusCounts = !skipStatusCounts && (
-            filter.runnerStatus || filter.chipStatus // These filters require dup data
-        );
-
-        if (!skipStatusCounts) {
-            // Pre-compute duplicate BIBs and ChipCodes for this event+category
-            const [bibDupsResult, chipDupsResult] = await Promise.all([
-                this.runnerModel.aggregate([
-                    { $match: { ...baseMatch, bib: { $exists: true, $nin: ['', null] } } },
-                    { $group: { _id: '$bib', count: { $sum: 1 } } },
-                    { $match: { count: { $gt: 1 } } },
-                ]).exec(),
-                this.runnerModel.aggregate([
-                    { $match: { ...baseMatch, chipCode: { $exists: true, $nin: ['', null] } } },
-                    { $group: { _id: '$chipCode', count: { $sum: 1 } } },
-                    { $match: { count: { $gt: 1 } } },
-                ]).exec(),
-            ]);
-            dupBibs = bibDupsResult.map(d => d._id);
-            dupChips = chipDupsResult.map(d => d._id);
-
-            // Count statuses for filter badges
-            const [noBibCount, dupBibCount, noChipCount, dupChipCount, noNameCount, noGenderCount, noNatCount, noAgeCount, totalAll] = await Promise.all([
-                this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('bib') }).exec(),
-                dupBibs.length > 0 ? this.runnerModel.countDocuments({ ...baseMatch, bib: { $in: dupBibs } }).exec() : Promise.resolve(0),
-                this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('chipCode') }).exec(),
-                dupChips.length > 0 ? this.runnerModel.countDocuments({ ...baseMatch, chipCode: { $in: dupChips } }).exec() : Promise.resolve(0),
-                this.runnerModel.countDocuments({ ...baseMatch, $or: [{ firstName: { $exists: false } }, { firstName: '' }, { firstName: null }] }).exec(),
-                this.runnerModel.countDocuments({ ...baseMatch, $or: [{ gender: { $exists: false } }, { gender: '' }, { gender: null }] }).exec(),
-                this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('nationality') }).exec(),
-                this.runnerModel.countDocuments({ ...baseMatch, ...emptyCond('ageGroup') }).exec(),
-                this.runnerModel.countDocuments(baseMatch).exec(),
-            ]);
-            const readyCount = totalAll - noBibCount - dupBibCount - noChipCount - dupChipCount;
-            statusCounts = {
-                no_bib: noBibCount, dup_bib: dupBibCount, no_chip: noChipCount, dup_chip: dupChipCount,
-                no_name: noNameCount, no_gender: noGenderCount, no_nat: noNatCount, no_age: noAgeCount,
-                ready: Math.max(0, readyCount),
-            };
-        }
-
-        // Build main query
-        const query: any = { ...baseMatch };
-        if (filter.gender) query.gender = filter.gender;
-        if (filter.ageGroup) query.ageGroup = filter.ageGroup;
-        if (filter.status) query.status = filter.status;
+        // Build query filters (search, gender, status, etc.)
+        const queryMatch: any = { ...baseMatch };
+        if (filter.gender) queryMatch.gender = filter.gender;
+        if (filter.ageGroup) queryMatch.ageGroup = filter.ageGroup;
+        if (filter.status) queryMatch.status = filter.status;
         if (filter.chipStatus === 'has') {
-            query.chipCode = { $exists: true, $nin: ['', null] };
+            queryMatch.chipCode = { $exists: true, $nin: ['', null] };
         } else if (filter.chipStatus === 'missing') {
-            if (!query.$and) query.$and = [];
-            query.$and.push({ $or: [{ chipCode: { $exists: false } }, { chipCode: '' }, { chipCode: null }] });
+            if (!queryMatch.$and) queryMatch.$and = [];
+            queryMatch.$and.push({ $or: [{ chipCode: { $exists: false } }, { chipCode: '' }, { chipCode: null }] });
         }
-
         if (paging?.search || filter.search) {
             const searchTerm = paging?.search || filter.search;
-            const searchOr = [
-                { bib: { $regex: searchTerm, $options: 'i' } },
-                { firstName: { $regex: searchTerm, $options: 'i' } },
-                { lastName: { $regex: searchTerm, $options: 'i' } },
-            ];
-            if (!query.$and) query.$and = [];
-            query.$and.push({ $or: searchOr });
+            if (!queryMatch.$and) queryMatch.$and = [];
+            queryMatch.$and.push({
+                $or: [
+                    { bib: { $regex: searchTerm, $options: 'i' } },
+                    { firstName: { $regex: searchTerm, $options: 'i' } },
+                    { lastName: { $regex: searchTerm, $options: 'i' } },
+                ],
+            });
         }
 
-        // Apply runnerStatus filters
+        const page = paging?.page || 1;
+        const limit = paging?.limit || 50;
+        const skip = (page - 1) * limit;
+        let sortObj: any = { overallRank: 1, bib: 1 };
+        if (filter.sortBy) {
+            const dir = filter.sortOrder === 'desc' ? -1 : 1;
+            sortObj = { [filter.sortBy]: dir };
+        }
+
+        const selectFields = {
+            bib: 1, firstName: 1, lastName: 1, firstNameTh: 1, lastNameTh: 1,
+            gender: 1, category: 1, ageGroup: 1, age: 1, nationality: 1,
+            chipCode: 1, printingCode: 1, rfidTag: 1, status: 1,
+            team: 1, teamName: 1, box: 1, shirtSize: 1,
+            email: 1, phone: 1, idNo: 1, birthDate: 1,
+            emergencyContact: 1, emergencyPhone: 1, medicalInfo: 1,
+            bloodType: 1, chronicDiseases: 1, address: 1, sourceFile: 1,
+        };
+
+        // --- FAST PATH: skipStatusCounts & no runnerStatus filter → 1 DB call ---
+        if (skipStatusCounts && !filter.runnerStatus) {
+            const result = await this.runnerModel.aggregate([
+                { $match: queryMatch },
+                {
+                    $facet: {
+                        data: [{ $sort: sortObj }, { $skip: skip }, { $limit: limit }, { $project: selectFields }],
+                        total: [{ $count: 'c' }],
+                    },
+                },
+            ]).exec();
+            const rf = result[0] || {};
+            console.log(`[paged] fast: ${Date.now() - t0}ms`);
+            return { data: (rf.data || []) as RunnerDocument[], total: rf.total?.[0]?.c || 0 };
+        }
+
+        // --- FULL PATH: dups + status counts + data in 1 $facet (1 DB call) ---
+        const facetResult = await this.runnerModel.aggregate([
+            { $match: baseMatch },
+            {
+                $facet: {
+                    dupBibs: [
+                        { $match: { bib: { $exists: true, $nin: ['', null] } } },
+                        { $group: { _id: '$bib', count: { $sum: 1 } } },
+                        { $match: { count: { $gt: 1 } } },
+                    ],
+                    dupChips: [
+                        { $match: { chipCode: { $exists: true, $nin: ['', null] } } },
+                        { $group: { _id: '$chipCode', count: { $sum: 1 } } },
+                        { $match: { count: { $gt: 1 } } },
+                    ],
+                    totalAll: [{ $count: 'c' }],
+                    noBib: [{ $match: { $or: [{ bib: { $exists: false } }, { bib: '' }, { bib: null }] } }, { $count: 'c' }],
+                    noChip: [{ $match: { $or: [{ chipCode: { $exists: false } }, { chipCode: '' }, { chipCode: null }] } }, { $count: 'c' }],
+                    noName: [{ $match: { $or: [{ firstName: { $exists: false } }, { firstName: '' }, { firstName: null }] } }, { $count: 'c' }],
+                    noGender: [{ $match: { $or: [{ gender: { $exists: false } }, { gender: '' }, { gender: null }] } }, { $count: 'c' }],
+                    noNat: [{ $match: { $or: [{ nationality: { $exists: false } }, { nationality: '' }, { nationality: null }] } }, { $count: 'c' }],
+                    noAge: [{ $match: { $or: [{ ageGroup: { $exists: false } }, { ageGroup: '' }, { ageGroup: null }] } }, { $count: 'c' }],
+                },
+            },
+        ]).exec();
+
+        const fc = (arr: any[]) => arr?.[0]?.c || 0;
+        const f = facetResult[0] || {};
+        const dupBibs = (f.dupBibs || []).map((d: any) => d._id);
+        const dupChips = (f.dupChips || []).map((d: any) => d._id);
+        const totalAll = fc(f.totalAll);
+        const noBibCount = fc(f.noBib);
+        const noChipCount = fc(f.noChip);
+
+        // Count dup documents (need actual count of runners with dup bibs, not just unique dup bibs)
+        // Use the dup aggregation results to compute counts
+        const dupBibCount = (f.dupBibs || []).reduce((sum: number, d: any) => sum + d.count, 0);
+        const dupChipCount = (f.dupChips || []).reduce((sum: number, d: any) => sum + d.count, 0);
+
+        const readyCount = totalAll - noBibCount - dupBibCount - noChipCount - dupChipCount;
+        const statusCounts: Record<string, number> = {
+            no_bib: noBibCount, dup_bib: dupBibCount, no_chip: noChipCount, dup_chip: dupChipCount,
+            no_name: fc(f.noName), no_gender: fc(f.noGender), no_nat: fc(f.noNat), no_age: fc(f.noAge),
+            ready: Math.max(0, readyCount),
+        };
+
+        // Apply runnerStatus filter
         const statuses = filter.runnerStatus ? filter.runnerStatus.split(',').map(s => s.trim()) : [];
         if (statuses.length > 0) {
             const statusConditions: any[] = [];
@@ -311,28 +372,29 @@ export class RunnersService {
                 }
             }
             if (statusConditions.length > 0) {
-                if (!query.$and) query.$and = [];
-                query.$and.push(...statusConditions);
+                if (!queryMatch.$and) queryMatch.$and = [];
+                queryMatch.$and.push(...statusConditions);
             }
         }
 
-        const page = paging?.page || 1;
-        const limit = paging?.limit || 50;
-        const skip = (page - 1) * limit;
+        // Get filtered data + total (1 more DB call)
+        const dataResult = await this.runnerModel.aggregate([
+            { $match: queryMatch },
+            {
+                $facet: {
+                    data: [{ $sort: sortObj }, { $skip: skip }, { $limit: limit }, { $project: selectFields }],
+                    total: [{ $count: 'c' }],
+                },
+            },
+        ]).exec();
 
-        // Build sort
-        let sortObj: any = { overallRank: 1, bib: 1 };
-        if (filter.sortBy) {
-            const dir = filter.sortOrder === 'desc' ? -1 : 1;
-            sortObj = { [filter.sortBy]: dir };
-        }
-
-        const [data, total] = await Promise.all([
-            this.runnerModel.find(query).sort(sortObj).skip(skip).limit(limit).lean().exec(),
-            this.runnerModel.countDocuments(query).exec(),
-        ]);
-
-        return { data: data as RunnerDocument[], total, dupBibs, dupChips, statusCounts };
+        const df = dataResult[0] || {};
+        console.log(`[paged] full: ${Date.now() - t0}ms`);
+        return {
+            data: (df.data || []) as RunnerDocument[],
+            total: df.total?.[0]?.c || 0,
+            dupBibs, dupChips, statusCounts,
+        };
     }
 
     async deleteMany(ids: string[]): Promise<{ deletedCount: number }> {
