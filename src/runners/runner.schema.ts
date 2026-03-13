@@ -201,6 +201,9 @@ export class Runner {
 
     @Prop()
     statusChangedAt: Date; // When status was manually changed
+
+    @Prop()
+    photoUrl: string; // Base64 data URI of runner photo (uploaded via QR scan)
 }
 
 export const RunnerSchema = SchemaFactory.createForClass(Runner);

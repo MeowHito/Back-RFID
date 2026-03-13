@@ -743,4 +743,13 @@ export class RunnersService {
         if (data.changedBy) update.statusChangedBy = data.changedBy;
         return this.runnerModel.findByIdAndUpdate(runnerId, { $set: update }, { new: true }).lean().exec() as Promise<RunnerDocument | null>;
     }
+
+    /** Save photo (base64 data URI) to runner */
+    async updatePhoto(runnerId: string, photoUrl: string): Promise<RunnerDocument | null> {
+        return this.runnerModel.findByIdAndUpdate(
+            runnerId,
+            { $set: { photoUrl } },
+            { new: true },
+        ).lean().exec() as Promise<RunnerDocument | null>;
+    }
 }

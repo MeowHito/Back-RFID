@@ -134,6 +134,11 @@ export class RunnersController {
         return this.runnersService.updateStatus(id, body);
     }
 
+    @Put(':id/photo')
+    updatePhoto(@Param('id') id: string, @Body() body: any) {
+        return this.runnersService.updatePhoto(id, body.photo);
+    }
+
     @Delete(':id')
     delete(@Param('id') id: string) {
         return this.runnersService.delete(id);
