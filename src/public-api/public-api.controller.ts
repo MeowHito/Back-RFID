@@ -138,6 +138,16 @@ export class PublicApiController {
         return this.successResponse(data);
     }
 
+    @Get('campaign/image')
+    async getCampaignImage(@Query('id') id: string) {
+        try {
+            const data = await this.campaignsService.findById(id);
+            return this.successResponse({ pictureUrl: data?.pictureUrl || null });
+        } catch (error) {
+            return this.errorResponse('404', 'Campaign not found');
+        }
+    }
+
     @Get('campaign/getCampaignById')
     async getCampaignById(@Query('id') id: string) {
         try {
@@ -470,6 +480,7 @@ export class PublicApiController {
                     eslipTemplate: campaign.eslipTemplate || 'template1',
                     eslipTemplates: (campaign as any).eslipTemplates || [],
                     eslipVisibleFields: (campaign as any).eslipVisibleFields || [],
+                    displayMode: (campaign as any).displayMode || 'marathon',
                 } : null,
             });
         } catch (error) {
