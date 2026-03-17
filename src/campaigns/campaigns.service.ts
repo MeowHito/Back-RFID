@@ -96,7 +96,7 @@ export class CampaignsService {
         }
 
         const [data, total] = await Promise.all([
-            this.campaignModel.find(query).select('-pictureUrl').sort({ eventDate: -1 }).skip(skip).limit(limit).lean().exec(),
+            this.campaignModel.find(query).select('-pictureUrl -eslipCustomHtml -certBackgroundImage -chipBanner -chipBgUrl').sort({ eventDate: -1 }).skip(skip).limit(limit).lean().exec(),
             this.campaignModel.countDocuments(query).exec(),
         ]);
 
@@ -170,7 +170,7 @@ export class CampaignsService {
         }
 
         const [data, total] = await Promise.all([
-            this.campaignModel.find(query).select('-pictureUrl').sort({ eventDate: -1 }).skip(skip).limit(limit).lean().exec(),
+            this.campaignModel.find(query).select('-pictureUrl -eslipCustomHtml -certBackgroundImage -chipBanner -chipBgUrl').sort({ eventDate: -1 }).skip(skip).limit(limit).lean().exec(),
             this.campaignModel.countDocuments(query).exec(),
         ]);
 

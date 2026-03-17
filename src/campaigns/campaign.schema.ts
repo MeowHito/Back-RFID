@@ -63,6 +63,8 @@ export class Campaign {
     pictureUrl: string;
 
     @Prop()
+    thumbnail: string; // Tiny blurry base64 placeholder (~1KB)
+    @Prop()
     bgUrl: string;
 
     @Prop()

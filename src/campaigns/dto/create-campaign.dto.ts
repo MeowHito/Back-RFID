@@ -82,6 +82,10 @@ export class CreateCampaignDto {
 
     @IsOptional()
     @IsString()
+    thumbnail?: string;
+
+    @IsOptional()
+    @IsString()
     website?: string;
 
     @IsOptional()
