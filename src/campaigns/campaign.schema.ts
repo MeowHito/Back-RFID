@@ -196,6 +196,10 @@ export class Campaign {
      *  When false (default), race is ongoing → show Pass Time (live) view. */
     @Prop({ default: false })
     raceFinished: boolean;
+
+    /** Canva-like certificate layout — array of CertElement JSON objects */
+    @Prop({ type: Object })
+    certLayout: any;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);

@@ -197,4 +197,7 @@ export class CreateCampaignDto {
     @IsOptional()
     @IsBoolean()
     raceFinished?: boolean;
+
+    @IsOptional()
+    certLayout?: any;
 }
