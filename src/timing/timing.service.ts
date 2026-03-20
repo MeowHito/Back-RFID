@@ -341,8 +341,17 @@ export class TimingService {
 
     async getCheckpointRecordsByCampaign(campaignId: string, checkpoint: string): Promise<any[]> {
         const events = await this.eventsService.findByCampaign(campaignId);
-        if (!events || events.length === 0) return [];
-        const eventIds = events.map(e => new Types.ObjectId(String(e._id)));
+        // Include campaignId itself in the event IDs set (runners/timing records may use campaignId as eventId)
+        const eventIdSet = new Set<string>([campaignId]);
+        if (events && events.length > 0) {
+            events.forEach((e: any) => {
+                const id = String(e._id || '');
+                if (id) eventIdSet.add(id);
+            });
+        }
+        const eventIds = Array.from(eventIdSet)
+            .filter(id => Types.ObjectId.isValid(id))
+            .map(id => new Types.ObjectId(id));
         const records = await this.timingModel.aggregate([
             { $match: { eventId: { $in: eventIds }, checkpoint } },
             { $sort: { scanTime: 1 } },
