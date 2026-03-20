@@ -357,7 +357,8 @@ export class TimingService {
             { $sort: { scanTime: 1 } },
             {
                 $group: {
-                    _id: '$runnerId',
+                    _id: '$bib',
+                    runnerId: { $first: '$runnerId' },
                     timingId: { $first: '$_id' },
                     bib: { $first: '$bib' },
                     checkpoint: { $first: '$checkpoint' },
@@ -376,7 +377,7 @@ export class TimingService {
             {
                 $lookup: {
                     from: 'runners',
-                    localField: '_id',
+                    localField: 'runnerId',
                     foreignField: '_id',
                     as: 'runner',
                 },
@@ -384,7 +385,7 @@ export class TimingService {
             { $unwind: { path: '$runner', preserveNullAndEmptyArrays: true } },
             {
                 $project: {
-                    _id: 1,
+                    _id: { $ifNull: ['$runner._id', '$timingId'] },
                     bib: 1,
                     checkpoint: 1,
                     scanTime: 1,
