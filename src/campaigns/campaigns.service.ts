@@ -91,7 +91,6 @@ export class CampaignsService {
         if (paging?.search) {
             query.$or = [
                 { name: { $regex: paging.search, $options: 'i' } },
-                { shortName: { $regex: paging.search, $options: 'i' } },
             ];
         }
 

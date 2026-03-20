@@ -36,9 +36,6 @@ export class Campaign {
     nameEn: string; // English name
 
     @Prop()
-    shortName: string;
-
-    @Prop()
     description: string;
 
     @Prop({ required: true })
@@ -112,6 +109,9 @@ export class Campaign {
 
     @Prop()
     organizerName: string;
+
+    @Prop({ default: 'road_race' })
+    themeType: string;
 
     @Prop()
     organizerUuid: string;

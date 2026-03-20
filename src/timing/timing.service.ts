@@ -374,11 +374,29 @@ export class TimingService {
                 },
             },
             { $sort: { scanTime: 1 } },
+            // Pipeline-based lookup: try runnerId first, fall back to bib+eventId match
             {
                 $lookup: {
                     from: 'runners',
-                    localField: 'runnerId',
-                    foreignField: '_id',
+                    let: { rid: '$runnerId', bibVal: '$bib' },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: {
+                                    $or: [
+                                        { $eq: ['$_id', '$$rid'] },
+                                        {
+                                            $and: [
+                                                { $eq: ['$bib', '$$bibVal'] },
+                                                { $in: ['$eventId', eventIds] },
+                                            ],
+                                        },
+                                    ],
+                                },
+                            },
+                        },
+                        { $limit: 1 },
+                    ],
                     as: 'runner',
                 },
             },
@@ -397,14 +415,20 @@ export class TimingService {
                     netPace: { $ifNull: ['$runner.netPace', '$netPace'] },
                     gunPace: { $ifNull: ['$runner.gunPace', '$gunPace'] },
                     splitPace: 1,
-                    firstName: '$runner.firstName',
-                    lastName: '$runner.lastName',
-                    gender: '$runner.gender',
-                    category: '$runner.category',
-                    status: '$runner.status',
-                    overallRank: '$runner.overallRank',
-                    genderRank: '$runner.genderRank',
-                    categoryRank: '$runner.categoryRank',
+                    firstName: { $ifNull: ['$runner.firstName', ''] },
+                    lastName: { $ifNull: ['$runner.lastName', ''] },
+                    firstNameTh: '$runner.firstNameTh',
+                    lastNameTh: '$runner.lastNameTh',
+                    gender: { $ifNull: ['$runner.gender', ''] },
+                    category: { $ifNull: ['$runner.category', ''] },
+                    status: { $ifNull: ['$runner.status', 'in_progress'] },
+                    overallRank: { $ifNull: ['$runner.overallRank', 0] },
+                    genderRank: { $ifNull: ['$runner.genderRank', 0] },
+                    categoryRank: { $ifNull: ['$runner.categoryRank', 0] },
+                    ageGroup: '$runner.ageGroup',
+                    nationality: '$runner.nationality',
+                    team: '$runner.team',
+                    teamName: '$runner.teamName',
                     statusCheckpoint: '$runner.statusCheckpoint',
                     statusNote: '$runner.statusNote',
                 },

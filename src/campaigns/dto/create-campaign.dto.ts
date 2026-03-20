@@ -53,10 +53,6 @@ export class CreateCampaignDto {
 
     @IsOptional()
     @IsString()
-    shortName?: string;
-
-    @IsOptional()
-    @IsString()
     description?: string;
 
     @Type(() => Date)
@@ -107,6 +103,10 @@ export class CreateCampaignDto {
     @IsOptional()
     @IsString()
     organizerName?: string;
+
+    @IsOptional()
+    @IsString()
+    themeType?: string;
 
     @IsOptional()
     @IsBoolean()
