@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, Query } from '@nestjs/common';
 import { TimingService } from './timing.service';
 import type { ScanData } from './timing.service';
 
@@ -22,6 +22,22 @@ export class TimingController {
     @Get('event/:eventId')
     getEventRecords(@Param('eventId') eventId: string) {
         return this.timingService.getEventRecords(eventId);
+    }
+
+    @Get('checkpoint/:eventId')
+    getCheckpointRecords(
+        @Param('eventId') eventId: string,
+        @Query('cp') checkpoint: string,
+    ) {
+        return this.timingService.getCheckpointRecords(eventId, checkpoint);
+    }
+
+    @Get('checkpoint-by-campaign/:campaignId')
+    getCheckpointRecordsByCampaign(
+        @Param('campaignId') campaignId: string,
+        @Query('cp') checkpoint: string,
+    ) {
+        return this.timingService.getCheckpointRecordsByCampaign(campaignId, checkpoint);
     }
 
     @Delete(':id')

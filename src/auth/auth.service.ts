@@ -21,6 +21,9 @@ export interface AuthResponse {
         firstName: string;
         lastName: string;
         role: string;
+        allEventsAccess?: boolean;
+        allowedCampaigns?: string[];
+        modulePermissions?: Record<string, { view: boolean; create: boolean; delete: boolean; export: boolean }>;
     };
     campaign?: any;
     station?: any;
@@ -98,6 +101,9 @@ export class AuthService {
                 firstName: user.firstName,
                 lastName: user.lastName,
                 role: user.role,
+                allEventsAccess: (user as any).allEventsAccess ?? false,
+                allowedCampaigns: ((user as any).allowedCampaigns || []).map((c: any) => String(c)),
+                modulePermissions: (user as any).modulePermissions || {},
             },
         };
     }

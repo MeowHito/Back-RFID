@@ -481,6 +481,8 @@ export class PublicApiController {
                     eslipTemplates: (campaign as any).eslipTemplates || [],
                     eslipVisibleFields: (campaign as any).eslipVisibleFields || [],
                     displayMode: (campaign as any).displayMode || 'marathon',
+                    isApproveCertificate: campaign.isApproveCertificate ?? false,
+                    certLayout: (campaign as any).certLayout || null,
                 } : null,
             });
         } catch (error) {
