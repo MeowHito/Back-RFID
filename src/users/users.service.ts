@@ -195,6 +195,23 @@ export class UsersService {
         return updated;
     }
 
+    async updatePermissions(
+        id: string,
+        data: {
+            allEventsAccess?: boolean;
+            allowedCampaigns?: string[];
+            modulePermissions?: Record<string, { view: boolean; create: boolean; delete: boolean; export: boolean }>;
+        },
+    ): Promise<UserDocument> {
+        const updateData: any = {};
+        if (data.allEventsAccess !== undefined) updateData.allEventsAccess = data.allEventsAccess;
+        if (data.allowedCampaigns !== undefined) updateData.allowedCampaigns = data.allowedCampaigns;
+        if (data.modulePermissions !== undefined) updateData.modulePermissions = data.modulePermissions;
+        const user = await this.userModel.findByIdAndUpdate(id, updateData, { new: true }).select('-password').exec();
+        if (!user) throw new NotFoundException('User not found');
+        return user;
+    }
+
     async delete(id: string): Promise<void> {
         const result = await this.userModel.findByIdAndDelete(id).exec();
         if (!result) throw new NotFoundException('User not found');

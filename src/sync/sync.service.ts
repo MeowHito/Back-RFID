@@ -1633,6 +1633,16 @@ export class SyncService {
             const scoreResult = await this.syncTimingOnly(campaignId);
             this.logger.log(`Score sync: ${scoreResult.updated} timing updates, ${scoreResult.statusChanges} status changes`);
             this.logger.log(`Pre-filter: skipped ${skippedNoResult} BIO rows with no race results in SCORE data`);
+            // Also fetch split/checkpoint timing records (split distance, split time, split pace, supplement, chip note)
+            this.logger.log(`Fetching split timing data for campaign ${campaignId}...`);
+            let splitUpserted = 0;
+            try {
+                const splitResult = await this.syncSplitTimingRecords(campaignId, new Map());
+                splitUpserted = splitResult.upserted;
+                this.logger.log(`Split sync: ${splitResult.upserted} timing records upserted, ${splitResult.errors.length} errors`);
+            } catch (splitErr: any) {
+                this.logger.warn(`Split sync failed (non-fatal): ${splitErr?.message}`);
+            }
             const result = {
                 fetchedAt: new Date().toISOString(),
                 summary: {
@@ -1647,6 +1657,7 @@ export class SyncService {
                     errors: processingErrors,
                     scoreUpdates: scoreResult.updated,
                     scoreStatusChanges: scoreResult.statusChanges,
+                    splitUpserted,
                 },
             };
             await this.updateSyncLog(syncLog._id.toString(), {

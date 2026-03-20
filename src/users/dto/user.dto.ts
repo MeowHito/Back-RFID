@@ -1,4 +1,4 @@
-import { IsString, IsEmail, IsOptional, MinLength, IsEnum } from 'class-validator';
+import { IsString, IsEmail, IsOptional, MinLength, IsEnum, IsBoolean, IsArray, IsObject } from 'class-validator';
 
 export class CreateUserDto {
     @IsEmail()
@@ -27,6 +27,18 @@ export class CreateUserDto {
     @IsOptional()
     @IsString()
     phone?: string;
+
+    @IsOptional()
+    @IsBoolean()
+    allEventsAccess?: boolean;
+
+    @IsOptional()
+    @IsArray()
+    allowedCampaigns?: string[];
+
+    @IsOptional()
+    @IsObject()
+    modulePermissions?: Record<string, { view: boolean; create: boolean; delete: boolean; export: boolean }>;
 }
 
 export class LoginDto {

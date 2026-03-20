@@ -37,6 +37,18 @@ export class UsersController {
         return this.usersService.updateRole(id, role, requestorRole);
     }
 
+    @Put(':id/permissions')
+    updatePermissions(
+        @Param('id') id: string,
+        @Body() body: {
+            allEventsAccess?: boolean;
+            allowedCampaigns?: string[];
+            modulePermissions?: Record<string, { view: boolean; create: boolean; delete: boolean; export: boolean }>;
+        },
+    ) {
+        return this.usersService.updatePermissions(id, body);
+    }
+
     @Post('update-password')
     updatePassword(@Body() data: UpdatePasswordDto) {
         return this.usersService.updatePassword(data);

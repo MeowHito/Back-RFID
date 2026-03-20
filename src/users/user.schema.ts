@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
+import { Document, Types } from 'mongoose';
 
 export type UserDocument = User & Document;
 
@@ -44,6 +44,16 @@ export class User {
 
     @Prop()
     resetTokenExpiry: Date;
+
+    // === Granular Permissions ===
+    @Prop({ default: false })
+    allEventsAccess: boolean;
+
+    @Prop({ type: [{ type: Types.ObjectId, ref: 'Campaign' }], default: [] })
+    allowedCampaigns: Types.ObjectId[];
+
+    @Prop({ type: Object, default: () => ({}) })
+    modulePermissions: Record<string, { view: boolean; create: boolean; delete: boolean; export: boolean }>;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
