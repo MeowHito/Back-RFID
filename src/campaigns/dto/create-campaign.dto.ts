@@ -181,4 +181,20 @@ export class CreateCampaignDto {
 
     @IsOptional()
     excludeOverallFromAgeGroup?: number;
+
+    @IsOptional()
+    @IsArray()
+    displayColumns?: string[];
+
+    @IsOptional()
+    @IsArray()
+    displayColumnsLab?: string[];
+
+    @IsOptional()
+    @IsString()
+    displayMode?: string;
+
+    @IsOptional()
+    @IsBoolean()
+    raceFinished?: boolean;
 }
