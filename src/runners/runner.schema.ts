@@ -226,3 +226,4 @@ RunnerSchema.index({ eventId: 1, category: 1, ageGroup: 1, gender: 1 }); // Deta
 RunnerSchema.index({ eventId: 1, status: 1, netTime: 1 }); // Finish-by-time aggregation
 RunnerSchema.index({ createdAt: -1 }); // findAll sort
 RunnerSchema.index({ eventId: 1, overallRank: 1, bib: 1 }); // Fast sort for event results
+RunnerSchema.index({ idNo: 1 }); // Thai citizen ID lookup (scanning)

@@ -460,6 +460,7 @@ export class RunnersService {
                 { chipCode: code },
                 { printingCode: code },
                 { rfidTag: code },
+                { idNo: code },
             ],
         }).lean().exec() as Promise<RunnerDocument | null>;
     }
@@ -479,6 +480,7 @@ export class RunnersService {
                 { chipCode: exactCI },
                 { printingCode: exactCI },
                 { rfidTag: exactCI },
+                { idNo: code },
             ],
         }).lean().exec() as RunnerDocument | null;
         if (exact) return exact;
