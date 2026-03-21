@@ -4,6 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Campaign, CampaignDocument } from '../campaigns/campaign.schema';
 import { Event, EventDocument } from '../events/event.schema';
+import { Runner, RunnerDocument } from '../runners/runner.schema';
 import { CreateRunnerDto } from '../runners/dto/create-runner.dto';
 import { RunnersService } from '../runners/runners.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
@@ -35,6 +36,7 @@ export class SyncService {
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
         @InjectModel(Event.name) private eventModel: Model<EventDocument>,
         @InjectModel(TimingRecord.name) private timingRecordModel: Model<TimingRecordDocument>,
+        @InjectModel(Runner.name) private runnerModel: Model<RunnerDocument>,
         private readonly runnersService: RunnersService,
         private readonly checkpointsService: CheckpointsService,
         private readonly configService: ConfigService,
@@ -640,7 +642,18 @@ export class SyncService {
             birthDate: this.toOptionalDate(row?.Birthday ?? row?.birthday),
             idNo,
             email,
-            status: 'not_started',
+            status: (() => {
+                const finishStatus = this.toSafeString(
+                    row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
+                    ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
+                    ?? row?.Status ?? row?.status ?? row?.Result ?? row?.result
+                    ?? this.findRowValueByNormalizedKeys(row, ['finishstatus', 'finish_status']),
+                ).toLowerCase();
+                if (finishStatus.includes('dnf') || finishStatus.includes('did not finish')) return 'dnf';
+                if (finishStatus.includes('dns') || finishStatus.includes('did not start')) return 'dns';
+                if (finishStatus.includes('dq') || finishStatus.includes('disqualif')) return 'dq';
+                return 'not_started';
+            })(),
             isStarted: false,
             allowRFIDSync: true,
             sourceFile: 'RaceTiger BIO sync',
@@ -732,7 +745,7 @@ export class SyncService {
         const path = this.getRaceTigerPath(type);
         const endpoint = `${baseUrl}${path}`;
         const partnerCode = (campaign as any).partnerCode?.trim() || this.configService.get<string>('RACE_TIGER_PARTNER_CODE') || '000001';
-        const timeoutMs = Number(this.configService.get<string>('RACE_TIGER_TIMEOUT_MS') || 15000);
+        const timeoutMs = Number(this.configService.get<string>('RACE_TIGER_TIMEOUT_MS') || 30000);
         const form = new URLSearchParams({
             pc: partnerCode,
             rid: raceId,
@@ -1535,9 +1548,8 @@ export class SyncService {
                 this.logger.log(`  RaceTiger EID ${rtId} → local event ${localId} (${catName})`);
             }
             this.logger.log(`RaceTiger EIDs to fetch: ${uniqueRaceTigerEids.length > 0 ? uniqueRaceTigerEids.join(', ') : 'ALL (no eid filter)'}`);
-            // Pre-fetch SCORE data to identify BIBs with race results — only import those
-            const scoreBibSet = await this.fetchScoreBibSet(campaign, uniqueRaceTigerEids);
-            this.logger.log(`Score pre-filter: ${scoreBibSet.size} BIBs with race results found`);
+            // Import ALL runners from BIO (no pre-filter) — DNF/DNS runners have no score data
+            // but should still be imported. Their status is set from FinishStatus in mapBioRowToRunner.
             let skippedNoResult = 0;
             // CLEAN SLATE: delete ALL existing RaceTiger runners before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
@@ -1568,14 +1580,6 @@ export class SyncService {
                     const mapped: CreateRunnerDto[] = [];
                     const skipReasons: Record<string, number> = {};
                     for (const row of rows) {
-                        // Pre-filter: skip BIO rows for runners without race results in SCORE data
-                        const rowBib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
-                        const rowAthleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId);
-                        const hasScoreResult = (rowBib && scoreBibSet.has(rowBib)) || (rowAthleteId && scoreBibSet.has(rowAthleteId));
-                        if (!hasScoreResult) {
-                            skippedNoResult++;
-                            continue;
-                        }
                         const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
                         if (runner) {
                             mapped.push(runner);
@@ -1643,6 +1647,64 @@ export class SyncService {
             } catch (splitErr: any) {
                 this.logger.warn(`Split sync failed (non-fatal): ${splitErr?.message}`);
             }
+            // ── Post-sync: detect DNF/DNS for runners who did not finish ──
+            // RaceTiger BIO has no FinishStatus field. Score only returns finishers.
+            // After Score sync, finishers have status='finished'. Everyone else who
+            // is not already dnf/dns/dq needs to be classified:
+            //   - Has timing records (started running) but no finish → DNF
+            //   - No timing records at all → DNS
+            let dnfUpdated = 0;
+            let dnsUpdated = 0;
+            try {
+                const allEventIds = [...eventResolver.categoryByEventId.keys()];
+                if (eventResolver.fallbackEventId) allEventIds.push(eventResolver.fallbackEventId);
+                const eventOids = allEventIds
+                    .filter(id => Types.ObjectId.isValid(id))
+                    .map(id => new Types.ObjectId(id));
+                // Find all runners who are NOT finished/dnf/dns/dq after score sync
+                const unfinishedRunners = await this.runnerModel.find({
+                    eventId: { $in: eventOids },
+                    status: { $nin: ['finished', 'dnf', 'dns', 'dq'] },
+                }).select('_id bib').lean().exec();
+                if (unfinishedRunners.length > 0) {
+                    this.logger.log(`Post-sync DNF/DNS detection: ${unfinishedRunners.length} runners not finished`);
+                    // Check which ones have timing records (split data)
+                    const runnerBibs = unfinishedRunners.map((r: any) => r.bib).filter(Boolean);
+                    const timingRecords = await this.timingRecordModel.find({
+                        eventId: { $in: eventOids },
+                        bib: { $in: runnerBibs },
+                    }).select('bib').lean().exec();
+                    const bibsWithTimingRecords = new Set(timingRecords.map((tr: any) => tr.bib));
+                    const dnfIds: Types.ObjectId[] = [];
+                    const dnsIds: Types.ObjectId[] = [];
+                    for (const runner of unfinishedRunners) {
+                        const rAny = runner as any;
+                        if (bibsWithTimingRecords.has(rAny.bib)) {
+                            dnfIds.push(rAny._id);
+                        } else {
+                            dnsIds.push(rAny._id);
+                        }
+                    }
+                    if (dnfIds.length > 0) {
+                        const dnfResult = await this.runnerModel.updateMany(
+                            { _id: { $in: dnfIds } },
+                            { $set: { status: 'dnf', isStarted: true } },
+                        ).exec();
+                        dnfUpdated = dnfResult.modifiedCount;
+                        this.logger.log(`  DNF: ${dnfUpdated} runners marked as DNF (had timing records but no finish)`);
+                    }
+                    if (dnsIds.length > 0) {
+                        const dnsResult = await this.runnerModel.updateMany(
+                            { _id: { $in: dnsIds } },
+                            { $set: { status: 'dns' } },
+                        ).exec();
+                        dnsUpdated = dnsResult.modifiedCount;
+                        this.logger.log(`  DNS: ${dnsUpdated} runners marked as DNS (no timing records)`);
+                    }
+                }
+            } catch (dnfDnsErr: any) {
+                this.logger.warn(`DNF/DNS detection failed (non-fatal): ${dnfDnsErr?.message}`);
+            }
             const result = {
                 fetchedAt: new Date().toISOString(),
                 summary: {
@@ -1658,6 +1720,8 @@ export class SyncService {
                     scoreUpdates: scoreResult.updated,
                     scoreStatusChanges: scoreResult.statusChanges,
                     splitUpserted,
+                    dnfDetected: dnfUpdated,
+                    dnsDetected: dnsUpdated,
                 },
             };
             await this.updateSyncLog(syncLog._id.toString(), {

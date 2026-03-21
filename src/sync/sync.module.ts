@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { Campaign, CampaignSchema } from '../campaigns/campaign.schema';
 import { Event, EventSchema } from '../events/event.schema';
 import { TimingRecord, TimingRecordSchema } from '../timing/timing-record.schema';
+import { Runner, RunnerSchema } from '../runners/runner.schema';
 import { RunnersModule } from '../runners/runners.module';
 import { CheckpointsModule } from '../checkpoints/checkpoints.module';
 import { SyncController } from './sync.controller';
@@ -19,6 +20,7 @@ import { SyncLog, SyncLogSchema } from './sync-log.schema';
             { name: Campaign.name, schema: CampaignSchema },
             { name: Event.name, schema: EventSchema },
             { name: TimingRecord.name, schema: TimingRecordSchema },
+            { name: Runner.name, schema: RunnerSchema },
         ]),
     ],
     controllers: [SyncController],

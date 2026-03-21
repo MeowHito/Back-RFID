@@ -76,14 +76,20 @@ export class RunnersService {
                 if ((r as any).athleteId) bioFields.athleteId = (r as any).athleteId;
                 if (r.sourceFile) bioFields.sourceFile = r.sourceFile;
 
+                const isNonDefaultStatus = r.status && r.status !== 'not_started';
                 return {
                     updateOne: {
                         filter: { eventId: new Types.ObjectId(r.eventId), bib: r.bib },
                         update: {
-                            $set: bioFields,
+                            $set: {
+                                ...bioFields,
+                                // If BIO says DNF/DNS/DQ, also update status on existing runners
+                                ...(isNonDefaultStatus ? { status: r.status } : {}),
+                            },
                             // status, timing, and rank fields only set on FIRST INSERT
                             $setOnInsert: {
-                                status: r.status || 'not_started',
+                                // Only include status in $setOnInsert when it's default (avoid $set/$setOnInsert conflict)
+                                ...(isNonDefaultStatus ? {} : { status: 'not_started' }),
                                 isStarted: false,
                                 netTime: 0,
                                 elapsedTime: 0,

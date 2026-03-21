@@ -435,7 +435,84 @@ export class TimingService {
             },
         ]).exec();
 
-        return dedupeCheckpointRunnerRecords(records);
+        const deduped = dedupeCheckpointRunnerRecords(records);
+
+        // ── Merge DNF/DNS/DQ runners who may not have timing records at this checkpoint ──
+        // Also fix status for runners whose $lookup failed (status defaulted to 'in_progress')
+        const eventIdStrings = eventIds.map(id => id.toHexString());
+        const allRunners = await this.runnersService.findByEventIds(eventIdStrings, {});
+        if (allRunners && allRunners.length > 0) {
+            // Build bib→runner map for ALL runners (to fix statuses + add missing ones)
+            const runnerByBib = new Map<string, any>();
+            for (const runner of allRunners) {
+                const r = runner as any;
+                if (r.bib) runnerByBib.set(String(r.bib), r);
+            }
+
+            // 1) Fix status for runners already in results whose $lookup may have failed
+            const existingBibs = new Set<string>();
+            for (const rec of deduped) {
+                if (rec.bib) {
+                    existingBibs.add(String(rec.bib));
+                    const dbRunner = runnerByBib.get(String(rec.bib));
+                    if (dbRunner) {
+                        // Override status with the actual DB status
+                        rec.status = dbRunner.status || 'not_started';
+                        // Fill in missing runner data if $lookup failed
+                        if (!rec.firstName && dbRunner.firstName) rec.firstName = dbRunner.firstName;
+                        if (!rec.lastName && dbRunner.lastName) rec.lastName = dbRunner.lastName;
+                        if (!rec.gender && dbRunner.gender) rec.gender = dbRunner.gender;
+                        if (!rec.category && dbRunner.category) rec.category = dbRunner.category;
+                        if ((!rec.overallRank || rec.overallRank === 0) && dbRunner.overallRank) rec.overallRank = dbRunner.overallRank;
+                        if ((!rec.genderRank || rec.genderRank === 0) && dbRunner.genderRank) rec.genderRank = dbRunner.genderRank;
+                        if ((!rec.categoryRank || rec.categoryRank === 0) && dbRunner.categoryRank) rec.categoryRank = dbRunner.categoryRank;
+                        if (!rec.statusCheckpoint && dbRunner.statusCheckpoint) rec.statusCheckpoint = dbRunner.statusCheckpoint;
+                        if (!rec.statusNote && dbRunner.statusNote) rec.statusNote = dbRunner.statusNote;
+                    }
+                }
+            }
+
+            // 2) Add DNF/DNS/DQ runners not already in results (no timing at this checkpoint)
+            for (const runner of allRunners) {
+                const r = runner as any;
+                const st = (r.status || '').toLowerCase();
+                if (!['dnf', 'dns', 'dq'].includes(st)) continue;
+                if (!r.bib || existingBibs.has(String(r.bib))) continue;
+
+                deduped.push({
+                    _id: r._id,
+                    bib: r.bib,
+                    checkpoint: null,
+                    scanTime: null,
+                    elapsedTime: null,
+                    splitTime: null,
+                    order: null,
+                    netTime: r.netTime || null,
+                    gunTime: r.gunTime || null,
+                    netPace: r.netPace || '',
+                    gunPace: r.gunPace || '',
+                    splitPace: null,
+                    firstName: r.firstName || '',
+                    lastName: r.lastName || '',
+                    firstNameTh: r.firstNameTh || '',
+                    lastNameTh: r.lastNameTh || '',
+                    gender: r.gender || '',
+                    category: r.category || '',
+                    status: r.status,
+                    overallRank: r.overallRank || 0,
+                    genderRank: r.genderRank || 0,
+                    categoryRank: r.categoryRank || 0,
+                    ageGroup: r.ageGroup || '',
+                    nationality: r.nationality || '',
+                    team: r.team || '',
+                    teamName: r.teamName || '',
+                    statusCheckpoint: r.statusCheckpoint || '',
+                    statusNote: r.statusNote || '',
+                } as any);
+            }
+        }
+
+        return deduped;
     }
 
     async deleteRecord(id: string): Promise<void> {
