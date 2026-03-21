@@ -204,6 +204,10 @@ export class Campaign {
     /** Scanning page display template: 'classic' | 'split' */
     @Prop({ default: 'classic' })
     scanningTemplate: string;
+
+    /** Background image for scanning page (base64 or URL) */
+    @Prop()
+    scanningBgImage: string;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);

@@ -1973,7 +1973,7 @@ export class SyncService {
                     const existingRunner = allRunners.find(r => String(r._id) === rId);
                     const shouldMarkInProgress =
                         existingRunner &&
-                        existingRunner.status === 'not_started' &&
+                        ['not_started', 'dnf'].includes(existingRunner.status) &&
                         acc.lapCount > 0;
                     return {
                         id: new Types.ObjectId(rId),
