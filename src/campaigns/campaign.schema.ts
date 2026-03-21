@@ -200,6 +200,10 @@ export class Campaign {
     /** Canva-like certificate layout — array of CertElement JSON objects */
     @Prop({ type: Object })
     certLayout: any;
+
+    /** Scanning page display template: 'classic' | 'split' */
+    @Prop({ default: 'classic' })
+    scanningTemplate: string;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);

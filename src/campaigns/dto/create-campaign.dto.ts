@@ -200,4 +200,8 @@ export class CreateCampaignDto {
 
     @IsOptional()
     certLayout?: any;
+
+    @IsOptional()
+    @IsString()
+    scanningTemplate?: string;
 }
