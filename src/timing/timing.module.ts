@@ -7,6 +7,7 @@ import { TimingRecord, TimingRecordSchema } from './timing-record.schema';
 import { RunnersModule } from '../runners/runners.module';
 import { EventsModule } from '../events/events.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { CheckpointsModule } from '../checkpoints/checkpoints.module';
 
 @Module({
     imports: [
@@ -14,6 +15,7 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
         RunnersModule,
         EventsModule,
         CampaignsModule,
+        CheckpointsModule,
     ],
     controllers: [TimingController],
     providers: [TimingService, TimingGateway],

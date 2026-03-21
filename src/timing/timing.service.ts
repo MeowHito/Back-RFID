@@ -5,6 +5,7 @@ import { TimingRecord, TimingRecordDocument } from './timing-record.schema';
 import { RunnersService } from '../runners/runners.service';
 import { TimingGateway } from './timing.gateway';
 import { EventsService } from '../events/events.service';
+import { CheckpointsService } from '../checkpoints/checkpoints.service';
 
 export interface ScanData {
     eventId: string;
@@ -91,6 +92,7 @@ export class TimingService {
         private runnersService: RunnersService,
         private timingGateway: TimingGateway,
         private eventsService: EventsService,
+        private checkpointsService: CheckpointsService,
     ) { }
 
     async processScan(scanData: ScanData): Promise<TimingRecordDocument> {
@@ -437,27 +439,82 @@ export class TimingService {
 
         const deduped = dedupeCheckpointRunnerRecords(records);
 
-        // ── Merge DNF/DNS/DQ runners who may not have timing records at this checkpoint ──
-        // Also fix status for runners whose $lookup failed (status defaulted to 'in_progress')
+        // ── Build checkpoint ordering map (name → orderNum) for per-CP status logic ──
+        const cpOrderMap = new Map<string, number>();
+        try {
+            const campaignCheckpoints = await this.checkpointsService.findByCampaign(campaignId);
+            for (const cp of campaignCheckpoints) {
+                const cpObj = cp as any;
+                const cpName = (cpObj.name || '').toUpperCase();
+                if (cpName) cpOrderMap.set(cpName, cpObj.orderNum ?? 0);
+            }
+        } catch { /* checkpoints may not exist yet */ }
+        const currentCpOrder = cpOrderMap.get(checkpoint.toUpperCase()) ?? -1;
+
+        // ── Merge DNF/DNS/DQ runners + fix statuses per-checkpoint ──
         const eventIdStrings = eventIds.map(id => id.toHexString());
         const allRunners = await this.runnersService.findByEventIds(eventIdStrings, {});
         if (allRunners && allRunners.length > 0) {
-            // Build bib→runner map for ALL runners (to fix statuses + add missing ones)
             const runnerByBib = new Map<string, any>();
+            const dnfDqBibs: string[] = [];
             for (const runner of allRunners) {
                 const r = runner as any;
-                if (r.bib) runnerByBib.set(String(r.bib), r);
+                if (r.bib) {
+                    runnerByBib.set(String(r.bib), r);
+                    const st = (r.status || '').toLowerCase();
+                    if (['dnf', 'dq'].includes(st)) dnfDqBibs.push(String(r.bib));
+                }
             }
 
-            // 1) Fix status for runners already in results whose $lookup may have failed
+            // For DNF/DQ runners without statusCheckpoint, find their last checkpoint via timing records
+            // so we know where to show them as DNF vs passed
+            const dnfLastCpMap = new Map<string, number>(); // bib → highest orderNum with timing
+            if (dnfDqBibs.length > 0 && cpOrderMap.size > 0) {
+                const dnfTimingRecords = await this.timingModel.find({
+                    eventId: { $in: eventIds },
+                    bib: { $in: dnfDqBibs },
+                }).select('bib checkpoint').lean().exec();
+                for (const tr of dnfTimingRecords) {
+                    const bib = String((tr as any).bib);
+                    const cpName = ((tr as any).checkpoint || '').toUpperCase();
+                    const cpOrder = cpOrderMap.get(cpName) ?? -1;
+                    const prev = dnfLastCpMap.get(bib) ?? -1;
+                    if (cpOrder > prev) dnfLastCpMap.set(bib, cpOrder);
+                }
+            }
+
+            // 1) Fix status for runners already in results (have timing at this CP)
             const existingBibs = new Set<string>();
             for (const rec of deduped) {
                 if (rec.bib) {
                     existingBibs.add(String(rec.bib));
                     const dbRunner = runnerByBib.get(String(rec.bib));
                     if (dbRunner) {
-                        // Override status with the actual DB status
-                        rec.status = dbRunner.status || 'not_started';
+                        const dbStatus = (dbRunner.status || 'not_started').toLowerCase();
+                        const dbStatusCp = dbRunner.statusCheckpoint || '';
+
+                        if (['dnf', 'dq'].includes(dbStatus)) {
+                            if (dbStatusCp) {
+                                // Admin-set statusCheckpoint: show DNF only at that CP, passed elsewhere
+                                const stoppedOrder = cpOrderMap.get(dbStatusCp.toUpperCase()) ?? -1;
+                                if (stoppedOrder === currentCpOrder || currentCpOrder < 0 || stoppedOrder < 0) {
+                                    rec.status = dbRunner.status; // DNF/DQ at this CP
+                                } else {
+                                    rec.status = 'finished'; // passed here, DNF elsewhere
+                                }
+                            } else {
+                                // RaceTiger import: show DNF at their LAST timed CP, passed at earlier CPs
+                                const lastOrder = dnfLastCpMap.get(String(rec.bib)) ?? -1;
+                                if (lastOrder === currentCpOrder || currentCpOrder < 0) {
+                                    rec.status = dbRunner.status; // DNF at their last CP
+                                } else {
+                                    rec.status = 'finished'; // passed through here earlier
+                                }
+                            }
+                        } else {
+                            rec.status = dbRunner.status || 'not_started';
+                        }
+
                         // Fill in missing runner data if $lookup failed
                         if (!rec.firstName && dbRunner.firstName) rec.firstName = dbRunner.firstName;
                         if (!rec.lastName && dbRunner.lastName) rec.lastName = dbRunner.lastName;
@@ -466,18 +523,29 @@ export class TimingService {
                         if ((!rec.overallRank || rec.overallRank === 0) && dbRunner.overallRank) rec.overallRank = dbRunner.overallRank;
                         if ((!rec.genderRank || rec.genderRank === 0) && dbRunner.genderRank) rec.genderRank = dbRunner.genderRank;
                         if ((!rec.categoryRank || rec.categoryRank === 0) && dbRunner.categoryRank) rec.categoryRank = dbRunner.categoryRank;
-                        if (!rec.statusCheckpoint && dbRunner.statusCheckpoint) rec.statusCheckpoint = dbRunner.statusCheckpoint;
-                        if (!rec.statusNote && dbRunner.statusNote) rec.statusNote = dbRunner.statusNote;
+                        rec.statusCheckpoint = dbRunner.statusCheckpoint || '';
+                        rec.statusNote = dbRunner.statusNote || '';
                     }
                 }
             }
 
-            // 2) Add DNF/DNS/DQ runners not already in results (no timing at this checkpoint)
+            // 2) Add stopped runners NOT in results (no timing at this checkpoint)
+            //    - DNS: always add (never started → missing everywhere)
+            //    - DNF/DQ with statusCheckpoint matching this CP: add (admin marked them here)
+            //    - DNF/DQ otherwise: DON'T add (they never reached this checkpoint)
             for (const runner of allRunners) {
                 const r = runner as any;
                 const st = (r.status || '').toLowerCase();
                 if (!['dnf', 'dns', 'dq'].includes(st)) continue;
                 if (!r.bib || existingBibs.has(String(r.bib))) continue;
+
+                if (['dnf', 'dq'].includes(st)) {
+                    // Only add if admin explicitly set statusCheckpoint to THIS checkpoint
+                    const sCp = (r.statusCheckpoint || '').toUpperCase();
+                    if (!sCp) continue; // No statusCheckpoint → they have no timing here → skip
+                    const stoppedOrder = cpOrderMap.get(sCp) ?? -1;
+                    if (stoppedOrder !== currentCpOrder) continue; // Different CP → skip
+                }
 
                 deduped.push({
                     _id: r._id,
