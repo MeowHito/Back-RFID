@@ -6,12 +6,14 @@ import { TimingGateway } from './timing.gateway';
 import { TimingRecord, TimingRecordSchema } from './timing-record.schema';
 import { RunnersModule } from '../runners/runners.module';
 import { EventsModule } from '../events/events.module';
+import { CampaignsModule } from '../campaigns/campaigns.module';
 
 @Module({
     imports: [
         MongooseModule.forFeature([{ name: TimingRecord.name, schema: TimingRecordSchema }]),
         RunnersModule,
         EventsModule,
+        CampaignsModule,
     ],
     controllers: [TimingController],
     providers: [TimingService, TimingGateway],

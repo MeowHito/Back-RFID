@@ -2,12 +2,14 @@ import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/
 import { CheckpointsService } from './checkpoints.service';
 import { CheckpointSchedulerService } from './checkpoint-scheduler.service';
 import { CreateCheckpointDto, CreateCheckpointMappingDto } from './dto/create-checkpoint.dto';
+import { CampaignsService } from '../campaigns/campaigns.service';
 
 @Controller('checkpoints')
 export class CheckpointsController {
     constructor(
         private readonly checkpointsService: CheckpointsService,
         private readonly schedulerService: CheckpointSchedulerService,
+        private readonly campaignsService: CampaignsService,
     ) { }
 
     @Post('cutoff/check')
@@ -36,8 +38,14 @@ export class CheckpointsController {
     }
 
     @Get('campaign/:campaignId')
-    findByCampaign(@Param('campaignId') campaignId: string) {
-        return this.checkpointsService.findByCampaign(campaignId);
+    async findByCampaign(@Param('campaignId') campaignId: string) {
+        // Resolve slug/uuid to actual campaign _id
+        let resolvedId = campaignId;
+        try {
+            const campaign = await this.campaignsService.findById(campaignId);
+            if (campaign) resolvedId = String(campaign._id);
+        } catch { /* use original if not found */ }
+        return this.checkpointsService.findByCampaign(resolvedId);
     }
 
     @Put(':id')
