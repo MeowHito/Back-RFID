@@ -1128,6 +1128,11 @@ export class SyncService {
             // Pre-fetch SCORE data to identify BIBs with race results — only import those
             const scoreBibSet = await this.fetchScoreBibSet(campaign, raceTigerEids);
             this.logger.log(`Score pre-filter: ${scoreBibSet.size} BIBs with race results found`);
+            // If score has 0 items, skip the filter entirely — import ALL BIO runners
+            const useScoreFilter = scoreBibSet.size > 0;
+            if (!useScoreFilter) {
+                this.logger.warn(`Score endpoint returned 0 items — importing ALL runners from BIO without score filter`);
+            }
             // CLEAN SLATE: delete ALL existing RaceTiger runners before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
@@ -1151,12 +1156,15 @@ export class SyncService {
                     const mapped: CreateRunnerDto[] = [];
                     for (const row of bioRows) {
                         // Pre-filter: skip BIO rows for runners without race results in SCORE data
-                        const rowBib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
-                        const rowAthleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId);
-                        const hasScoreResult = (rowBib && scoreBibSet.has(rowBib)) || (rowAthleteId && scoreBibSet.has(rowAthleteId));
-                        if (!hasScoreResult) {
-                            bioSkippedNoResult++;
-                            continue;
+                        // BUT if score returned 0 items, import ALL runners (don't filter)
+                        if (useScoreFilter) {
+                            const rowBib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
+                            const rowAthleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId);
+                            const hasScoreResult = (rowBib && scoreBibSet.has(rowBib)) || (rowAthleteId && scoreBibSet.has(rowAthleteId));
+                            if (!hasScoreResult) {
+                                bioSkippedNoResult++;
+                                continue;
+                            }
                         }
                         const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
                         if (runner) mapped.push(runner);
@@ -1799,6 +1807,8 @@ export class SyncService {
                 if ((runner as any).athleteId) runnerByEventAthleteId.set(`${evId}:${(runner as any).athleteId}`, runner);
             }
             const bulkOps: any[] = [];
+            // Track DNF/DNS/DQ indicators detected from split Supplement/CutOff fields
+            const splitDnfMap = new Map<string, { status: string; checkpoint: string }>();
             for (const eid of eidsToFetch) {
                 try {
                     let totalExpected = Infinity;
@@ -1864,6 +1874,20 @@ export class SyncService {
                             const printingCodeVal = this.toSafeString(row?.PrintingCode ?? row?.printingCode ?? row?.Printingcode ?? row?.printingcode);
                             const supplement = this.toSafeString(row?.Supplement ?? row?.supplement);
                             const cutOff = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']);
+                            const operatingVal = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note);
+                            // --- DNF/DNS/DQ detection from split fields ---
+                            // Log first few rows to help debug what fields RaceTiger puts DNF info in
+                            if (bulkOps.length < 5 && (supplement || cutOff || operatingVal)) {
+                                this.logger.log(`  [SPLIT STATUS DEBUG] BIB=${runner.bib} CP=${tpName} | Supplement="${supplement}" CutOff="${cutOff}" Operating="${operatingVal}"`);
+                            }
+                            const allSplitStatus = [supplement, cutOff, operatingVal].join(' ').toLowerCase();
+                            if (allSplitStatus.includes('dnf') || allSplitStatus.includes('did not finish')) {
+                                splitDnfMap.set(String(runner._id), { status: 'dnf', checkpoint: tpName });
+                            } else if (allSplitStatus.includes('dns') || allSplitStatus.includes('did not start')) {
+                                splitDnfMap.set(String(runner._id), { status: 'dns', checkpoint: tpName });
+                            } else if (allSplitStatus.includes('dq') || allSplitStatus.includes('disqualif')) {
+                                splitDnfMap.set(String(runner._id), { status: 'dq', checkpoint: tpName });
+                            }
                             const legTimeMs = this.parseTimeToMs(row?.LegTime ?? row?.legTime ?? row?.['Leg Time']);
                             const legPace = this.toSafeString(row?.LegPace ?? row?.legPace ?? row?.['Leg Pace']);
                             const legDistVal = this.parseDistanceValue(row?.LegDistance ?? row?.legDistance ?? row?.['Leg Distance']);
@@ -1971,10 +1995,16 @@ export class SyncService {
                     const avgLap = validSplits.length > 0 ? Math.round(validSplits.reduce((a, b) => a + b, 0) / validSplits.length) : undefined;
                     // Find the runner to check current status
                     const existingRunner = allRunners.find(r => String(r._id) === rId);
-                    const shouldMarkInProgress =
-                        existingRunner &&
-                        ['not_started', 'dnf'].includes(existingRunner.status) &&
-                        acc.lapCount > 0;
+                    // Check if split data flagged this runner as DNF/DNS/DQ
+                    const splitDnf = splitDnfMap.get(rId);
+                    let statusUpdate: Record<string, any> = {};
+                    if (splitDnf) {
+                        // DNF/DNS/DQ from split Supplement/CutOff takes priority
+                        statusUpdate = { status: splitDnf.status, statusCheckpoint: splitDnf.checkpoint, isStarted: true };
+                    } else if (existingRunner && ['not_started'].includes(existingRunner.status) && acc.lapCount > 0) {
+                        // Only mark as in_progress if runner was not_started (don't override existing dnf/dns/dq)
+                        statusUpdate = { status: 'in_progress', isStarted: true };
+                    }
                     return {
                         id: new Types.ObjectId(rId),
                         data: {
@@ -1985,7 +2015,7 @@ export class SyncService {
                             ...(acc.lastSplitTime !== null ? { lastLapTime: acc.lastSplitTime } : {}),
                             ...(acc.lastScanTime !== null ? { lastPassTime: acc.lastScanTime } : {}),
                             ...(acc.lastCheckpointName !== null ? { latestCheckpoint: acc.lastCheckpointName } : {}),
-                            ...(shouldMarkInProgress ? { status: 'in_progress', isStarted: true } : {}),
+                            ...statusUpdate,
                             // Propagate chipCode/printingCode from passtime to runner
                             ...(acc.chipCode ? { chipCode: acc.chipCode, rfidTag: acc.chipCode } : {}),
                             ...(acc.printingCode ? { printingCode: acc.printingCode } : {}),
@@ -1995,6 +2025,27 @@ export class SyncService {
                 if (runnerPassedOps.length > 0) {
                     await this.runnersService.bulkUpdateTiming(runnerPassedOps);
                     this.logger.log(`  Split sync: updated passedCount + latestCheckpoint + lap stats on ${runnerPassedOps.length} runners`);
+                }
+                // Also update DNF/DNS/DQ for runners that have split data but no timing records in this batch
+                // (e.g., runners flagged DNF in split but not in lapAccByRunner)
+                const handledRunnerIds = new Set(lapAccByRunner.keys());
+                const extraDnfOps: any[] = [];
+                for (const [rId, dnfInfo] of splitDnfMap.entries()) {
+                    if (!handledRunnerIds.has(rId)) {
+                        extraDnfOps.push({
+                            updateOne: {
+                                filter: { _id: new Types.ObjectId(rId) },
+                                update: { $set: { status: dnfInfo.status, statusCheckpoint: dnfInfo.checkpoint, isStarted: true } },
+                            },
+                        });
+                    }
+                }
+                if (extraDnfOps.length > 0) {
+                    await this.runnerModel.bulkWrite(extraDnfOps, { ordered: false });
+                    this.logger.log(`  Split sync: updated ${extraDnfOps.length} runners with DNF/DNS/DQ from split Supplement/CutOff`);
+                }
+                if (splitDnfMap.size > 0) {
+                    this.logger.log(`  Split sync: detected ${splitDnfMap.size} DNF/DNS/DQ from split data (Supplement/CutOff fields)`);
                 }
             }
         } catch (err: any) {

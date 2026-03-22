@@ -584,6 +584,78 @@ export class TimingService {
                     statusNote: r.statusNote || '',
                 } as any);
             }
+
+            // ── Add "incoming" runners: passed a previous checkpoint but NOT this one ──
+            // These runners are "on their way" (กำลังมา) to the current checkpoint.
+            if (cpOrderMap.size > 0 && currentCpOrder >= 0) {
+                // Find all checkpoints with lower order than the current one
+                const prevCpNames: string[] = [];
+                for (const [cpName, order] of cpOrderMap.entries()) {
+                    if (order < currentCpOrder) prevCpNames.push(cpName);
+                }
+                if (prevCpNames.length > 0) {
+                    // Find runners who have timing at any previous checkpoint
+                    const prevCpTimingRecords = await this.timingModel.find({
+                        eventId: { $in: eventIds },
+                        checkpoint: { $in: prevCpNames.map(n => new RegExp(`^${n}$`, 'i')) },
+                    }).select('bib runnerId checkpoint scanTime').lean().exec();
+                    // Get unique BIBs from previous checkpoints
+                    const bibsAtPrevCp = new Set<string>();
+                    const latestPrevScan = new Map<string, { scanTime: Date; checkpoint: string }>();
+                    for (const tr of prevCpTimingRecords) {
+                        const bib = String((tr as any).bib);
+                        if (!bib) continue;
+                        bibsAtPrevCp.add(bib);
+                        const scanTime = (tr as any).scanTime ? new Date((tr as any).scanTime) : null;
+                        const existingPrev = latestPrevScan.get(bib);
+                        if (scanTime && (!existingPrev || scanTime > existingPrev.scanTime)) {
+                            latestPrevScan.set(bib, { scanTime, checkpoint: (tr as any).checkpoint });
+                        }
+                    }
+                    // Filter: has timing at prev CP, NOT at current CP, NOT DNF/DNS/DQ
+                    for (const runner of allRunners) {
+                        const r = runner as any;
+                        if (!r.bib) continue;
+                        const bibStr = String(r.bib);
+                        if (existingBibs.has(bibStr)) continue; // Already has timing at this CP
+                        if (!bibsAtPrevCp.has(bibStr)) continue; // Never reached any previous CP
+                        const st = (r.status || '').toLowerCase();
+                        if (['dnf', 'dns', 'dq'].includes(st)) continue; // Stopped runners handled separately
+                        const prevInfo = latestPrevScan.get(bibStr);
+                        deduped.push({
+                            _id: r._id,
+                            bib: r.bib,
+                            checkpoint: prevInfo?.checkpoint || null,
+                            scanTime: null, // No scanTime at THIS checkpoint (they haven't arrived yet)
+                            elapsedTime: null,
+                            splitTime: null,
+                            order: null,
+                            netTime: null,
+                            gunTime: null,
+                            netPace: '',
+                            gunPace: '',
+                            splitPace: null,
+                            firstName: r.firstName || '',
+                            lastName: r.lastName || '',
+                            firstNameTh: r.firstNameTh || '',
+                            lastNameTh: r.lastNameTh || '',
+                            gender: r.gender || '',
+                            category: r.category || '',
+                            status: r.status || 'in_progress',
+                            overallRank: 0,
+                            genderRank: 0,
+                            categoryRank: 0,
+                            ageGroup: r.ageGroup || '',
+                            nationality: r.nationality || '',
+                            team: r.team || '',
+                            teamName: r.teamName || '',
+                            statusCheckpoint: prevInfo?.checkpoint || '',
+                            statusNote: '',
+                        } as any);
+                        existingBibs.add(bibStr); // Prevent duplicates
+                    }
+                }
+            }
         }
 
         // ── Compute per-checkpoint arrival rankings from scanTime order ──
