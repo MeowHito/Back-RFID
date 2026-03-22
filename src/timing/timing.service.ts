@@ -152,7 +152,9 @@ export class TimingService {
             updateData.finishTime = scanData.scanTime;
             updateData.netTime = elapsedTime;
             updateData.status = 'finished';
-        } else if (runner.status === 'not_started') {
+        } else if (runner.status === 'not_started' ||
+            (['dnf', 'dns'].includes(runner.status) && !runner.statusCheckpoint)) {
+            // Also recover auto-detected DNF/DNS (no admin statusCheckpoint) back to in_progress
             updateData.status = 'in_progress';
         }
 
@@ -514,13 +516,13 @@ export class TimingService {
                                     rec.status = 'finished'; // passed here, DNF elsewhere
                                 }
                             } else {
-                                // RaceTiger import: show DNF at their LAST timed CP, passed at earlier CPs
-                                const lastOrder = dnfLastCpMap.get(String(rec.bib)) ?? -1;
-                                if (lastOrder === currentCpOrder || currentCpOrder < 0) {
-                                    rec.status = dbRunner.status; // DNF at their last CP
-                                } else {
-                                    rec.status = 'finished'; // passed through here earlier
-                                }
+                                // No admin-set statusCheckpoint — this runner has timing at
+                                // this checkpoint, meaning they physically passed through here.
+                                // Show as 'finished' (passed) at ALL checkpoints where they
+                                // have timing. DNF without statusCheckpoint is an "overall"
+                                // status (e.g. auto-detected after race), not tied to a
+                                // specific checkpoint.
+                                rec.status = 'finished';
                             }
                         } else {
                             rec.status = dbRunner.status || 'not_started';

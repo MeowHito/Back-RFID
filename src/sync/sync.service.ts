@@ -881,8 +881,8 @@ export class SyncService {
         type: RaceTigerRequestType = 'info',
         page: number = 1,
     ): Promise<any> {
-        if (!['info', 'bio', 'split', 'score'].includes(type)) {
-            throw new BadRequestException('type must be one of: info, bio, split, score');
+        if (!['info', 'bio', 'split', 'score', 'passedTime'].includes(type)) {
+            throw new BadRequestException('type must be one of: info, bio, split, score, passedTime');
         }
         const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
         const startTime = new Date();
@@ -1649,62 +1649,68 @@ export class SyncService {
                 this.logger.warn(`Split sync failed (non-fatal): ${splitErr?.message}`);
             }
             // ── Post-sync: detect DNF/DNS for runners who did not finish ──
-            // RaceTiger BIO has no FinishStatus field. Score only returns finishers.
-            // After Score sync, finishers have status='finished'. Everyone else who
-            // is not already dnf/dns/dq needs to be classified:
-            //   - Has timing records (started running) but no finish → DNF
-            //   - No timing records at all → DNS
+            // ONLY apply when race is confirmed finished (2+ days after race date).
+            // For live/ongoing races, unfinished runners should stay as not_started
+            // or in_progress — NOT be auto-marked as DNF/DNS.
             let dnfUpdated = 0;
             let dnsUpdated = 0;
-            try {
-                const allEventIds = [...eventResolver.categoryByEventId.keys()];
-                if (eventResolver.fallbackEventId) allEventIds.push(eventResolver.fallbackEventId);
-                const eventOids = allEventIds
-                    .filter(id => Types.ObjectId.isValid(id))
-                    .map(id => new Types.ObjectId(id));
-                // Find all runners who are NOT finished/dnf/dns/dq after score sync
-                const unfinishedRunners = await this.runnerModel.find({
-                    eventId: { $in: eventOids },
-                    status: { $nin: ['finished', 'dnf', 'dns', 'dq'] },
-                }).select('_id bib').lean().exec();
-                if (unfinishedRunners.length > 0) {
-                    this.logger.log(`Post-sync DNF/DNS detection: ${unfinishedRunners.length} runners not finished`);
-                    // Check which ones have timing records (split data)
-                    const runnerBibs = unfinishedRunners.map((r: any) => r.bib).filter(Boolean);
-                    const timingRecords = await this.timingRecordModel.find({
+            // Check if the race is marked as finished on the campaign
+            const campaignForRaceCheck = await this.campaignModel.findById(this.toCampaignObjectId(campaignId)).select('raceFinished categories').lean().exec();
+            const isRaceFinished = !!(campaignForRaceCheck as any)?.raceFinished
+                || ((campaignForRaceCheck as any)?.categories || []).every((c: any) => c.status === 'finished');
+            if (isRaceFinished) {
+                try {
+                    const allEventIds = [...eventResolver.categoryByEventId.keys()];
+                    if (eventResolver.fallbackEventId) allEventIds.push(eventResolver.fallbackEventId);
+                    const eventOids = allEventIds
+                        .filter(id => Types.ObjectId.isValid(id))
+                        .map(id => new Types.ObjectId(id));
+                    // Find all runners who are NOT finished/dnf/dns/dq after score sync
+                    const unfinishedRunners = await this.runnerModel.find({
                         eventId: { $in: eventOids },
-                        bib: { $in: runnerBibs },
-                    }).select('bib').lean().exec();
-                    const bibsWithTimingRecords = new Set(timingRecords.map((tr: any) => tr.bib));
-                    const dnfIds: Types.ObjectId[] = [];
-                    const dnsIds: Types.ObjectId[] = [];
-                    for (const runner of unfinishedRunners) {
-                        const rAny = runner as any;
-                        if (bibsWithTimingRecords.has(rAny.bib)) {
-                            dnfIds.push(rAny._id);
-                        } else {
-                            dnsIds.push(rAny._id);
+                        status: { $nin: ['finished', 'dnf', 'dns', 'dq'] },
+                    }).select('_id bib').lean().exec();
+                    if (unfinishedRunners.length > 0) {
+                        this.logger.log(`Post-sync DNF/DNS detection: ${unfinishedRunners.length} runners not finished`);
+                        // Check which ones have timing records (split data)
+                        const runnerBibs = unfinishedRunners.map((r: any) => r.bib).filter(Boolean);
+                        const timingRecords = await this.timingRecordModel.find({
+                            eventId: { $in: eventOids },
+                            bib: { $in: runnerBibs },
+                        }).select('bib').lean().exec();
+                        const bibsWithTimingRecords = new Set(timingRecords.map((tr: any) => tr.bib));
+                        const dnfIds: Types.ObjectId[] = [];
+                        const dnsIds: Types.ObjectId[] = [];
+                        for (const runner of unfinishedRunners) {
+                            const rAny = runner as any;
+                            if (bibsWithTimingRecords.has(rAny.bib)) {
+                                dnfIds.push(rAny._id);
+                            } else {
+                                dnsIds.push(rAny._id);
+                            }
+                        }
+                        if (dnfIds.length > 0) {
+                            const dnfResult = await this.runnerModel.updateMany(
+                                { _id: { $in: dnfIds } },
+                                { $set: { status: 'dnf', isStarted: true } },
+                            ).exec();
+                            dnfUpdated = dnfResult.modifiedCount;
+                            this.logger.log(`  DNF: ${dnfUpdated} runners marked as DNF (had timing records but no finish)`);
+                        }
+                        if (dnsIds.length > 0) {
+                            const dnsResult = await this.runnerModel.updateMany(
+                                { _id: { $in: dnsIds } },
+                                { $set: { status: 'dns' } },
+                            ).exec();
+                            dnsUpdated = dnsResult.modifiedCount;
+                            this.logger.log(`  DNS: ${dnsUpdated} runners marked as DNS (no timing records)`);
                         }
                     }
-                    if (dnfIds.length > 0) {
-                        const dnfResult = await this.runnerModel.updateMany(
-                            { _id: { $in: dnfIds } },
-                            { $set: { status: 'dnf', isStarted: true } },
-                        ).exec();
-                        dnfUpdated = dnfResult.modifiedCount;
-                        this.logger.log(`  DNF: ${dnfUpdated} runners marked as DNF (had timing records but no finish)`);
-                    }
-                    if (dnsIds.length > 0) {
-                        const dnsResult = await this.runnerModel.updateMany(
-                            { _id: { $in: dnsIds } },
-                            { $set: { status: 'dns' } },
-                        ).exec();
-                        dnsUpdated = dnsResult.modifiedCount;
-                        this.logger.log(`  DNS: ${dnsUpdated} runners marked as DNS (no timing records)`);
-                    }
+                } catch (dnfDnsErr: any) {
+                    this.logger.warn(`DNF/DNS detection failed (non-fatal): ${dnfDnsErr?.message}`);
                 }
-            } catch (dnfDnsErr: any) {
-                this.logger.warn(`DNF/DNS detection failed (non-fatal): ${dnfDnsErr?.message}`);
+            } else {
+                this.logger.log(`Post-sync DNF/DNS detection: SKIPPED (race is still live/ongoing)`);
             }
             const result = {
                 fetchedAt: new Date().toISOString(),
@@ -1839,7 +1845,34 @@ export class SyncService {
                             const tpName = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.CheckpointName ?? row?.checkpointName);
                             if (!tpName) continue;
                             const passTimeStr = this.toSafeString(row?.PassTime ?? row?.passTime ?? row?.Time ?? row?.time ?? row?.ScanTime ?? row?.scanTime);
-                            const scanTime = passTimeStr ? new Date(this.appendThaiTzIfNeeded(passTimeStr.replace(' ', 'T'))) : new Date();
+
+                            // --- DNF/DNS/DQ detection from split fields ---
+                            // Must happen BEFORE the passTimeStr skip, because DNF rows in the
+                            // "Not Finished List" may have no PassTime but DO have Supplement="DNF".
+                            const supplement = this.toSafeString(row?.Supplement ?? row?.supplement);
+                            const cutOff = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']);
+                            const operatingVal = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note);
+                            // Also check Status/Result/FinishStatus — RaceTiger may put DNF here
+                            const splitStatusVal = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result);
+                            const splitFinishStatus = this.toSafeString(row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus);
+                            if (bulkOps.length < 5) {
+                                this.logger.log(`  [SPLIT STATUS DEBUG] BIB=${runner.bib} CP=${tpName} | Supplement="${supplement}" CutOff="${cutOff}" Operating="${operatingVal}" Status="${splitStatusVal}" FinishStatus="${splitFinishStatus}" PassTime="${passTimeStr}"`);
+                            }
+                            const allSplitStatus = [supplement, cutOff, operatingVal, splitStatusVal, splitFinishStatus].join(' ').toLowerCase();
+                            if (allSplitStatus.includes('dnf') || allSplitStatus.includes('did not finish')) {
+                                splitDnfMap.set(String(runner._id), { status: 'dnf', checkpoint: tpName });
+                            } else if (allSplitStatus.includes('dns') || allSplitStatus.includes('did not start')) {
+                                splitDnfMap.set(String(runner._id), { status: 'dns', checkpoint: tpName });
+                            } else if (allSplitStatus.includes('dq') || allSplitStatus.includes('disqualif')) {
+                                splitDnfMap.set(String(runner._id), { status: 'dq', checkpoint: tpName });
+                            }
+
+                            // Skip rows with no PassTime — runner hasn't reached this checkpoint yet.
+                            // Without this check, we'd create a timing record with the current time,
+                            // making the runner appear as "Passed" at checkpoints they haven't reached.
+                            // DNF detection above already captured the status before we skip.
+                            if (!passTimeStr) continue;
+                            const scanTime = new Date(this.appendThaiTzIfNeeded(passTimeStr.replace(' ', 'T')));
                             const netTimeRaw = row?.NetTime ?? row?.netTime;
                             const gunTimeRaw = row?.GunTime ?? row?.gunTime;
                             const splitTimeRaw = row?.SplitTime ?? row?.splitTime ?? row?.LegTime ?? row?.legTime;
@@ -1865,22 +1898,6 @@ export class SyncService {
                             const totalNetTimeMsRaw = this.parseNumericValue(row?.['TotalNet(ms.)'] ?? row?.['Total Net (ms.)'] ?? row?.TotalNetMs ?? row?.totalNetMs);
                             const chipCodeVal = this.toSafeString(row?.ChipCode ?? row?.chipCode ?? row?.Chipcode ?? row?.chipcode);
                             const printingCodeVal = this.toSafeString(row?.PrintingCode ?? row?.printingCode ?? row?.Printingcode ?? row?.printingcode);
-                            const supplement = this.toSafeString(row?.Supplement ?? row?.supplement);
-                            const cutOff = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']);
-                            const operatingVal = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note);
-                            // --- DNF/DNS/DQ detection from split fields ---
-                            // Log first few rows to help debug what fields RaceTiger puts DNF info in
-                            if (bulkOps.length < 5 && (supplement || cutOff || operatingVal)) {
-                                this.logger.log(`  [SPLIT STATUS DEBUG] BIB=${runner.bib} CP=${tpName} | Supplement="${supplement}" CutOff="${cutOff}" Operating="${operatingVal}"`);
-                            }
-                            const allSplitStatus = [supplement, cutOff, operatingVal].join(' ').toLowerCase();
-                            if (allSplitStatus.includes('dnf') || allSplitStatus.includes('did not finish')) {
-                                splitDnfMap.set(String(runner._id), { status: 'dnf', checkpoint: tpName });
-                            } else if (allSplitStatus.includes('dns') || allSplitStatus.includes('did not start')) {
-                                splitDnfMap.set(String(runner._id), { status: 'dns', checkpoint: tpName });
-                            } else if (allSplitStatus.includes('dq') || allSplitStatus.includes('disqualif')) {
-                                splitDnfMap.set(String(runner._id), { status: 'dq', checkpoint: tpName });
-                            }
                             const legTimeMs = this.parseTimeToMs(row?.LegTime ?? row?.legTime ?? row?.['Leg Time']);
                             const legPace = this.toSafeString(row?.LegPace ?? row?.legPace ?? row?.['Leg Pace']);
                             const legDistVal = this.parseDistanceValue(row?.LegDistance ?? row?.legDistance ?? row?.['Leg Distance']);
@@ -1940,6 +1957,70 @@ export class SyncService {
                     result.errors.push(`Split EID ${eid ?? 'all'}: ${err?.message}`);
                 }
             }
+            // ── Secondary DNF detection: also check splitScore (/Dif/splitScore) ──
+            // RaceTiger's "Not Finished List" may only appear in splitScore data,
+            // not in the passedTime (/Dif/split) data we fetched above.
+            const splitDnfBefore = splitDnfMap.size;
+            for (const eid of eidsToFetch) {
+                try {
+                    let totalExpected = Infinity;
+                    let totalFetched = 0;
+                    const maxPages = 50; // fewer pages — only need DNF info
+                    for (let page = 1; page <= maxPages; page++) {
+                        const { response, parsedBody } = await this.requestRaceTiger(campaign, 'split', page, eid);
+                        if (!response.ok || !parsedBody) break;
+                        const rows = this.extractRowsFromPayload(parsedBody);
+                        if (!rows.length) break;
+                        if (page === 1 && rows.length > 0) {
+                            this.logger.log(`  SplitScore DNF check EID=${eid ?? 'all'}: ${rows.length} rows, keys=[${Object.keys(rows[0]).join(', ')}]`);
+                            this.logger.log(`  SplitScore sample: ${JSON.stringify(rows[0]).substring(0, 600)}`);
+                        }
+                        const apiTotal = this.parseNumericValue(parsedBody?.total);
+                        if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
+                        totalFetched += rows.length;
+                        for (const row of rows) {
+                            const athleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId);
+                            const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
+                            if (!athleteId && !bib) continue;
+                            const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+                            let eventId: string | null = null;
+                            if (rtEventId !== null) eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
+                            if (!eventId && eid !== undefined) eventId = eventResolver.eventIdByRaceTigerEventId.get(eid) || null;
+                            if (!eventId) eventId = eventResolver.fallbackEventId;
+                            if (!eventId) continue;
+                            let runner: any = null;
+                            if (athleteId) runner = runnerByEventAthleteId.get(`${eventId}:${athleteId}`);
+                            if (!runner && bib) runner = runnerByEventBib.get(`${eventId}:${bib}`);
+                            if (!runner && athleteId) runner = runnerByEventBib.get(`${eventId}:${athleteId}`);
+                            if (!runner) continue;
+                            const rId = String(runner._id);
+                            if (splitDnfMap.has(rId)) continue; // Already detected from PassTime
+                            // Check ALL possible fields for DNF/DNS/DQ
+                            const cpName = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.CheckpointName ?? row?.checkpointName ?? row?.['Split name']);
+                            const ssStatus = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result);
+                            const ssSupplement = this.toSafeString(row?.Supplement ?? row?.supplement);
+                            const ssCutOff = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']);
+                            const ssOperating = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note);
+                            const ssFinishStatus = this.toSafeString(row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus);
+                            const allFields = [ssStatus, ssSupplement, ssCutOff, ssOperating, ssFinishStatus].join(' ').toLowerCase();
+                            if (allFields.includes('dnf') || allFields.includes('did not finish') || allFields.includes('not finish')) {
+                                splitDnfMap.set(rId, { status: 'dnf', checkpoint: cpName || 'unknown' });
+                            } else if (allFields.includes('dns') || allFields.includes('did not start')) {
+                                splitDnfMap.set(rId, { status: 'dns', checkpoint: cpName || 'unknown' });
+                            } else if (allFields.includes('dq') || allFields.includes('disqualif')) {
+                                splitDnfMap.set(rId, { status: 'dq', checkpoint: cpName || 'unknown' });
+                            }
+                        }
+                        if (totalFetched >= totalExpected) break;
+                    }
+                } catch (err: any) {
+                    this.logger.warn(`SplitScore DNF check EID ${eid ?? 'all'} failed (non-fatal): ${err?.message}`);
+                }
+            }
+            const newDnfFromSplitScore = splitDnfMap.size - splitDnfBefore;
+            if (newDnfFromSplitScore > 0) {
+                this.logger.log(`  SplitScore: found ${newDnfFromSplitScore} additional DNF/DNS/DQ runners from Not Finished List`);
+            }
             if (bulkOps.length > 0) {
                 const batchSize = 1000;
                 for (let i = 0; i < bulkOps.length; i += batchSize) {
@@ -1994,9 +2075,24 @@ export class SyncService {
                     if (splitDnf) {
                         // DNF/DNS/DQ from split Supplement/CutOff takes priority
                         statusUpdate = { status: splitDnf.status, statusCheckpoint: splitDnf.checkpoint, isStarted: true };
-                    } else if (existingRunner && ['not_started'].includes(existingRunner.status) && acc.lapCount > 0) {
-                        // Only mark as in_progress if runner was not_started (don't override existing dnf/dns/dq)
-                        statusUpdate = { status: 'in_progress', isStarted: true };
+                    } else if (existingRunner && acc.lapCount > 0) {
+                        // Check if runner has passed the FINISH checkpoint → mark as finished
+                        const hasFinish = [...acc.uniqueCps].some(cp =>
+                            cp.toUpperCase().includes('FINISH') || cp.toUpperCase() === 'FIN');
+                        if (hasFinish) {
+                            statusUpdate = { status: 'finished', isStarted: true };
+                        } else {
+                            // Only promote not_started → in_progress.
+                            // Do NOT override dnf/dns here: syncAllRunners does clean-slate
+                            // (deletes + re-imports from BIO), so any dnf/dns at this point
+                            // came from BIO FinishStatus ("Not Finished List") or Score data
+                            // and must be preserved. The split data's Supplement/CutOff DNF
+                            // detection (splitDnfMap) is handled in the branch above.
+                            const curStatus = (existingRunner.status || '').toLowerCase();
+                            if (curStatus === 'not_started') {
+                                statusUpdate = { status: 'in_progress', isStarted: true };
+                            }
+                        }
                     }
                     return {
                         id: new Types.ObjectId(rId),
@@ -2354,14 +2450,16 @@ export class SyncService {
         return this.syncSplitTimingRecords(campaignId, timingPointDistances);
     }
     /**
-     * Append +07:00 (Thai timezone) to an ISO datetime string if it has no timezone indicator.
-     * RaceTiger returns PassTime in local Thai time without timezone offset.
-     * On UTC servers, new Date("2025-03-22T08:30:00") would be interpreted as UTC, causing a 7-hour offset.
+     * Append +08:00 (China Standard Time) to an ISO datetime string if it has no timezone indicator.
+     * RaceTiger is a Chinese timing system and returns PassTime in CST (UTC+8) without timezone offset.
+     * On UTC servers, new Date("2025-03-22T08:30:00") would be interpreted as UTC, causing an offset.
+     * By marking the string as +08:00, JS correctly converts to UTC, and Thai browsers (UTC+7)
+     * display the correct local time (1 hour behind China).
      */
     private appendThaiTzIfNeeded(isoStr: string): string {
         // Already has timezone info (Z, +HH:MM, -HH:MM)
         if (/[Zz]$/.test(isoStr) || /[+\-]\d{2}:\d{2}$/.test(isoStr)) return isoStr;
-        return isoStr + '+07:00';
+        return isoStr + '+08:00';
     }
 
     /**
