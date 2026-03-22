@@ -1125,18 +1125,17 @@ export class SyncService {
                     .map(ev => ev.rfidEventId)
                     .filter((eid): eid is number => eid !== null && eid !== undefined),
             )];
-            // Pre-fetch SCORE data to identify BIBs with race results — only import those
-            const scoreBibSet = await this.fetchScoreBibSet(campaign, raceTigerEids);
-            this.logger.log(`Score pre-filter: ${scoreBibSet.size} BIBs with race results found`);
-            // If score has 0 items, skip the filter entirely — import ALL BIO runners
-            const useScoreFilter = scoreBibSet.size > 0;
-            if (!useScoreFilter) {
-                this.logger.warn(`Score endpoint returned 0 items — importing ALL runners from BIO without score filter`);
-            }
-            // CLEAN SLATE: delete ALL existing RaceTiger runners before re-importing
+            // Import ALL runners from BIO — no score pre-filter.
+            // DNF/DNS runners have no score data but still need to be imported.
+            // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
             const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
+            const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
+            if (preCleanEventOids.length > 0) {
+                const trRemoved = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids } }).exec();
+                this.logger.log(`Clean slate: deleted ${trRemoved.deletedCount} orphaned timing records`);
+            }
             this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
             const fetchBioForEid = async (eid: number | undefined) => {
                 const forcedEventId = eid !== undefined
@@ -1155,17 +1154,6 @@ export class SyncService {
                     totalFetched += bioRows.length;
                     const mapped: CreateRunnerDto[] = [];
                     for (const row of bioRows) {
-                        // Pre-filter: skip BIO rows for runners without race results in SCORE data
-                        // BUT if score returned 0 items, import ALL runners (don't filter)
-                        if (useScoreFilter) {
-                            const rowBib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
-                            const rowAthleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId);
-                            const hasScoreResult = (rowBib && scoreBibSet.has(rowBib)) || (rowAthleteId && scoreBibSet.has(rowAthleteId));
-                            if (!hasScoreResult) {
-                                bioSkippedNoResult++;
-                                continue;
-                            }
-                        }
                         const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
                         if (runner) mapped.push(runner);
                         else bioSkipped++;
@@ -1559,10 +1547,15 @@ export class SyncService {
             // Import ALL runners from BIO (no pre-filter) — DNF/DNS runners have no score data
             // but should still be imported. Their status is set from FinishStatus in mapBioRowToRunner.
             let skippedNoResult = 0;
-            // CLEAN SLATE: delete ALL existing RaceTiger runners before re-importing
+            // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
             const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
+            const preCleanEventOids2 = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
+            if (preCleanEventOids2.length > 0) {
+                const trRemoved2 = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids2 } }).exec();
+                this.logger.log(`Clean slate: deleted ${trRemoved2.deletedCount} orphaned timing records`);
+            }
             this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
             const eidsToFetch: Array<number | undefined> = uniqueRaceTigerEids.length > 0
                 ? uniqueRaceTigerEids

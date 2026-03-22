@@ -192,14 +192,15 @@ export class TimingService {
 
     async getLatestPerRunner(eventIds: string[]): Promise<any[]> {
         const objectIds = eventIds.map(id => new Types.ObjectId(id));
+        // Group by bib+eventId (not runnerId) so we survive clean-slate re-imports
+        // that delete & recreate Runner docs with new ObjectIds.
         return this.timingModel.aggregate([
             { $match: { eventId: { $in: objectIds } } },
             { $sort: { scanTime: -1 } },
             {
                 $group: {
-                    _id: '$runnerId',
-                    eventId: { $first: '$eventId' },
-                    bib: { $first: '$bib' },
+                    _id: { bib: '$bib', eventId: '$eventId' },
+                    runnerId: { $first: '$runnerId' },
                     checkpoint: { $first: '$checkpoint' },
                     scanTime: { $first: '$scanTime' },
                     netTime: { $first: '$netTime' },
@@ -207,7 +208,7 @@ export class TimingService {
                     splitTime: { $first: '$splitTime' },
                     distanceFromStart: { $first: '$distanceFromStart' },
                     order: { $first: '$order' },
-                    totalPasses: { $sum: 1 },
+                    uniqueCheckpoints: { $addToSet: '$checkpoint' },
                     splitNo: { $first: '$splitNo' },
                     splitDesc: { $first: '$splitDesc' },
                     netPace: { $first: '$netPace' },
@@ -227,11 +228,15 @@ export class TimingService {
                     lagMs: { $first: '$lagMs' },
                 },
             },
+            // Lookup current runner by bib + eventId (resilient to runnerId changes)
             {
                 $lookup: {
                     from: 'runners',
-                    localField: '_id',
-                    foreignField: '_id',
+                    let: { bib: '$_id.bib', eventId: '$_id.eventId' },
+                    pipeline: [
+                        { $match: { $expr: { $and: [{ $eq: ['$bib', '$$bib'] }, { $eq: ['$eventId', '$$eventId'] }] } } },
+                        { $limit: 1 },
+                    ],
                     as: 'runner',
                 },
             },
@@ -239,8 +244,8 @@ export class TimingService {
             {
                 $project: {
                     _id: '$runner._id',
-                    eventId: 1,
-                    bib: 1,
+                    eventId: '$_id.eventId',
+                    bib: '$_id.bib',
                     firstName: '$runner.firstName',
                     lastName: '$runner.lastName',
                     firstNameTh: '$runner.firstNameTh',
@@ -254,7 +259,7 @@ export class TimingService {
                     teamName: '$runner.teamName',
                     status: '$runner.status',
                     latestCheckpoint: '$checkpoint',
-                    passedCount: '$totalPasses',
+                    passedCount: { $size: '$uniqueCheckpoints' },
                     scanTime: 1,
                     netTime: 1,
                     gunTime: 1,
