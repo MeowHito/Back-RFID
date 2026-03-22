@@ -1836,7 +1836,7 @@ export class SyncService {
                             const tpName = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.CheckpointName ?? row?.checkpointName);
                             if (!tpName) continue;
                             const passTimeStr = this.toSafeString(row?.PassTime ?? row?.passTime ?? row?.Time ?? row?.time ?? row?.ScanTime ?? row?.scanTime);
-                            const scanTime = passTimeStr ? new Date(passTimeStr.replace(' ', 'T')) : new Date();
+                            const scanTime = passTimeStr ? new Date(this.appendThaiTzIfNeeded(passTimeStr.replace(' ', 'T'))) : new Date();
                             const netTimeRaw = row?.NetTime ?? row?.netTime;
                             const gunTimeRaw = row?.GunTime ?? row?.gunTime;
                             const splitTimeRaw = row?.SplitTime ?? row?.splitTime ?? row?.LegTime ?? row?.legTime;
@@ -2293,6 +2293,17 @@ export class SyncService {
         }
         return this.syncSplitTimingRecords(campaignId, timingPointDistances);
     }
+    /**
+     * Append +07:00 (Thai timezone) to an ISO datetime string if it has no timezone indicator.
+     * RaceTiger returns PassTime in local Thai time without timezone offset.
+     * On UTC servers, new Date("2025-03-22T08:30:00") would be interpreted as UTC, causing a 7-hour offset.
+     */
+    private appendThaiTzIfNeeded(isoStr: string): string {
+        // Already has timezone info (Z, +HH:MM, -HH:MM)
+        if (/[Zz]$/.test(isoStr) || /[+\-]\d{2}:\d{2}$/.test(isoStr)) return isoStr;
+        return isoStr + '+07:00';
+    }
+
     /**
      * Parse a duration value into milliseconds.
      * Handles: "1:23:45" (HH:MM:SS), "1:23" (MM:SS), "01:23:45.678", numeric seconds, numeric ms.

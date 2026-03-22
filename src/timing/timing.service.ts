@@ -373,6 +373,9 @@ export class TimingService {
                     netPace: { $first: '$netPace' },
                     gunPace: { $first: '$gunPace' },
                     splitPace: { $first: '$splitPace' },
+                    splitNo: { $first: '$splitNo' },
+                    splitDesc: { $first: '$splitDesc' },
+                    distanceFromStart: { $first: '$distanceFromStart' },
                 },
             },
             { $sort: { scanTime: 1 } },
@@ -417,6 +420,9 @@ export class TimingService {
                     netPace: { $ifNull: ['$runner.netPace', '$netPace'] },
                     gunPace: { $ifNull: ['$runner.gunPace', '$gunPace'] },
                     splitPace: 1,
+                    splitNo: 1,
+                    splitDesc: 1,
+                    distanceFromStart: 1,
                     firstName: { $ifNull: ['$runner.firstName', ''] },
                     lastName: { $ifNull: ['$runner.lastName', ''] },
                     firstNameTh: '$runner.firstNameTh',
@@ -578,6 +584,24 @@ export class TimingService {
                     statusNote: r.statusNote || '',
                 } as any);
             }
+        }
+
+        // ── Compute per-checkpoint arrival rankings from scanTime order ──
+        // This provides live rankings even before score sync populates finish rankings.
+        const runnersWithTime = deduped.filter(r => r.scanTime);
+        runnersWithTime.sort((a, b) => new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime());
+        // Overall rank (arrival order)
+        runnersWithTime.forEach((r, i) => { r.overallRank = i + 1; });
+        // Gender rank
+        for (const gender of ['M', 'F']) {
+            const genderRunners = runnersWithTime.filter(r => r.gender === gender);
+            genderRunners.forEach((r, i) => { r.genderRank = i + 1; });
+        }
+        // Category rank
+        const categories = [...new Set(runnersWithTime.map(r => r.category).filter(Boolean))];
+        for (const cat of categories) {
+            const catRunners = runnersWithTime.filter(r => r.category === cat);
+            catRunners.forEach((r, i) => { r.categoryRank = i + 1; });
         }
 
         return deduped;
