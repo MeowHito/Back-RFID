@@ -2179,17 +2179,33 @@ export class SyncService {
                                 }
                             }
                             // ── Status detection ──
+                            // Check ALL possible RaceTiger fields that may contain DNF/DNS/DQ info
                             const scoreStatus = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result).toLowerCase();
-                            const hasDnf = scoreStatus.includes('dnf') || scoreStatus.includes('did not finish');
-                            const hasDns = scoreStatus.includes('dns') || scoreStatus.includes('did not start');
+                            const supplementStatus = this.toSafeString(row?.Supplement ?? row?.supplement).toLowerCase();
+                            const cutOffStatus = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']).toLowerCase();
+                            const operatingStatus = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note).toLowerCase();
+                            const allStatusFields = [scoreStatus, supplementStatus, cutOffStatus, operatingStatus].join(' ');
+                            const hasDnf = allStatusFields.includes('dnf') || allStatusFields.includes('did not finish');
+                            const hasDns = allStatusFields.includes('dns') || allStatusFields.includes('did not start');
+                            const hasDq = allStatusFields.includes('dq') || allStatusFields.includes('disqualif');
                             const hasFinish = scoreStatus.includes('finish') || scoreStatus.includes('completed');
-                            if (hasDnf && existingRunner.status !== 'dnf') {
+                            const currentStatus = (existingRunner.status || '').toLowerCase();
+                            // Log status detection for first few runners to help debug
+                            if (result.updated < 3) {
+                                this.logger.log(`  [STATUS DEBUG] BIB=${bib} currentDB=${currentStatus} | Status="${scoreStatus}" Supplement="${supplementStatus}" CutOff="${cutOffStatus}" Operating="${operatingStatus}" → hasDnf=${hasDnf} hasDns=${hasDns} hasDq=${hasDq} hasFinish=${hasFinish}`);
+                            }
+                            if (hasDnf && currentStatus !== 'dnf') {
                                 updateData.status = 'dnf'; result.statusChanges++;
-                            } else if (hasDns && existingRunner.status !== 'dns') {
+                            } else if (hasDns && currentStatus !== 'dns') {
                                 updateData.status = 'dns'; result.statusChanges++;
-                            } else if ((hasFinish || (updateData.netTime && updateData.netTime > 0)) && existingRunner.status !== 'finished') {
-                                updateData.status = 'finished'; updateData.isStarted = true; result.statusChanges++;
-                            } else if (updateData.gunTime && updateData.gunTime > 0 && existingRunner.status === 'not_started') {
+                            } else if (hasDq && currentStatus !== 'dq') {
+                                updateData.status = 'dq'; result.statusChanges++;
+                            } else if ((hasFinish || (updateData.netTime && updateData.netTime > 0)) && currentStatus !== 'finished') {
+                                // Don't override admin-set DNF/DNS/DQ or RaceTiger-set DNF/DNS/DQ
+                                if (!['dnf', 'dns', 'dq'].includes(currentStatus)) {
+                                    updateData.status = 'finished'; updateData.isStarted = true; result.statusChanges++;
+                                }
+                            } else if (updateData.gunTime && updateData.gunTime > 0 && currentStatus === 'not_started') {
                                 updateData.status = 'in_progress'; updateData.isStarted = true; result.statusChanges++;
                             }
                             // ── Rankings — prefer Net Time positions, fall back to Gun Time positions ──
