@@ -272,6 +272,74 @@ export class PublicApiController {
             }));
 
         const merged = [...timingData, ...extraRunners];
+
+        // Compute live ranks for ALL runners (including in_progress) based on timing data
+        // Sort criteria: finished first by netTime, then in_progress by passedCount DESC + netTime ASC
+        const rankable = merged.filter((r: any) => {
+            const s = (r.status || '').toLowerCase();
+            return s === 'finished' || s === 'in_progress';
+        });
+        const rankSort = (a: any, b: any) => {
+            const aFin = a.status === 'finished' ? 0 : 1;
+            const bFin = b.status === 'finished' ? 0 : 1;
+            if (aFin !== bFin) return aFin - bFin;
+            if (a.status === 'finished' && b.status === 'finished') {
+                const aNet = a.netTime || a.gunTime || 0;
+                const bNet = b.netTime || b.gunTime || 0;
+                if (aNet > 0 && bNet > 0) return aNet - bNet;
+                if (aNet > 0) return -1;
+                if (bNet > 0) return 1;
+                return 0;
+            }
+            // in_progress: more checkpoints passed = better, then faster time
+            const aPassed = a.passedCount ?? 0;
+            const bPassed = b.passedCount ?? 0;
+            if (aPassed !== bPassed) return bPassed - aPassed;
+            const aTime = a.netTime || a.gunTime || 0;
+            const bTime = b.netTime || b.gunTime || 0;
+            if (aTime > 0 && bTime > 0) return aTime - bTime;
+            if (aTime > 0) return -1;
+            if (bTime > 0) return 1;
+            return 0;
+        };
+
+        // Overall rank
+        const overallSorted = [...rankable].sort(rankSort);
+        const overallRankMap = new Map<string, number>();
+        overallSorted.forEach((r, i) => overallRankMap.set(String(r._id), i + 1));
+
+        // Gender rank
+        const genderGroups = new Map<string, any[]>();
+        rankable.forEach((r: any) => {
+            const g = (r.gender || '').toUpperCase();
+            if (!genderGroups.has(g)) genderGroups.set(g, []);
+            genderGroups.get(g)!.push(r);
+        });
+        const genderRankMap = new Map<string, number>();
+        genderGroups.forEach((group) => {
+            group.sort(rankSort).forEach((r, i) => genderRankMap.set(String(r._id), i + 1));
+        });
+
+        // Category rank
+        const catGroups = new Map<string, any[]>();
+        rankable.forEach((r: any) => {
+            const c = r.category || r.ageGroup || '';
+            if (!catGroups.has(c)) catGroups.set(c, []);
+            catGroups.get(c)!.push(r);
+        });
+        const catRankMap = new Map<string, number>();
+        catGroups.forEach((group) => {
+            group.sort(rankSort).forEach((r, i) => catRankMap.set(String(r._id), i + 1));
+        });
+
+        // Apply computed ranks to merged data
+        for (const r of merged) {
+            const id = String(r._id);
+            if (overallRankMap.has(id)) r.overallRank = overallRankMap.get(id);
+            if (genderRankMap.has(id)) r.genderRank = genderRankMap.get(id);
+            if (catRankMap.has(id)) r.categoryRank = catRankMap.get(id);
+        }
+
         return this.successResponse({ data: merged, total: merged.length });
     }
 

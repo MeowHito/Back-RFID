@@ -2120,22 +2120,22 @@ export class SyncService {
                         // DNF/DNS/DQ from split Supplement/CutOff takes priority
                         statusUpdate = { status: splitDnf.status, statusCheckpoint: splitDnf.checkpoint, isStarted: true };
                     } else if (existingRunner && acc.lapCount > 0) {
+                        const curStatus = (existingRunner.status || '').toLowerCase();
                         // Check if runner has passed the FINISH checkpoint → mark as finished
                         const hasFinish = [...acc.uniqueCps].some(cp =>
                             cp.toUpperCase().includes('FINISH') || cp.toUpperCase() === 'FIN');
-                        if (hasFinish) {
+                        if (hasFinish && !['dnf', 'dns', 'dq'].includes(curStatus)) {
+                            // Only mark finished if not already DNF/DNS/DQ
                             statusUpdate = { status: 'finished', isStarted: true };
-                        } else {
+                        } else if (!hasFinish && curStatus === 'finished') {
+                            // Runner was previously marked as finished but has NO FINISH checkpoint
+                            // in split data — revert to in_progress (likely incorrectly promoted)
+                            statusUpdate = { status: 'in_progress', isStarted: true };
+                        } else if (curStatus === 'not_started') {
                             // Only promote not_started → in_progress.
-                            // Do NOT override dnf/dns here: syncAllRunners does clean-slate
-                            // (deletes + re-imports from BIO), so any dnf/dns at this point
-                            // came from BIO FinishStatus ("Not Finished List") or Score data
-                            // and must be preserved. The split data's Supplement/CutOff DNF
-                            // detection (splitDnfMap) is handled in the branch above.
-                            const curStatus = (existingRunner.status || '').toLowerCase();
-                            if (curStatus === 'not_started') {
-                                statusUpdate = { status: 'in_progress', isStarted: true };
-                            }
+                            // Do NOT override dnf/dns/dq — those came from BIO FinishStatus,
+                            // Score data, or split Supplement/CutOff (splitDnfMap above).
+                            statusUpdate = { status: 'in_progress', isStarted: true };
                         }
                     }
                     return {
@@ -2379,7 +2379,10 @@ export class SyncService {
                             const hasDnf = allStatusFields.includes('dnf') || allStatusFields.includes('did not finish') || allStatusFields.includes('withdraw');
                             const hasDns = allStatusFields.includes('dns') || allStatusFields.includes('did not start');
                             const hasDq = allStatusFields.includes('dq') || allStatusFields.includes('disqualif');
-                            const hasFinish = scoreStatus.includes('finish') || scoreStatus.includes('completed');
+                            // hasFinish: explicit finish indicators from Status or FinishStatus fields
+                            // In Score data, FinishStatus "FIN"/"Finished" means the runner completed the race
+                            const hasFinish = scoreStatus.includes('finish') || scoreStatus.includes('completed')
+                                || scoreFinishStatus === 'fin' || scoreFinishStatus === 'finished' || scoreFinishStatus === 'ok';
                             const currentStatus = (existingRunner.status || '').toLowerCase();
                             // Log status detection for first few runners to help debug
                             if (result.updated < 3) {
@@ -2391,12 +2394,13 @@ export class SyncService {
                                 updateData.status = 'dns'; result.statusChanges++;
                             } else if (hasDq && currentStatus !== 'dq') {
                                 updateData.status = 'dq'; result.statusChanges++;
-                            } else if ((hasFinish || (updateData.netTime && updateData.netTime > 0)) && currentStatus !== 'finished') {
-                                // Don't override admin-set DNF/DNS/DQ or RaceTiger-set DNF/DNS/DQ
+                            } else if (hasFinish && currentStatus !== 'finished') {
+                                // Only mark as finished with EXPLICIT finish indicator from RaceTiger
+                                // Do NOT use netTime > 0 alone — runners can have intermediate times while still running
                                 if (!['dnf', 'dns', 'dq'].includes(currentStatus)) {
                                     updateData.status = 'finished'; updateData.isStarted = true; result.statusChanges++;
                                 }
-                            } else if (updateData.gunTime && updateData.gunTime > 0 && currentStatus === 'not_started') {
+                            } else if ((updateData.gunTime && updateData.gunTime > 0 || updateData.netTime && updateData.netTime > 0) && currentStatus === 'not_started') {
                                 updateData.status = 'in_progress'; updateData.isStarted = true; result.statusChanges++;
                             }
                             // ── Rankings — prefer Net Time positions, fall back to Gun Time positions ──
