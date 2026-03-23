@@ -516,13 +516,15 @@ export class TimingService {
                                     rec.status = 'finished'; // passed here, DNF elsewhere
                                 }
                             } else {
-                                // No admin-set statusCheckpoint — this runner has timing at
-                                // this checkpoint, meaning they physically passed through here.
-                                // Show as 'finished' (passed) at ALL checkpoints where they
-                                // have timing. DNF without statusCheckpoint is an "overall"
-                                // status (e.g. auto-detected after race), not tied to a
-                                // specific checkpoint.
-                                rec.status = 'finished';
+                                // No admin-set statusCheckpoint — use dnfLastCpMap to determine
+                                // if this is the LAST checkpoint the runner reached before quitting.
+                                // Show DNF at their last checkpoint, 'finished' (passed) at earlier ones.
+                                const lastOrder = dnfLastCpMap.get(String(rec.bib)) ?? -1;
+                                if (lastOrder === currentCpOrder || currentCpOrder < 0 || lastOrder < 0) {
+                                    rec.status = dbRunner.status; // DNF at their last checkpoint
+                                } else {
+                                    rec.status = 'finished'; // passed through earlier checkpoints
+                                }
                             }
                         } else {
                             rec.status = dbRunner.status || 'not_started';
@@ -553,11 +555,17 @@ export class TimingService {
                 if (!r.bib || existingBibs.has(String(r.bib))) continue;
 
                 if (['dnf', 'dq'].includes(st)) {
-                    // Only add if admin explicitly set statusCheckpoint to THIS checkpoint
                     const sCp = (r.statusCheckpoint || '').toUpperCase();
-                    if (!sCp) continue; // No statusCheckpoint → they have no timing here → skip
-                    const stoppedOrder = cpOrderMap.get(sCp) ?? -1;
-                    if (stoppedOrder !== currentCpOrder) continue; // Different CP → skip
+                    if (sCp) {
+                        // Admin-set statusCheckpoint: only show at that specific CP
+                        const stoppedOrder = cpOrderMap.get(sCp) ?? -1;
+                        if (stoppedOrder !== currentCpOrder) continue;
+                    } else {
+                        // Auto-detected DNF (from RaceTiger): show at their LAST checkpoint
+                        const lastOrder = dnfLastCpMap.get(String(r.bib)) ?? -1;
+                        if (lastOrder < 0) continue; // No timing data at all → skip
+                        if (lastOrder !== currentCpOrder) continue; // Different CP → skip
+                    }
                 }
 
                 deduped.push({

@@ -652,6 +652,8 @@ export class SyncService {
                 if (finishStatus.includes('dnf') || finishStatus.includes('did not finish')) return 'dnf';
                 if (finishStatus.includes('dns') || finishStatus.includes('did not start')) return 'dns';
                 if (finishStatus.includes('dq') || finishStatus.includes('disqualif')) return 'dq';
+                if (finishStatus.includes('withdraw')) return 'dnf';
+                // FIN = still running (not finished yet) → treat as not_started
                 return 'not_started';
             })(),
             isStarted: false,
@@ -2324,15 +2326,20 @@ export class SyncService {
                             const supplementStatus = this.toSafeString(row?.Supplement ?? row?.supplement).toLowerCase();
                             const cutOffStatus = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']).toLowerCase();
                             const operatingStatus = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note).toLowerCase();
-                            const allStatusFields = [scoreStatus, supplementStatus, cutOffStatus, operatingStatus].join(' ');
-                            const hasDnf = allStatusFields.includes('dnf') || allStatusFields.includes('did not finish');
+                            // Also check FinishStatus — this is the "Not finished list" field in RaceTiger Results
+                            const scoreFinishStatus = this.toSafeString(
+                                row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
+                                ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
+                            ).toLowerCase();
+                            const allStatusFields = [scoreStatus, supplementStatus, cutOffStatus, operatingStatus, scoreFinishStatus].join(' ');
+                            const hasDnf = allStatusFields.includes('dnf') || allStatusFields.includes('did not finish') || allStatusFields.includes('withdraw');
                             const hasDns = allStatusFields.includes('dns') || allStatusFields.includes('did not start');
                             const hasDq = allStatusFields.includes('dq') || allStatusFields.includes('disqualif');
                             const hasFinish = scoreStatus.includes('finish') || scoreStatus.includes('completed');
                             const currentStatus = (existingRunner.status || '').toLowerCase();
                             // Log status detection for first few runners to help debug
                             if (result.updated < 3) {
-                                this.logger.log(`  [STATUS DEBUG] BIB=${bib} currentDB=${currentStatus} | Status="${scoreStatus}" Supplement="${supplementStatus}" CutOff="${cutOffStatus}" Operating="${operatingStatus}" → hasDnf=${hasDnf} hasDns=${hasDns} hasDq=${hasDq} hasFinish=${hasFinish}`);
+                                this.logger.log(`  [STATUS DEBUG] BIB=${bib} currentDB=${currentStatus} | Status="${scoreStatus}" Supplement="${supplementStatus}" CutOff="${cutOffStatus}" Operating="${operatingStatus}" FinishStatus="${scoreFinishStatus}" → hasDnf=${hasDnf} hasDns=${hasDns} hasDq=${hasDq} hasFinish=${hasFinish}`);
                             }
                             if (hasDnf && currentStatus !== 'dnf') {
                                 updateData.status = 'dnf'; result.statusChanges++;
@@ -2448,6 +2455,122 @@ export class SyncService {
             }
         }
         return this.syncSplitTimingRecords(campaignId, timingPointDistances);
+    }
+    /**
+     * Lightweight BIO FinishStatus sync — used by auto-sync scheduler.
+     * Fetches BIO data from RaceTiger and checks ONLY the FinishStatus field
+     * (Athlete info → Finish status) to detect DNF/DNS/DQ/FIN changes.
+     * Does NOT touch other bio fields (name, age, etc.).
+     * This ensures that when an admin sets Finish status in RaceTiger during
+     * a live race, our system picks it up without requiring a full re-sync.
+     */
+    async syncBioFinishStatus(campaignId: string): Promise<{ updated: number; errors: string[] }> {
+        const result = { updated: 0, errors: [] as string[] };
+        try {
+            const campaign = await this.getSyncEnabledCampaign(campaignId);
+            const eventResolver = await this.buildEventResolver(campaignId);
+            // Pre-load all runners
+            const allEventIds = [...eventResolver.eventIdByRaceTigerEventId.values()];
+            if (eventResolver.fallbackEventId && !allEventIds.includes(eventResolver.fallbackEventId)) {
+                allEventIds.push(eventResolver.fallbackEventId);
+            }
+            const allRunners = allEventIds.length > 0
+                ? await this.runnersService.findByEventIds(allEventIds, {}, 100000)
+                : [];
+            const runnerByEventBib = new Map<string, any>();
+            const runnerByEventAthleteId = new Map<string, any>();
+            for (const runner of allRunners) {
+                const evId = String(runner.eventId);
+                if (runner.bib) runnerByEventBib.set(`${evId}:${runner.bib}`, runner);
+                if ((runner as any).athleteId) runnerByEventAthleteId.set(`${evId}:${(runner as any).athleteId}`, runner);
+            }
+            // Get RaceTiger event IDs
+            const campaignEventsForSync = await this.eventModel
+                .find({ $or: [{ campaignId }, { campaignId: this.toCampaignObjectId(campaignId) }] })
+                .select('_id rfidEventId').lean().exec();
+            const raceTigerEids = campaignEventsForSync
+                .map((ev: any) => this.parseNumericValue(ev.rfidEventId))
+                .filter((eid): eid is number => eid !== null);
+            const uniqueRaceTigerEids = [...new Set(raceTigerEids)];
+            const eidsToFetch: Array<number | undefined> = uniqueRaceTigerEids.length > 0 ? uniqueRaceTigerEids : [undefined];
+            const bulkOps: Array<{ updateOne: { filter: any; update: any } }> = [];
+            for (const eid of eidsToFetch) {
+                try {
+                    let totalExpected = Infinity;
+                    let totalFetched = 0;
+                    for (let page = 1; page <= 100; page++) {
+                        const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page, eid);
+                        if (!response.ok || !parsedBody) break;
+                        const rows = this.extractRowsFromPayload(parsedBody);
+                        if (!rows.length) break;
+                        const apiTotal = this.parseNumericValue(parsedBody?.total);
+                        if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
+                        totalFetched += rows.length;
+                        for (const row of rows) {
+                            const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
+                            const athleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId ?? row?.athleteid);
+                            if (!bib && !athleteId) continue;
+                            // Read FinishStatus from Athlete info
+                            const finishStatus = this.toSafeString(
+                                row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
+                                ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
+                                ?? this.findRowValueByNormalizedKeys(row, ['finishstatus', 'finish_status']),
+                            ).toLowerCase();
+                            // Determine target status from FinishStatus
+                            let targetStatus: string | null = null;
+                            if (finishStatus.includes('dnf') || finishStatus.includes('did not finish')) {
+                                targetStatus = 'dnf';
+                            } else if (finishStatus.includes('dns') || finishStatus.includes('did not start')) {
+                                targetStatus = 'dns';
+                            } else if (finishStatus.includes('dq') || finishStatus.includes('disqualif')) {
+                                targetStatus = 'dq';
+                            } else if (finishStatus.includes('withdraw')) {
+                                targetStatus = 'dnf'; // Withdraw treated as DNF
+                            }
+                            if (!targetStatus) continue; // All, Unknown, Penalty time, empty → skip
+                            // Resolve event
+                            const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+                            let eventId: string | null = null;
+                            if (rtEventId !== null) eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
+                            if (!eventId && eid !== undefined) eventId = eventResolver.eventIdByRaceTigerEventId.get(eid) || null;
+                            if (!eventId) eventId = eventResolver.fallbackEventId;
+                            if (!eventId) continue;
+                            // Find existing runner
+                            let runner: any = null;
+                            if (bib) runner = runnerByEventBib.get(`${eventId}:${bib}`);
+                            if (!runner && athleteId) runner = runnerByEventAthleteId.get(`${eventId}:${athleteId}`);
+                            if (!runner && athleteId && athleteId !== bib) runner = runnerByEventBib.get(`${eventId}:${athleteId}`);
+                            if (!runner) continue;
+                            const currentStatus = (runner.status || '').toLowerCase();
+                            // Only update if status actually changed and NOT admin-overridden
+                            if (currentStatus === targetStatus) continue;
+                            // Don't override admin-set status (has statusCheckpoint from manual edit)
+                            if (runner.statusCheckpoint && ['dnf', 'dns', 'dq'].includes(currentStatus)) continue;
+                            const updateData: Record<string, any> = { status: targetStatus };
+                            if (['dnf', 'dns', 'dq'].includes(targetStatus)) {
+                                updateData.isStarted = targetStatus !== 'dns';
+                            } else if (targetStatus === 'finished') {
+                                updateData.isStarted = true;
+                            }
+                            bulkOps.push({ updateOne: { filter: { _id: runner._id }, update: { $set: updateData } } });
+                        }
+                        if (totalFetched >= totalExpected) break;
+                    }
+                } catch (err: any) {
+                    result.errors.push(`BIO FinishStatus EID ${eid ?? 'all'}: ${err?.message}`);
+                }
+            }
+            if (bulkOps.length > 0) {
+                await this.runnersService.bulkUpdateTiming(
+                    bulkOps.map(op => ({ id: op.updateOne.filter._id, data: op.updateOne.update.$set })),
+                );
+                result.updated = bulkOps.length;
+                this.logger.log(`BIO FinishStatus sync: ${bulkOps.length} runners updated (DNF/DNS/DQ/FIN from Athlete info)`);
+            }
+        } catch (err: any) {
+            result.errors.push(err?.message || 'syncBioFinishStatus failed');
+        }
+        return result;
     }
     /**
      * Append +08:00 (China Standard Time) to an ISO datetime string if it has no timezone indicator.

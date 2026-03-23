@@ -22,7 +22,8 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
     private intervalId: NodeJS.Timeout | null = null;
     private isSyncing = false;
     private syncCount = 0;
-    private splitSyncTick = 0; // Run split sync every 4th tick (~60s)
+    private splitSyncTick = 0; // Run split sync every 3rd tick (~15s)
+    private bioStatusTick = 0; // Run BIO FinishStatus check every 6th tick (~30s)
 
     constructor(
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
@@ -65,7 +66,9 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
             if (campaigns.length === 0) return;
 
             this.splitSyncTick++;
+            this.bioStatusTick++;
             const runSplitSync = this.splitSyncTick % 3 === 0; // every 3rd tick = ~15s
+            const runBioStatusSync = this.bioStatusTick % 6 === 0; // every 6th tick = ~30s
 
             for (const campaign of campaigns) {
                 const cid = String(campaign._id);
@@ -78,12 +81,21 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
                             `${result.updated} timing updates, ${result.statusChanges} status changes`
                         );
                     }
-                    // Split sync every 60s (checkpoint passes, lap data, progress)
+                    // Split sync every ~15s (checkpoint passes, lap data, progress)
                     if (runSplitSync) {
                         const splitResult = await this.syncService.syncSplitOnly(cid);
                         if (splitResult.upserted > 0) {
                             this.logger.log(
                                 `Auto-split-sync [${campaign.name || cid}]: ${splitResult.upserted} timing records upserted`
+                            );
+                        }
+                    }
+                    // BIO FinishStatus sync every ~30s (DNF/DNS/DQ/FIN from Athlete info)
+                    if (runBioStatusSync) {
+                        const bioResult = await this.syncService.syncBioFinishStatus(cid);
+                        if (bioResult.updated > 0) {
+                            this.logger.log(
+                                `Auto-bio-status [${campaign.name || cid}]: ${bioResult.updated} status updates from Athlete info`
                             );
                         }
                     }
