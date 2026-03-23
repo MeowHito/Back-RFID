@@ -1914,9 +1914,9 @@ export class SyncService {
                             const netTimeMs = this.parseTimeToMs(netTimeRaw);
                             const gunTimeMs = this.parseTimeToMs(gunTimeRaw);
                             const splitTimeMs = this.parseTimeToMs(splitTimeRaw);
-                            // Get distance from the timingPointDistances map
+                            // Get distance from the timingPointDistances map (try event-specific key first, then fallback to "all:" key)
                             const tpKey = `${rtEventId ?? eid ?? 'all'}:${tpName}`;
-                            const distance = timingPointDistances.get(tpKey) ?? undefined;
+                            const distance = timingPointDistances.get(tpKey) ?? timingPointDistances.get(`all:${tpName}`) ?? undefined;
 
                             // === Extract all RaceTiger Pass Time fields ===
                             const splitNo = this.parseNumericValue(row?.SplitNo ?? row?.splitNo ?? row?.No ?? row?.no);
