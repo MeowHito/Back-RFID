@@ -68,12 +68,22 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
             this.splitSyncTick++;
             this.bioStatusTick++;
             const runSplitSync = this.splitSyncTick % 3 === 0; // every 3rd tick = ~15s
-            const runBioStatusSync = this.bioStatusTick % 6 === 0; // every 6th tick = ~30s
+            const runBioStatusSync = this.bioStatusTick % 3 === 0; // every 3rd tick = ~15s (same as split)
 
             for (const campaign of campaigns) {
                 const cid = String(campaign._id);
                 try {
-                    // Score sync every 5s (rank, time, status, pace)
+                    // BIO FinishStatus sync FIRST — sets DNF/DNS/DQ from Athlete info
+                    // Must run BEFORE split sync so that split sync respects DNF status
+                    if (runBioStatusSync) {
+                        const bioResult = await this.syncService.syncBioFinishStatus(cid);
+                        if (bioResult.updated > 0) {
+                            this.logger.log(
+                                `Auto-bio-status [${campaign.name || cid}]: ${bioResult.updated} status updates from Athlete info`
+                            );
+                        }
+                    }
+                    // Score sync every 5s (rank, time, pace — no status promotion to finished)
                     const result = await this.syncService.syncTimingOnly(cid);
                     if (result.updated > 0 || result.statusChanges > 0) {
                         this.logger.log(
@@ -81,21 +91,12 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
                             `${result.updated} timing updates, ${result.statusChanges} status changes`
                         );
                     }
-                    // Split sync every ~15s (checkpoint passes, lap data, progress)
+                    // Split sync every ~15s (checkpoint passes, lap data, progress, finish detection)
                     if (runSplitSync) {
                         const splitResult = await this.syncService.syncSplitOnly(cid);
                         if (splitResult.upserted > 0) {
                             this.logger.log(
                                 `Auto-split-sync [${campaign.name || cid}]: ${splitResult.upserted} timing records upserted`
-                            );
-                        }
-                    }
-                    // BIO FinishStatus sync every ~30s (DNF/DNS/DQ/FIN from Athlete info)
-                    if (runBioStatusSync) {
-                        const bioResult = await this.syncService.syncBioFinishStatus(cid);
-                        if (bioResult.updated > 0) {
-                            this.logger.log(
-                                `Auto-bio-status [${campaign.name || cid}]: ${bioResult.updated} status updates from Athlete info`
                             );
                         }
                     }
