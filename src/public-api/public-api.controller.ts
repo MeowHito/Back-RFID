@@ -448,8 +448,11 @@ export class PublicApiController {
             const eventId = String(runner.eventId);
             const runnerId = String(runner._id);
 
-            // Fetch timing records for this runner
-            const timingRecords = await this.timingService.getRunnerRecords(eventId, runnerId);
+            // Fetch timing records for this runner + per-checkpoint ranks
+            const [timingRecords, checkpointRanks] = await Promise.all([
+                this.timingService.getRunnerRecords(eventId, runnerId),
+                this.timingService.getCheckpointRanksForRunner(eventId, runner.bib),
+            ]);
 
             // Fetch event to get campaign info
             const event = await this.eventsService.findOne(eventId).catch(() => null);
@@ -464,9 +467,16 @@ export class PublicApiController {
                 checkpointMappings = await this.checkpointsService.findMappingsByEvent(eventId);
             } catch { /* no mappings */ }
 
+            // Convert checkpoint ranks Map to plain object for JSON serialization
+            const checkpointRanksObj: Record<string, number> = {};
+            for (const [cp, rank] of checkpointRanks.entries()) {
+                checkpointRanksObj[cp] = rank;
+            }
+
             return this.successResponse({
                 runner,
                 timingRecords,
+                checkpointRanks: checkpointRanksObj,
                 checkpointMappings,
                 event,
                 campaign: campaign ? {

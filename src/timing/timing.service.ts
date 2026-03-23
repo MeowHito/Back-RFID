@@ -183,6 +183,33 @@ export class TimingService {
             .exec() as Promise<TimingRecordDocument[]>;
     }
 
+    /**
+     * Get per-checkpoint ranks for a specific runner within their event.
+     * Returns a map: checkpoint name → rank (1-based, by netTime ascending).
+     */
+    async getCheckpointRanksForRunner(eventId: string, bib: string): Promise<Map<string, number>> {
+        const objectId = new Types.ObjectId(eventId);
+        // Aggregate: for each checkpoint, rank all runners by netTime, find this runner's position
+        const results = await this.timingModel.aggregate([
+            { $match: { eventId: objectId, netTime: { $gt: 0 } } },
+            { $sort: { netTime: 1 } },
+            {
+                $group: {
+                    _id: '$checkpoint',
+                    runners: { $push: { bib: '$bib', netTime: '$netTime' } },
+                },
+            },
+        ]).exec();
+        const rankMap = new Map<string, number>();
+        for (const cp of results) {
+            const idx = cp.runners.findIndex((r: any) => String(r.bib) === String(bib));
+            if (idx >= 0) {
+                rankMap.set(cp._id, idx + 1);
+            }
+        }
+        return rankMap;
+    }
+
     async getEventRecords(eventId: string): Promise<TimingRecordDocument[]> {
         return this.timingModel
             .find({ eventId: new Types.ObjectId(eventId) })
