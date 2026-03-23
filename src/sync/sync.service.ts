@@ -1549,6 +1549,9 @@ export class SyncService {
             // Import ALL runners from BIO (no pre-filter) — DNF/DNS runners have no score data
             // but should still be imported. Their status is set from FinishStatus in mapBioRowToRunner.
             let skippedNoResult = 0;
+            // Track BIBs whose BIO FinishStatus is FIN (still running) — these should NOT be
+            // auto-marked as DNF by the post-sync detection even if raceFinished=true.
+            const bioFinBibs = new Set<string>();
             // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
@@ -1586,6 +1589,18 @@ export class SyncService {
                         const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
                         if (runner) {
                             mapped.push(runner);
+                            // Track FIN BIBs from BIO FinishStatus — still running, NOT DNF
+                            // Only check the dedicated FinishStatus field (not generic Status/Result)
+                            const rawFinishStatus = this.toSafeString(
+                                row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
+                                ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
+                                ?? this.findRowValueByNormalizedKeys(row, ['finishstatus', 'finish_status']),
+                            ).toLowerCase();
+                            // FIN = still running. Only explicitly FIN/OK get protected from post-sync DNF.
+                            // Empty = no FinishStatus field → runner is normal, post-sync detection can apply.
+                            if (rawFinishStatus === 'fin' || rawFinishStatus === 'ok') {
+                                if (runner.bib) bioFinBibs.add(String(runner.bib));
+                            }
                         } else {
                             rowsSkipped += 1;
                             // Determine skip reason
@@ -1658,8 +1673,10 @@ export class SyncService {
             let dnsUpdated = 0;
             // Check if the race is marked as finished on the campaign
             const campaignForRaceCheck = await this.campaignModel.findById(this.toCampaignObjectId(campaignId)).select('raceFinished categories').lean().exec();
+            const campaignCategories = ((campaignForRaceCheck as any)?.categories || []);
             const isRaceFinished = !!(campaignForRaceCheck as any)?.raceFinished
-                || ((campaignForRaceCheck as any)?.categories || []).every((c: any) => c.status === 'finished');
+                || (campaignCategories.length > 0 && campaignCategories.every((c: any) => c.status === 'finished'));
+            this.logger.log(`Post-sync DNF/DNS detection: isRaceFinished=${isRaceFinished} (raceFinished=${!!(campaignForRaceCheck as any)?.raceFinished}, categories=${campaignCategories.length})`);
             if (isRaceFinished) {
                 try {
                     const allEventIds = [...eventResolver.categoryByEventId.keys()];
@@ -1673,7 +1690,7 @@ export class SyncService {
                         status: { $nin: ['finished', 'dnf', 'dns', 'dq'] },
                     }).select('_id bib').lean().exec();
                     if (unfinishedRunners.length > 0) {
-                        this.logger.log(`Post-sync DNF/DNS detection: ${unfinishedRunners.length} runners not finished`);
+                        this.logger.log(`Post-sync DNF/DNS detection: ${unfinishedRunners.length} runners not finished, ${bioFinBibs.size} FIN BIBs excluded`);
                         // Check which ones have timing records (split data)
                         const runnerBibs = unfinishedRunners.map((r: any) => r.bib).filter(Boolean);
                         const timingRecords = await this.timingRecordModel.find({
@@ -1683,13 +1700,23 @@ export class SyncService {
                         const bibsWithTimingRecords = new Set(timingRecords.map((tr: any) => tr.bib));
                         const dnfIds: Types.ObjectId[] = [];
                         const dnsIds: Types.ObjectId[] = [];
+                        let skippedFin = 0;
                         for (const runner of unfinishedRunners) {
                             const rAny = runner as any;
+                            // Skip runners whose BIO FinishStatus is FIN (still running)
+                            // They are NOT DNF — just haven't crossed the finish line yet.
+                            if (bioFinBibs.has(String(rAny.bib))) {
+                                skippedFin++;
+                                continue;
+                            }
                             if (bibsWithTimingRecords.has(rAny.bib)) {
                                 dnfIds.push(rAny._id);
                             } else {
                                 dnsIds.push(rAny._id);
                             }
+                        }
+                        if (skippedFin > 0) {
+                            this.logger.log(`  Post-sync: skipped ${skippedFin} FIN runners (still running per BIO FinishStatus)`);
                         }
                         if (dnfIds.length > 0) {
                             const dnfResult = await this.runnerModel.updateMany(
@@ -1860,8 +1887,13 @@ export class SyncService {
                             if (bulkOps.length < 5) {
                                 this.logger.log(`  [SPLIT STATUS DEBUG] BIB=${runner.bib} CP=${tpName} | Supplement="${supplement}" CutOff="${cutOff}" Operating="${operatingVal}" Status="${splitStatusVal}" FinishStatus="${splitFinishStatus}" PassTime="${passTimeStr}"`);
                             }
+                            // FIN in FinishStatus = still running → SKIP, do NOT flag as DNF
+                            const splitFinishLower = splitFinishStatus.toLowerCase();
+                            if (splitFinishLower === 'fin' || splitFinishLower === 'finished' || splitFinishLower === 'ok') {
+                                continue; // Not DNF — still running
+                            }
                             const allSplitStatus = [supplement, cutOff, operatingVal, splitStatusVal, splitFinishStatus].join(' ').toLowerCase();
-                            if (allSplitStatus.includes('dnf') || allSplitStatus.includes('did not finish')) {
+                            if (allSplitStatus.includes('dnf') || allSplitStatus.includes('did not finish') || allSplitStatus.includes('withdraw')) {
                                 splitDnfMap.set(String(runner._id), { status: 'dnf', checkpoint: tpName });
                             } else if (allSplitStatus.includes('dns') || allSplitStatus.includes('did not start')) {
                                 splitDnfMap.set(String(runner._id), { status: 'dns', checkpoint: tpName });
@@ -2004,8 +2036,17 @@ export class SyncService {
                             const ssCutOff = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']);
                             const ssOperating = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note);
                             const ssFinishStatus = this.toSafeString(row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus);
+                            const ssFinishLower = ssFinishStatus.toLowerCase();
+                            // FIN in FinishStatus = still running (not finished yet) → SKIP, do NOT flag as DNF
+                            // The splitScore endpoint may return Status="DNF" for ALL Not Finished List entries,
+                            // but FinishStatus distinguishes real DNFs ("DNF") from still-running ("FIN").
+                            if (ssFinishLower === 'fin' || ssFinishLower === 'finished' || ssFinishLower === 'ok') {
+                                this.logger.debug(`  SplitScore: BIB=${bib} FinishStatus="${ssFinishStatus}" → SKIP (still running)`);
+                                continue;
+                            }
+                            this.logger.log(`  [SPLITSCORE DEBUG] BIB=${bib} CP=${cpName} Status="${ssStatus}" Supplement="${ssSupplement}" CutOff="${ssCutOff}" Operating="${ssOperating}" FinishStatus="${ssFinishStatus}"`);
                             const allFields = [ssStatus, ssSupplement, ssCutOff, ssOperating, ssFinishStatus].join(' ').toLowerCase();
-                            if (allFields.includes('dnf') || allFields.includes('did not finish') || allFields.includes('not finish')) {
+                            if (allFields.includes('dnf') || allFields.includes('did not finish') || allFields.includes('withdraw')) {
                                 splitDnfMap.set(rId, { status: 'dnf', checkpoint: cpName || 'unknown' });
                             } else if (allFields.includes('dns') || allFields.includes('did not start')) {
                                 splitDnfMap.set(rId, { status: 'dns', checkpoint: cpName || 'unknown' });
@@ -2331,6 +2372,8 @@ export class SyncService {
                                 row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
                                 ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
                             ).toLowerCase();
+                            // In Score data, FinishStatus "FIN" means "Finished" (completed the race),
+                            // NOT "still running". So we do NOT skip FIN runners here — they ARE finished.
                             const allStatusFields = [scoreStatus, supplementStatus, cutOffStatus, operatingStatus, scoreFinishStatus].join(' ');
                             const hasDnf = allStatusFields.includes('dnf') || allStatusFields.includes('did not finish') || allStatusFields.includes('withdraw');
                             const hasDns = allStatusFields.includes('dns') || allStatusFields.includes('did not start');
