@@ -1411,7 +1411,8 @@ export class SyncService {
                         const foundTime = startTimeByEventEid.get(remoteNo);
                         if (foundTime) {
                             // Try to parse the time string into a datetime-local format
-                            const parsed = new Date(foundTime.replace(' ', 'T'));
+                            // Apply timezone conversion: RaceTiger PassTime is in UTC+8 (China time)
+                            const parsed = new Date(this.appendThaiTzIfNeeded(foundTime.replace(' ', 'T')));
                             if (!isNaN(parsed.getTime())) {
                                 const yyyy = parsed.getFullYear();
                                 const MM = String(parsed.getMonth() + 1).padStart(2, '0');
