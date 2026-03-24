@@ -544,7 +544,7 @@ export class TimingService {
                                 }
                             } else {
                                 // No admin-set statusCheckpoint — use dnfLastCpMap to determine
-                                // if this is the LAST checkpoint the runner reached before quitting.
+                                // if this is the LAST checkpoint the runner reached before stopping.
                                 // Show DNF at their last checkpoint, 'finished' (passed) at earlier ones.
                                 const lastOrder = dnfLastCpMap.get(String(rec.bib)) ?? -1;
                                 if (lastOrder === currentCpOrder || currentCpOrder < 0 || lastOrder < 0) {
@@ -588,10 +588,11 @@ export class TimingService {
                         const stoppedOrder = cpOrderMap.get(sCp) ?? -1;
                         if (stoppedOrder !== currentCpOrder) continue;
                     } else {
-                        // Auto-detected DNF (from RaceTiger): show at their LAST checkpoint
+                        // Auto-detected DNF (from RaceTiger): show at checkpoints AFTER
+                        // their last passed checkpoint (where they dropped out)
                         const lastOrder = dnfLastCpMap.get(String(r.bib)) ?? -1;
                         if (lastOrder < 0) continue; // No timing data at all → skip
-                        if (lastOrder !== currentCpOrder) continue; // Different CP → skip
+                        if (currentCpOrder <= lastOrder) continue; // At or before last passed CP → skip
                     }
                 }
 
