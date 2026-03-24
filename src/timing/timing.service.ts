@@ -710,11 +710,12 @@ export class TimingService {
         if (!isStartCheckpoint) {
             // This provides live rankings even before score sync populates finish rankings.
             const runnersWithTime = deduped.filter(r => r.scanTime);
-            // Deterministic sort: scanTime first, then bib as tiebreaker
-            // This prevents rank flickering when multiple runners share the same scanTime
+            // Rank by fastest running time: elapsedTime → gunTime → bib tiebreaker
+            // elapsedTime/gunTime = actual running duration (lower = faster = better rank)
             runnersWithTime.sort((a, b) => {
-                const timeDiff = new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime();
-                if (timeDiff !== 0) return timeDiff;
+                const aTime = a.elapsedTime ?? a.gunTime ?? Number.MAX_SAFE_INTEGER;
+                const bTime = b.elapsedTime ?? b.gunTime ?? Number.MAX_SAFE_INTEGER;
+                if (aTime !== bTime) return aTime - bTime;
                 // Tiebreaker: sort by bib (numeric then string) for stable ordering
                 const aBib = parseInt(a.bib, 10);
                 const bBib = parseInt(b.bib, 10);
