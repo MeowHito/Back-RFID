@@ -390,7 +390,7 @@ export class TimingService {
             .map(id => new Types.ObjectId(id));
         const records = await this.timingModel.aggregate([
             { $match: { eventId: { $in: eventIds }, checkpoint } },
-            { $sort: { scanTime: 1 } },
+            { $sort: { scanTime: 1, bib: 1 } },
             {
                 $group: {
                     _id: '$bib',
@@ -412,7 +412,7 @@ export class TimingService {
                     distanceFromStart: { $first: '$distanceFromStart' },
                 },
             },
-            { $sort: { scanTime: 1 } },
+            { $sort: { scanTime: 1, bib: 1 } },
             // Pipeline-based lookup: try runnerId first, fall back to bib+eventId match
             {
                 $lookup: {
@@ -702,21 +702,45 @@ export class TimingService {
         }
 
         // ── Compute per-checkpoint arrival rankings from scanTime order ──
-        // This provides live rankings even before score sync populates finish rankings.
-        const runnersWithTime = deduped.filter(r => r.scanTime);
-        runnersWithTime.sort((a, b) => new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime());
-        // Overall rank (arrival order)
-        runnersWithTime.forEach((r, i) => { r.overallRank = i + 1; });
-        // Gender rank
-        for (const gender of ['M', 'F']) {
-            const genderRunners = runnersWithTime.filter(r => r.gender === gender);
-            genderRunners.forEach((r, i) => { r.genderRank = i + 1; });
-        }
-        // Category rank
-        const categories = [...new Set(runnersWithTime.map(r => r.category).filter(Boolean))];
-        for (const cat of categories) {
-            const catRunners = runnersWithTime.filter(r => r.category === cat);
-            catRunners.forEach((r, i) => { r.categoryRank = i + 1; });
+        // Skip ranking at the START checkpoint (lowest orderNum) — everyone starts together.
+        // Only DNS runners are relevant at START (they never started).
+        const isStartCheckpoint = cpOrderMap.size > 0 &&
+            currentCpOrder === Math.min(...cpOrderMap.values());
+
+        if (!isStartCheckpoint) {
+            // This provides live rankings even before score sync populates finish rankings.
+            const runnersWithTime = deduped.filter(r => r.scanTime);
+            // Deterministic sort: scanTime first, then bib as tiebreaker
+            // This prevents rank flickering when multiple runners share the same scanTime
+            runnersWithTime.sort((a, b) => {
+                const timeDiff = new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime();
+                if (timeDiff !== 0) return timeDiff;
+                // Tiebreaker: sort by bib (numeric then string) for stable ordering
+                const aBib = parseInt(a.bib, 10);
+                const bBib = parseInt(b.bib, 10);
+                if (!isNaN(aBib) && !isNaN(bBib)) return aBib - bBib;
+                return (a.bib || '').localeCompare(b.bib || '');
+            });
+            // Overall rank (arrival order)
+            runnersWithTime.forEach((r, i) => { r.overallRank = i + 1; });
+            // Gender rank
+            for (const gender of ['M', 'F']) {
+                const genderRunners = runnersWithTime.filter(r => r.gender === gender);
+                genderRunners.forEach((r, i) => { r.genderRank = i + 1; });
+            }
+            // Category rank
+            const categories = [...new Set(runnersWithTime.map(r => r.category).filter(Boolean))];
+            for (const cat of categories) {
+                const catRunners = runnersWithTime.filter(r => r.category === cat);
+                catRunners.forEach((r, i) => { r.categoryRank = i + 1; });
+            }
+        } else {
+            // START checkpoint: no rankings (set to 0)
+            for (const r of deduped) {
+                r.overallRank = 0;
+                r.genderRank = 0;
+                r.categoryRank = 0;
+            }
         }
 
         return deduped;
