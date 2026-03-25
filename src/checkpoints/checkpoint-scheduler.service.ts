@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Checkpoint, CheckpointDocument } from './checkpoint.schema';
 import { Runner, RunnerDocument } from '../runners/runner.schema';
+import { Event, EventDocument } from '../events/event.schema';
 
 /**
  * CheckpointSchedulerService
@@ -24,6 +25,7 @@ export class CheckpointSchedulerService implements OnModuleInit {
     constructor(
         @InjectModel(Checkpoint.name) private checkpointModel: Model<CheckpointDocument>,
         @InjectModel(Runner.name) private runnerModel: Model<RunnerDocument>,
+        @InjectModel(Event.name) private eventModel: Model<EventDocument>,
     ) { }
 
     onModuleInit() {
@@ -50,6 +52,10 @@ export class CheckpointSchedulerService implements OnModuleInit {
                 .lean()
                 .exec();
 
+            if (checkpoints.length > 0) {
+                this.logger.debug(`Found ${checkpoints.length} checkpoint(s) with cutoffTime`);
+            }
+
             // Group checkpoints by campaign for ordering context
             const cpsByCampaign = new Map<string, any[]>();
             for (const cp of checkpoints) {
@@ -61,8 +67,10 @@ export class CheckpointSchedulerService implements OnModuleInit {
 
             for (const [campaignId, campaignCps] of cpsByCampaign.entries()) {
                 // Get all checkpoints for ordering (including those without cutoff)
+                const campaignOid = Types.ObjectId.isValid(campaignId) ? new Types.ObjectId(campaignId) : null;
+                const cpQuery = campaignOid ? { campaignId: campaignOid } : { campaignId };
                 const allCampaignCps = await this.checkpointModel
-                    .find({ campaignId: Types.ObjectId.isValid(campaignId) ? new Types.ObjectId(campaignId) : campaignId })
+                    .find(cpQuery)
                     .lean().exec();
                 const cpOrderMap = new Map<string, number>();
                 for (const c of allCampaignCps) {
@@ -75,19 +83,32 @@ export class CheckpointSchedulerService implements OnModuleInit {
                     return order !== undefined && order === Math.min(...cpOrderMap.values());
                 };
 
-                // Resolve event IDs for this campaign
-                const campaignOid = Types.ObjectId.isValid(campaignId) ? new Types.ObjectId(campaignId) : null;
-                const eventQuery = campaignOid
+                // Resolve event IDs for this campaign using properly injected Event model
+                const eventQuery: any = campaignOid
                     ? { $or: [{ campaignId }, { campaignId: campaignOid }] }
                     : { campaignId };
-                const events = await this.runnerModel.db.model('Event').find(eventQuery).select('_id').lean().exec();
-                const eventOids = events.map((e: any) => new Types.ObjectId(String(e._id)));
+                const events = await this.eventModel.find(eventQuery).select('_id').lean().exec();
+                const eventOids: Types.ObjectId[] = events.map((e: any) => new Types.ObjectId(String(e._id)));
+                // Also include campaignId itself as fallback (some runners may have eventId = campaignId)
                 if (campaignOid) eventOids.push(campaignOid);
-                if (!eventOids.length) continue;
+                if (!eventOids.length) {
+                    this.logger.debug(`No events found for campaign ${campaignId}, skipping cutoff check`);
+                    continue;
+                }
+                this.logger.debug(`Campaign ${campaignId}: found ${events.length} event(s), eventOids=[${eventOids.map(e => e.toString()).join(',')}]`);
 
                 for (const cp of campaignCps) {
-                    const cutoff = this.parseCutoffTime((cp as any).cutoffTime);
-                    if (!cutoff || cutoff > now) continue;
+                    const cutoffStr = (cp as any).cutoffTime;
+                    const cutoff = this.parseCutoffTime(cutoffStr);
+                    if (!cutoff) {
+                        this.logger.debug(`CP "${(cp as any).name}": could not parse cutoffTime "${cutoffStr}"`);
+                        continue;
+                    }
+                    if (cutoff > now) {
+                        this.logger.debug(`CP "${(cp as any).name}": cutoff ${cutoff.toISOString()} > now ${now.toISOString()}, not yet`);
+                        continue;
+                    }
+                    this.logger.log(`CP "${(cp as any).name}": cutoff ${cutoff.toISOString()} <= now ${now.toISOString()}, processing...`);
                     processed++;
 
                     const cpName = ((cp as any).name || '').toUpperCase();
@@ -123,6 +144,7 @@ export class CheckpointSchedulerService implements OnModuleInit {
                         for (const [name, order] of cpOrderMap.entries()) {
                             if (order < cpOrder) prevCpNames.push(name);
                         }
+                        this.logger.debug(`CP "${(cp as any).name}" (order=${cpOrder}): prevCpNames=[${prevCpNames.join(',')}]`);
                         // Runners who are running but haven't reached this checkpoint
                         const filter: any = {
                             eventId: { $in: eventOids },
@@ -138,6 +160,9 @@ export class CheckpointSchedulerService implements OnModuleInit {
                                 { latestCheckpoint: { $in: prevCpNames.map(n => new RegExp(`^${n}$`, 'i')) } },
                             ];
                         }
+                        // Count matching runners first for debug
+                        const matchCount = await this.runnerModel.countDocuments(filter).exec();
+                        this.logger.debug(`CP "${(cp as any).name}": ${matchCount} runner(s) match DNF filter`);
                         const result = await this.runnerModel.updateMany(
                             filter,
                             {
