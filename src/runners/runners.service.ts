@@ -740,10 +740,41 @@ export class RunnersService {
             throw new NotFoundException(`Invalid status: ${data.status}`);
         }
         const isManualStop = ['dnf', 'dns', 'dq'].includes(data.status);
+        let targetStatus = data.status;
+        // Check if we're reverting FROM a stopped status (DNF/DNS/DQ)
+        let isRevertFromStopped = false;
+        // When reverting to in_progress, check if runner already has timing at FINISH checkpoint
+        // If so, auto-promote to 'finished' (matching racetimingms_reference revertDNFToRunning logic)
+        if (targetStatus === 'in_progress') {
+            try {
+                const runner = await this.runnerModel.findById(runnerId).lean().exec();
+                if (runner) {
+                    const curStatus = ((runner as any).status || '').toLowerCase();
+                    isRevertFromStopped = ['dnf', 'dns', 'dq'].includes(curStatus);
+                    const TimingModel = this.runnerModel.db.model('TimingRecord');
+                    const CheckpointModel = this.runnerModel.db.model('Checkpoint');
+                    // Find FINISH-type checkpoints for this runner's campaign
+                    const finishCps = await CheckpointModel.find({ type: 'finish' }).select('name').lean().exec();
+                    const finishNames = finishCps.map((cp: any) => (cp.name || '').toUpperCase());
+                    if (finishNames.length === 0) finishNames.push('FINISH');
+                    // Check if runner has any timing record at a FINISH checkpoint
+                    const finishTiming = await TimingModel.findOne({
+                        eventId: runner.eventId,
+                        bib: runner.bib,
+                        checkpoint: { $regex: new RegExp(`^(${finishNames.join('|')})$`, 'i') },
+                    }).lean().exec();
+                    if (finishTiming) {
+                        targetStatus = 'finished';
+                    }
+                }
+            } catch { /* If check fails, fall back to in_progress */ }
+        }
         const update: any = {
-            status: data.status,
+            status: targetStatus,
             statusChangedAt: new Date(),
-            isManualStatus: isManualStop, // true for DNF/DNS/DQ, false for revert to running/not_started
+            // isManualStatus = true for: DNF/DNS/DQ set by staff, OR revert from stopped status
+            // (revert needs protection from cutoff scheduler re-marking them DNF/DNS)
+            isManualStatus: isManualStop || isRevertFromStopped,
         };
         if (data.statusCheckpoint !== undefined) update.statusCheckpoint = data.statusCheckpoint;
         if (data.statusNote !== undefined) update.statusNote = data.statusNote;

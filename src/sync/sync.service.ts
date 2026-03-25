@@ -1908,18 +1908,39 @@ export class SyncService {
                         }
                     }
                 }
+                // Build set of FINISH checkpoint names (case-insensitive) for detecting finished runners
+                const finishCpNames = new Set<string>();
+                try {
+                    const campaignCps = await this.checkpointsService.findByCampaign(campaignId);
+                    for (const cp of campaignCps) {
+                        const cpObj = cp as any;
+                        if (cpObj.type === 'finish') finishCpNames.add((cpObj.name || '').toUpperCase());
+                    }
+                } catch { /* checkpoints may not exist yet */ }
+                // Fallback: if no 'finish' type checkpoint, detect by name containing 'FINISH'
+                if (finishCpNames.size === 0) finishCpNames.add('FINISH');
+
                 const runnerPassedOps = Array.from(lapAccByRunner.entries()).map(([rId, acc]) => {
                     const validSplits = acc.splitTimes.filter(s => s > 0);
                     const bestLap = validSplits.length > 0 ? Math.min(...validSplits) : undefined;
                     const avgLap = validSplits.length > 0 ? Math.round(validSplits.reduce((a, b) => a + b, 0) / validSplits.length) : undefined;
                     // Find the runner to check current status
                     const existingRunner = allRunners.find(r => String(r._id) === rId);
-                    // Split sync only promotes not_started → in_progress. DNF/DNS/DQ is manual-only.
+                    // Check if runner has timing at a FINISH checkpoint
+                    const hasFinishTiming = [...acc.uniqueCps].some(cp => finishCpNames.has(cp.toUpperCase()));
+                    // Promote status: not_started → in_progress, and → finished if FINISH checkpoint reached.
+                    // Respect isManualStatus: don't override manually-set DNF/DNS/DQ.
                     let statusUpdate: Record<string, any> = {};
                     if (existingRunner && acc.lapCount > 0) {
                         const curStatus = (existingRunner.status || '').toLowerCase();
-                        if (curStatus === 'not_started') {
-                            statusUpdate = { status: 'in_progress', isStarted: true };
+                        const isManuallySet = (existingRunner as any).isManualStatus === true;
+                        const isStoppedManual = isManuallySet && ['dnf', 'dns', 'dq'].includes(curStatus);
+                        if (!isStoppedManual) {
+                            if (hasFinishTiming && curStatus !== 'finished') {
+                                statusUpdate = { status: 'finished', isStarted: true };
+                            } else if (curStatus === 'not_started') {
+                                statusUpdate = { status: 'in_progress', isStarted: true };
+                            }
                         }
                     }
                     return {
@@ -2127,10 +2148,18 @@ export class SyncService {
                                     updateData.elapsedTime = gunTimeMs;
                                 }
                             }
-                            // ── Status: only promote not_started → in_progress. DNF/DNS/DQ is manual-only. ──
+                            // ── Status: promote based on timing data. DNF/DNS/DQ is manual-only. ──
                             const currentStatus = (existingRunner.status || '').toLowerCase();
-                            if ((updateData.gunTime && updateData.gunTime > 0 || updateData.netTime && updateData.netTime > 0) && currentStatus === 'not_started') {
-                                updateData.status = 'in_progress'; updateData.isStarted = true; result.statusChanges++;
+                            const isManuallySet = (existingRunner as any).isManualStatus === true;
+                            const isStoppedManual = isManuallySet && ['dnf', 'dns', 'dq'].includes(currentStatus);
+                            if (!isStoppedManual) {
+                                if (updateData.netTime && updateData.netTime > 0 && currentStatus !== 'finished') {
+                                    // Has NetTime → runner crossed the finish line
+                                    updateData.status = 'finished'; updateData.isStarted = true; result.statusChanges++;
+                                } else if ((updateData.gunTime && updateData.gunTime > 0) && currentStatus === 'not_started') {
+                                    // Has GunTime only → started but not necessarily finished
+                                    updateData.status = 'in_progress'; updateData.isStarted = true; result.statusChanges++;
+                                }
                             }
                             // ── Rankings — prefer Net Time positions, fall back to Gun Time positions ──
                             // RaceTiger provides: OverallPosition (gun), NetTimeOverallPosition (net), etc.

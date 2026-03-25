@@ -101,7 +101,14 @@ export class CheckpointSchedulerService implements OnModuleInit {
                                 status: 'not_started',
                                 isManualStatus: { $ne: true },
                             },
-                            { $set: { status: 'dns' } },
+                            {
+                                $set: {
+                                    status: 'dns',
+                                    statusCheckpoint: (cp as any).name || 'START',
+                                    statusChangedAt: now,
+                                    statusChangedBy: 'cutoff-scheduler',
+                                },
+                            },
                         ).exec();
                         if (result.modifiedCount > 0) {
                             dnsCount += result.modifiedCount;
@@ -133,7 +140,14 @@ export class CheckpointSchedulerService implements OnModuleInit {
                         }
                         const result = await this.runnerModel.updateMany(
                             filter,
-                            { $set: { status: 'dnf' } },
+                            {
+                                $set: {
+                                    status: 'dnf',
+                                    statusCheckpoint: (cp as any).name || '',
+                                    statusChangedAt: now,
+                                    statusChangedBy: 'cutoff-scheduler',
+                                },
+                            },
                         ).exec();
                         if (result.modifiedCount > 0) {
                             dnfCount += result.modifiedCount;
