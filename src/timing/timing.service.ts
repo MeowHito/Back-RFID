@@ -145,17 +145,24 @@ export class TimingService {
             elapsedTime,
         };
 
-        if (isStart) {
+        // Respect isManualStatus: if staff manually set DNF/DNS/DQ, don't override
+        const isManuallySet = (runner as any).isManualStatus === true;
+        const isStoppedStatus = ['dnf', 'dns', 'dq'].includes(runner.status);
+
+        if (isManuallySet && isStoppedStatus) {
+            // Staff manually set this status — record the timing but DON'T change status
+            updateData.isStarted = true;
+        } else if (isStart) {
             updateData.startTime = scanData.scanTime;
             updateData.status = 'in_progress';
+            updateData.isStarted = true;
         } else if (isFinish) {
             updateData.finishTime = scanData.scanTime;
             updateData.netTime = elapsedTime;
             updateData.status = 'finished';
-        } else if (runner.status === 'not_started' ||
-            (['dnf', 'dns'].includes(runner.status) && !runner.statusCheckpoint)) {
-            // Also recover auto-detected DNF/DNS (no admin statusCheckpoint) back to in_progress
+        } else if (runner.status === 'not_started') {
             updateData.status = 'in_progress';
+            updateData.isStarted = true;
         }
 
         await this.runnersService.update(runner._id.toString(), updateData);
@@ -496,30 +503,10 @@ export class TimingService {
         const allRunners = await this.runnersService.findByEventIds(eventIdStrings, {});
         if (allRunners && allRunners.length > 0) {
             const runnerByBib = new Map<string, any>();
-            const dnfDqBibs: string[] = [];
             for (const runner of allRunners) {
                 const r = runner as any;
                 if (r.bib) {
                     runnerByBib.set(String(r.bib), r);
-                    const st = (r.status || '').toLowerCase();
-                    if (['dnf', 'dq'].includes(st)) dnfDqBibs.push(String(r.bib));
-                }
-            }
-
-            // For DNF/DQ runners without statusCheckpoint, find their last checkpoint via timing records
-            // so we know where to show them as DNF vs passed
-            const dnfLastCpMap = new Map<string, number>(); // bib → highest orderNum with timing
-            if (dnfDqBibs.length > 0 && cpOrderMap.size > 0) {
-                const dnfTimingRecords = await this.timingModel.find({
-                    eventId: { $in: eventIds },
-                    bib: { $in: dnfDqBibs },
-                }).select('bib checkpoint').lean().exec();
-                for (const tr of dnfTimingRecords) {
-                    const bib = String((tr as any).bib);
-                    const cpName = ((tr as any).checkpoint || '').toUpperCase();
-                    const cpOrder = cpOrderMap.get(cpName) ?? -1;
-                    const prev = dnfLastCpMap.get(bib) ?? -1;
-                    if (cpOrder > prev) dnfLastCpMap.set(bib, cpOrder);
                 }
             }
 
@@ -543,15 +530,8 @@ export class TimingService {
                                     rec.status = 'finished'; // passed here, DNF elsewhere
                                 }
                             } else {
-                                // No admin-set statusCheckpoint — use dnfLastCpMap to determine
-                                // if this is the LAST checkpoint the runner reached before stopping.
-                                // Show DNF at their last checkpoint, 'finished' (passed) at earlier ones.
-                                const lastOrder = dnfLastCpMap.get(String(rec.bib)) ?? -1;
-                                if (lastOrder === currentCpOrder || currentCpOrder < 0 || lastOrder < 0) {
-                                    rec.status = dbRunner.status; // DNF at their last checkpoint
-                                } else {
-                                    rec.status = 'finished'; // passed through earlier checkpoints
-                                }
+                                // No statusCheckpoint — show DNF/DQ at all checkpoints with timing
+                                rec.status = dbRunner.status;
                             }
                         } else {
                             rec.status = dbRunner.status || 'not_started';
@@ -584,15 +564,13 @@ export class TimingService {
                 if (['dnf', 'dq'].includes(st)) {
                     const sCp = (r.statusCheckpoint || '').toUpperCase();
                     if (sCp) {
-                        // Admin-set statusCheckpoint: only show at that specific CP
+                        // Staff-set statusCheckpoint: only show at that specific CP
                         const stoppedOrder = cpOrderMap.get(sCp) ?? -1;
                         if (stoppedOrder !== currentCpOrder) continue;
                     } else {
-                        // Auto-detected DNF (from RaceTiger): show at checkpoints AFTER
-                        // their last passed checkpoint (where they dropped out)
-                        const lastOrder = dnfLastCpMap.get(String(r.bib)) ?? -1;
-                        if (lastOrder < 0) continue; // No timing data at all → skip
-                        if (currentCpOrder <= lastOrder) continue; // At or before last passed CP → skip
+                        // No statusCheckpoint — skip (DNF runners without a CP assignment
+                        // shouldn't appear at checkpoints they never reached)
+                        continue;
                     }
                 }
 

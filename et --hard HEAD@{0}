@@ -1,0 +1,96 @@
+[33m3e8c992[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{0}: commit: sort อันดับ new
+[33mc91d076[m HEAD@{1}: commit: อันดับ ไม่สลับไปมาอีกแล้ว
+[33m7f649c5[m HEAD@{2}: commit: dnf status can fix on my web
+[33m66d8155[m HEAD@{3}: commit: Score Sync fix
+[33m8b0eb6e[m HEAD@{4}: commit: sync service score
+[33mdb87c7c[m HEAD@{5}: commit: +- rank
+[33m51c976d[m HEAD@{6}: commit: fix time zone
+[33m79016ed[m HEAD@{7}: commit: sync service show dicetance
+[33ma1a3077[m HEAD@{8}: commit: race finish = true คนที่วิ่งไม่ถึงจะเป็น DNF
+[33mdbb990f[m HEAD@{9}: commit: Auto Sybc not pull BUI Finish Status
+[33mafc239e[m HEAD@{10}: commit: DNF ยังไม่ขึ้นนะ
+[33mc62b011[m HEAD@{11}: commit: Full sync 2button
+[33m6e0a191[m HEAD@{12}: commit: dnf change
+[33me2bcf42[m HEAD@{13}: commit: debug DNF Runers
+[33m921900e[m HEAD@{14}: commit: fix timezone and split No , Distance no data fix , ramlings Ovr/Gen/Cat show - fix
+[33mff15b8a[m HEAD@{15}: commit: barcode reader id card
+[33mb9e69a0[m HEAD@{16}: commit: if no manual edit dnf will not show dnf
+[33m2772ec2[m HEAD@{17}: commit: SyncService
+[33m2d30abb[m HEAD@{18}: commit: Scanning Template to mobile
+[33me477523[m HEAD@{19}: commit: fix dns,dnf,dq ให้แยกตามCheckpoint จริงๆ
+[33m7d13a2f[m HEAD@{20}: commit: Filter แยกหมวดหมู่ถูกต้อง
+[33maa1f1e1[m HEAD@{21}: commit: slug share link
+[33meb97056[m HEAD@{22}: commit: sync service ทำให้ มันดึงข้อมูลมาทุกกิจกรรมในหน้า live Monitor
+[33mbd7fd1b[m HEAD@{23}: commit: fix: group timingrecords by bib instead of runnerId for checkpoint monitor
+[33m79a7c55[m HEAD@{24}: commit: timing service fix
+[33m72333da[m HEAD@{25}: commit: เรื่องข้อมูลซ้ำในหน้า Checkpoint ponitor fix and manage user fix add role
+[33md871f72[m HEAD@{26}: commit: new certificate canva
+[33md668849[m HEAD@{27}: commit: fix: add displayColumns, displayColumnsLab, displayMode, raceFinished to CreateCampaignDto
+[33mcebd503[m HEAD@{28}: commit: แก้2ข้อที่น้าทำบอก 2หน้า
+[33m8c9cc05[m HEAD@{29}: commit: reload page
+[33mb53bc28[m HEAD@{30}: commit: new picture
+[33m699c3a5[m HEAD@{31}: commit: Scanning page fix qrCode
+[33m2707ba0[m HEAD@{32}: commit: edit table
+[33mae44213[m HEAD@{33}: reset: moving to ae44213
+[33m1bc3209[m HEAD@{34}: reset: moving to HEAD~1
+[33mae44213[m HEAD@{35}: commit: เหลือ สัญชาติที่ยังไม่แก้
+[33m1bc3209[m HEAD@{36}: commit: RFID Scan
+[33m10cf8fd[m HEAD@{37}: commit: PassTime Sync
+[33m3393da9[m HEAD@{38}: commit: manage user
+[33mb0807fb[m HEAD@{39}: commit: create index and new page = passtime from racetiger
+[33m0665447[m HEAD@{40}: commit: แก้ promt ใหญ่ and index create
+[33meaedf47[m HEAD@{41}: commit: admin eslip can fix
+[33md9a9f0b[m HEAD@{42}: commit: fix ข้อมูลชน
+[33maf266b0[m HEAD@{43}: commit: เพิ่ม box for lab run
+[33mad5ed63[m HEAD@{44}: commit: log admin import
+[33m4d0529e[m HEAD@{45}: commit: เปิดการมองเห็น Checkpoint
+[33m4eee258[m HEAD@{46}: commit: create-campaign.dto
+[33mf10c02e[m HEAD@{47}: commit: i will push to ec2
+[33medbc54d[m HEAD@{48}: commit: fix import runners from race tiger
+[33mdbe52e3[m HEAD@{49}: commit: จะทำเรืื่อง การImportต่อละ
+[33m31233ce[m HEAD@{50}: reset: moving to 31233ce
+[33m27e782e[m HEAD@{51}: reset: moving to 27e782e
+[33m31233ce[m HEAD@{52}: reset: moving to 31233ce
+[33m27e782e[m HEAD@{53}: reset: moving to 27e782e
+[33m31233ce[m HEAD@{54}: commit: sync fix all
+[33mfb4cb0c[m HEAD@{55}: commit: Full Check to Ready
+[33m02c07e1[m HEAD@{56}: commit: event fix
+[33m2afcdab[m HEAD@{57}: commit: fix sync service.ts
+[33m27e782e[m HEAD@{58}: commit: sync button and edit sync service file
+[33m3509494[m HEAD@{59}: commit: can import checkpoint and แยก distance
+[33mf8ef3e4[m HEAD@{60}: commit: fix: strengthen RaceTiger per-event sync mapping and time parsing
+[33m105fef6[m HEAD@{61}: commit: fix: per-event checkpoint mappings with km distances, startTime on Event doc
+[33m5f30e49[m HEAD@{62}: commit: fix: auto-populate distanceMappings on checkpoints after import - no manual ticking needed
+[33m857216b[m HEAD@{63}: commit: fix: per-event BIO fetch with eid, start time from info, nationality variants, checkpoint mapping all events
+[33mf7375cc[m HEAD@{64}: commit: feat: upsert campaign.categories with distances from RaceTiger info on Import Events
+[33mdb7e9e9[m HEAD@{65}: commit: fix: add partnerCode and raceTigerBaseUrl to CreateCampaignDto
+[33m6b23a99[m HEAD@{66}: commit: feat: raceTigerBaseUrl field, score endpoint type, athleteId on runner
+[33ma9492db[m HEAD@{67}: commit: fix: use event name as fallback category in mapBioRowToRunner; extend EventResolver with categoryByEventId
+[33m9f29dea[m HEAD@{68}: commit: change .env file
+[33m0ff29d2[m HEAD@{69}: commit: feat: add partnerCode field to campaign schema; extract pc from RaceTiger URL; use per-campaign partnerCode in sync requests
+[33md600a9a[m HEAD@{70}: commit: fix: add campaignId support to runners paged endpoint so participants page shows all runners in campaign
+[33m02ee5f0[m HEAD@{71}: commit: fix: resolve E11000 duplicate key error in checkpoint mapping upsert by separating key fields into setOnInsert
+[33m729c572[m HEAD@{72}: commit: feat: extract real checkpoint names from splitScore during import; add endpoint descriptions in create/edit URL field
+[33mdef3f1a[m HEAD@{73}: commit: feat: import events syncs runners+checkpoints in one shot; inject CheckpointsModule into SyncModule; robust payload extraction
+[33md09b8b9[m HEAD@{74}: commit: fill auto import
+[33mdd0b8c8[m HEAD@{75}: commit: sum ID
+[33m3e9cca1[m HEAD@{76}: commit: backend remote event number
+[33m23b86f7[m HEAD@{77}: commit: added admin log and function sync all runners
+[33m8066008[m HEAD@{78}: commit: .env เพิ่มเยอะเลยพวกการsyncข้อมูลจากเว็ปจีนอะ
+[33m6eb0df5[m HEAD@{79}: commit: fix werning duplicate index
+[33m28a0e4a[m HEAD@{80}: commit: url is name
+[33m34f60f9[m HEAD@{81}: commit: addmin css
+[33m3f619aa[m HEAD@{82}: commit: fix sort
+[33m23b6333[m HEAD@{83}: commit: delete import setting bar
+[33mdb24ec1[m HEAD@{84}: commit: test list nav bar
+[33md758f4d[m HEAD@{85}: commit: new import
+[33m8501a02[m HEAD@{86}: commit: create index
+[33m12e117d[m HEAD@{87}: commit: edit ตามรูป
+[33m39861d7[m HEAD@{88}: commit: edit index
+[33m0649f7b[m HEAD@{89}: commit: new database
+[33m33dcf91[m HEAD@{90}: commit: จัดลำดับ route ใหม่
+[33mc5448ed[m HEAD@{91}: commit: แก้database และเพิ่มแอดมินหน่อยๆ
+[33m23f46b9[m HEAD@{92}: commit: ทำให้รองรับการเปลี่ยนรูป ลบรูป ปรับขนาด database ใหม่ delete auth guard
+[33ma974545[m HEAD@{93}: commit: new user 10 user added to rusult
+[33m03cda84[m HEAD@{94}: commit: Fix CORS allow all origins
+[33m5a7950b[m HEAD@{95}: commit (initial): Initial commit: Backend-only codebase

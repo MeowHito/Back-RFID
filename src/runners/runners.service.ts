@@ -76,21 +76,17 @@ export class RunnersService {
                 if ((r as any).athleteId) bioFields.athleteId = (r as any).athleteId;
                 if (r.sourceFile) bioFields.sourceFile = r.sourceFile;
 
-                const isNonDefaultStatus = r.status && r.status !== 'not_started';
                 return {
                     updateOne: {
                         filter: { eventId: new Types.ObjectId(r.eventId), bib: r.bib },
                         update: {
-                            $set: {
-                                ...bioFields,
-                                // If BIO says DNF/DNS/DQ, also update status on existing runners
-                                ...(isNonDefaultStatus ? { status: r.status } : {}),
-                            },
+                            $set: bioFields,
                             // status, timing, and rank fields only set on FIRST INSERT
+                            // DNF/DNS/DQ statuses are NOT imported — managed manually by checkpoint staff
                             $setOnInsert: {
-                                // Only include status in $setOnInsert when it's default (avoid $set/$setOnInsert conflict)
-                                ...(isNonDefaultStatus ? {} : { status: 'not_started' }),
+                                status: 'not_started',
                                 isStarted: false,
+                                isManualStatus: false,
                                 netTime: 0,
                                 elapsedTime: 0,
                                 overallRank: 0,
@@ -743,13 +739,20 @@ export class RunnersService {
         if (!validStatuses.includes(data.status)) {
             throw new NotFoundException(`Invalid status: ${data.status}`);
         }
+        const isManualStop = ['dnf', 'dns', 'dq'].includes(data.status);
         const update: any = {
             status: data.status,
             statusChangedAt: new Date(),
+            isManualStatus: isManualStop, // true for DNF/DNS/DQ, false for revert to running/not_started
         };
         if (data.statusCheckpoint !== undefined) update.statusCheckpoint = data.statusCheckpoint;
         if (data.statusNote !== undefined) update.statusNote = data.statusNote;
         if (data.changedBy) update.statusChangedBy = data.changedBy;
+        // Clear manual status fields when reverting to running/not_started
+        if (!isManualStop) {
+            update.statusCheckpoint = '';
+            update.statusNote = '';
+        }
         return this.runnerModel.findByIdAndUpdate(runnerId, { $set: update }, { new: true }).lean().exec() as Promise<RunnerDocument | null>;
     }
 

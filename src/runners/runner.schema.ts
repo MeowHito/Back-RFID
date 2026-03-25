@@ -190,6 +190,9 @@ export class Runner {
     lastPassTime: Date; // Timestamp of most recent checkpoint pass
 
     // === Manual status override (by admin/staff) ===
+    @Prop({ default: false })
+    isManualStatus: boolean; // true = status was manually set by staff, auto-systems won't override
+
     @Prop()
     statusCheckpoint: string; // Checkpoint where status was changed (e.g. "CP3")
 

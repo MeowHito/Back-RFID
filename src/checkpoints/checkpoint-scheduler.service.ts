@@ -6,12 +6,14 @@ import { Runner, RunnerDocument } from '../runners/runner.schema';
 
 /**
  * CheckpointSchedulerService
- * 
+ *
  * Periodically checks checkpoint cutoffTime values.
- * When the current time exceeds a checkpoint's cutoffTime,
- * any runners still "in_progress" at a preceding checkpoint
- * are automatically updated to "dnf" (Did Not Finish).
- * 
+ * Based on the diagram (section 4 — CutOff Time Auto-Detect):
+ *
+ * - START checkpoint cutoff → runners with no timing at START → DNS
+ * - Non-START checkpoint cutoff → running runners who haven't reached this CP → DNF
+ *
+ * Respects isManualStatus: if staff manually set a status, auto-cutoff won't override it.
  * Runs every 60 seconds.
  */
 @Injectable()
@@ -25,7 +27,6 @@ export class CheckpointSchedulerService implements OnModuleInit {
     ) { }
 
     onModuleInit() {
-        // Check cut-off times every 60 seconds
         this.intervalId = setInterval(() => {
             this.checkCutOffTimes().catch(err => {
                 this.logger.error('Error checking cut-off times', err);
@@ -35,65 +36,125 @@ export class CheckpointSchedulerService implements OnModuleInit {
     }
 
     /**
-     * Check all checkpoints with cutoffTime and auto-DNF runners who haven't passed yet.
+     * Check all checkpoints with cutoffTime and auto-mark DNS/DNF.
      */
-    async checkCutOffTimes(): Promise<{ processed: number; dnfCount: number }> {
+    async checkCutOffTimes(): Promise<{ processed: number; dnsCount: number; dnfCount: number }> {
         const now = new Date();
         let processed = 0;
+        let dnsCount = 0;
         let dnfCount = 0;
 
         try {
-            // Find all active checkpoints with a cutoffTime
             const checkpoints = await this.checkpointModel
                 .find({ active: { $ne: false }, cutoffTime: { $exists: true, $nin: [null, '-', ''] } })
                 .lean()
                 .exec();
 
+            // Group checkpoints by campaign for ordering context
+            const cpsByCampaign = new Map<string, any[]>();
             for (const cp of checkpoints) {
-                const cutoff = this.parseCutoffTime(cp.cutoffTime as string);
-                if (!cutoff || cutoff > now) continue; // Not yet reached
+                const cid = String((cp as any).campaignId || '');
+                if (!cid) continue;
+                if (!cpsByCampaign.has(cid)) cpsByCampaign.set(cid, []);
+                cpsByCampaign.get(cid)!.push(cp);
+            }
 
-                processed++;
+            for (const [campaignId, campaignCps] of cpsByCampaign.entries()) {
+                // Get all checkpoints for ordering (including those without cutoff)
+                const allCampaignCps = await this.checkpointModel
+                    .find({ campaignId: Types.ObjectId.isValid(campaignId) ? new Types.ObjectId(campaignId) : campaignId })
+                    .lean().exec();
+                const cpOrderMap = new Map<string, number>();
+                for (const c of allCampaignCps) {
+                    cpOrderMap.set(((c as any).name || '').toUpperCase(), (c as any).orderNum ?? 0);
+                }
+                const isStartCp = (cpName: string) => {
+                    const name = cpName.toUpperCase();
+                    if (name === 'START') return true;
+                    const order = cpOrderMap.get(name);
+                    return order !== undefined && order === Math.min(...cpOrderMap.values());
+                };
 
-                // Find runners for this campaign who are in_progress
-                // and whose latestCheckpoint is before this checkpoint (by orderNum)
-                const result = await this.runnerModel.updateMany(
-                    {
-                        // Runners from events in this campaign
-                        status: 'in_progress',
-                        // Only runners whose arrival hasn't been recorded at this checkpoint or beyond
-                        $or: [
-                            { latestCheckpoint: { $exists: false } },
-                            { latestCheckpoint: null },
-                            { latestCheckpoint: '' },
-                        ],
-                    },
-                    {
-                        $set: {
-                            status: 'dnf',
-                        },
-                    },
-                );
+                // Resolve event IDs for this campaign
+                const campaignOid = Types.ObjectId.isValid(campaignId) ? new Types.ObjectId(campaignId) : null;
+                const eventQuery = campaignOid
+                    ? { $or: [{ campaignId }, { campaignId: campaignOid }] }
+                    : { campaignId };
+                const events = await this.runnerModel.db.model('Event').find(eventQuery).select('_id').lean().exec();
+                const eventOids = events.map((e: any) => new Types.ObjectId(String(e._id)));
+                if (campaignOid) eventOids.push(campaignOid);
+                if (!eventOids.length) continue;
 
-                if (result.modifiedCount > 0) {
-                    dnfCount += result.modifiedCount;
-                    this.logger.warn(
-                        `Cut-off reached for checkpoint "${cp.name}" (${cp.cutoffTime}). ` +
-                        `Marked ${result.modifiedCount} runners as DNF.`
-                    );
+                for (const cp of campaignCps) {
+                    const cutoff = this.parseCutoffTime((cp as any).cutoffTime);
+                    if (!cutoff || cutoff > now) continue;
+                    processed++;
+
+                    const cpName = ((cp as any).name || '').toUpperCase();
+                    const cpOrder = cpOrderMap.get(cpName) ?? -1;
+
+                    if (isStartCp((cp as any).name || '')) {
+                        // START checkpoint cutoff → mark not_started runners as DNS
+                        const result = await this.runnerModel.updateMany(
+                            {
+                                eventId: { $in: eventOids },
+                                status: 'not_started',
+                                isManualStatus: { $ne: true },
+                            },
+                            { $set: { status: 'dns' } },
+                        ).exec();
+                        if (result.modifiedCount > 0) {
+                            dnsCount += result.modifiedCount;
+                            this.logger.warn(
+                                `START cutoff "${(cp as any).name}" (${(cp as any).cutoffTime}): ${result.modifiedCount} runners → DNS`
+                            );
+                        }
+                    } else {
+                        // Non-START checkpoint cutoff → mark running runners whose
+                        // latestCheckpoint is before this CP as DNF
+                        const prevCpNames: string[] = [];
+                        for (const [name, order] of cpOrderMap.entries()) {
+                            if (order < cpOrder) prevCpNames.push(name);
+                        }
+                        // Runners who are running but haven't reached this checkpoint
+                        const filter: any = {
+                            eventId: { $in: eventOids },
+                            status: { $in: ['in_progress', 'not_started'] },
+                            isManualStatus: { $ne: true },
+                        };
+                        if (prevCpNames.length > 0) {
+                            // Only DNF runners whose latestCheckpoint is BEFORE this CP
+                            filter.$or = [
+                                { latestCheckpoint: { $exists: false } },
+                                { latestCheckpoint: null },
+                                { latestCheckpoint: '' },
+                                { latestCheckpoint: { $in: prevCpNames.map(n => new RegExp(`^${n}$`, 'i')) } },
+                            ];
+                        }
+                        const result = await this.runnerModel.updateMany(
+                            filter,
+                            { $set: { status: 'dnf' } },
+                        ).exec();
+                        if (result.modifiedCount > 0) {
+                            dnfCount += result.modifiedCount;
+                            this.logger.warn(
+                                `Cutoff "${(cp as any).name}" (${(cp as any).cutoffTime}): ${result.modifiedCount} runners → DNF`
+                            );
+                        }
+                    }
                 }
             }
         } catch (err) {
             this.logger.error('Failed to process cut-off times', err);
         }
 
-        return { processed, dnfCount };
+        return { processed, dnsCount, dnfCount };
     }
 
     /**
      * Manually trigger cut-off check (for admin API)
      */
-    async triggerCutOffCheck(): Promise<{ processed: number; dnfCount: number }> {
+    async triggerCutOffCheck(): Promise<{ processed: number; dnsCount: number; dnfCount: number }> {
         this.logger.log('Manual cut-off check triggered');
         return this.checkCutOffTimes();
     }
@@ -113,9 +174,8 @@ export class CheckpointSchedulerService implements OnModuleInit {
         const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})$/);
         if (timeMatch) {
             const now = new Date();
-            const date = new Date(now.getFullYear(), now.getMonth(), now.getDate(),
+            return new Date(now.getFullYear(), now.getMonth(), now.getDate(),
                 parseInt(timeMatch[1]), parseInt(timeMatch[2]));
-            return date;
         }
 
         return null;

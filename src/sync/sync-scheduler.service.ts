@@ -23,7 +23,6 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
     private isSyncing = false;
     private syncCount = 0;
     private splitSyncTick = 0; // Run split sync every 3rd tick (~15s)
-    private bioStatusTick = 0; // Run BIO FinishStatus check every 6th tick (~30s)
 
     constructor(
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
@@ -66,24 +65,12 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
             if (campaigns.length === 0) return;
 
             this.splitSyncTick++;
-            this.bioStatusTick++;
             const runSplitSync = this.splitSyncTick % 3 === 0; // every 3rd tick = ~15s
-            const runBioStatusSync = this.bioStatusTick % 3 === 0; // every 3rd tick = ~15s (same as split)
 
             for (const campaign of campaigns) {
                 const cid = String(campaign._id);
                 try {
-                    // BIO FinishStatus sync FIRST — sets DNF/DNS/DQ from Athlete info
-                    // Must run BEFORE split sync so that split sync respects DNF status
-                    if (runBioStatusSync) {
-                        const bioResult = await this.syncService.syncBioFinishStatus(cid);
-                        if (bioResult.updated > 0) {
-                            this.logger.log(
-                                `Auto-bio-status [${campaign.name || cid}]: ${bioResult.updated} status updates from Athlete info`
-                            );
-                        }
-                    }
-                    // Score sync every 5s (rank, time, pace — no status promotion to finished)
+                    // Score sync every 5s (rank, time, pace — no DNF/DNS/DQ status from RaceTiger)
                     const result = await this.syncService.syncTimingOnly(cid);
                     if (result.updated > 0 || result.statusChanges > 0) {
                         this.logger.log(

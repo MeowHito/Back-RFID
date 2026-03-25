@@ -642,20 +642,8 @@ export class SyncService {
             birthDate: this.toOptionalDate(row?.Birthday ?? row?.birthday),
             idNo,
             email,
-            status: (() => {
-                const finishStatus = this.toSafeString(
-                    row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
-                    ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
-                    ?? row?.Status ?? row?.status ?? row?.Result ?? row?.result
-                    ?? this.findRowValueByNormalizedKeys(row, ['finishstatus', 'finish_status']),
-                ).toLowerCase();
-                if (finishStatus.includes('dnf') || finishStatus.includes('did not finish')) return 'dnf';
-                if (finishStatus.includes('dns') || finishStatus.includes('did not start')) return 'dns';
-                if (finishStatus.includes('dq') || finishStatus.includes('disqualif')) return 'dq';
-                if (finishStatus.includes('withdraw')) return 'dnf';
-                // FIN = still running (not finished yet) → treat as not_started
-                return 'not_started';
-            })(),
+            // DNF/DNS/DQ statuses are NOT imported from RaceTiger — managed manually by checkpoint staff
+            status: 'not_started',
             isStarted: false,
             allowRFIDSync: true,
             sourceFile: 'RaceTiger BIO sync',
@@ -1547,12 +1535,8 @@ export class SyncService {
                 this.logger.log(`  RaceTiger EID ${rtId} → local event ${localId} (${catName})`);
             }
             this.logger.log(`RaceTiger EIDs to fetch: ${uniqueRaceTigerEids.length > 0 ? uniqueRaceTigerEids.join(', ') : 'ALL (no eid filter)'}`);
-            // Import ALL runners from BIO (no pre-filter) — DNF/DNS runners have no score data
-            // but should still be imported. Their status is set from FinishStatus in mapBioRowToRunner.
+            // Import ALL runners from BIO — status is always not_started (DNF/DNS/DQ managed manually)
             let skippedNoResult = 0;
-            // Track BIBs whose BIO FinishStatus is FIN (still running) — these should NOT be
-            // auto-marked as DNF by the post-sync detection even if raceFinished=true.
-            const bioFinBibs = new Set<string>();
             // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
@@ -1590,18 +1574,6 @@ export class SyncService {
                         const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
                         if (runner) {
                             mapped.push(runner);
-                            // Track FIN BIBs from BIO FinishStatus — still running, NOT DNF
-                            // Only check the dedicated FinishStatus field (not generic Status/Result)
-                            const rawFinishStatus = this.toSafeString(
-                                row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
-                                ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
-                                ?? this.findRowValueByNormalizedKeys(row, ['finishstatus', 'finish_status']),
-                            ).toLowerCase();
-                            // FIN = still running. Only explicitly FIN/OK get protected from post-sync DNF.
-                            // Empty = no FinishStatus field → runner is normal, post-sync detection can apply.
-                            if (rawFinishStatus === 'fin' || rawFinishStatus === 'ok') {
-                                if (runner.bib) bioFinBibs.add(String(runner.bib));
-                            }
                         } else {
                             rowsSkipped += 1;
                             // Determine skip reason
@@ -1666,82 +1638,10 @@ export class SyncService {
             } catch (splitErr: any) {
                 this.logger.warn(`Split sync failed (non-fatal): ${splitErr?.message}`);
             }
-            // ── Post-sync: detect DNF/DNS for runners who did not finish ──
-            // ONLY apply when race is confirmed finished (2+ days after race date).
-            // For live/ongoing races, unfinished runners should stay as not_started
-            // or in_progress — NOT be auto-marked as DNF/DNS.
-            let dnfUpdated = 0;
-            let dnsUpdated = 0;
-            // Check if the race is marked as finished on the campaign
-            const campaignForRaceCheck = await this.campaignModel.findById(this.toCampaignObjectId(campaignId)).select('raceFinished categories').lean().exec();
-            const campaignCategories = ((campaignForRaceCheck as any)?.categories || []);
-            const isRaceFinished = !!(campaignForRaceCheck as any)?.raceFinished
-                || (campaignCategories.length > 0 && campaignCategories.every((c: any) => c.status === 'finished'));
-            this.logger.log(`Post-sync DNF/DNS detection: isRaceFinished=${isRaceFinished} (raceFinished=${!!(campaignForRaceCheck as any)?.raceFinished}, categories=${campaignCategories.length})`);
-            if (isRaceFinished) {
-                try {
-                    const allEventIds = [...eventResolver.categoryByEventId.keys()];
-                    if (eventResolver.fallbackEventId) allEventIds.push(eventResolver.fallbackEventId);
-                    const eventOids = allEventIds
-                        .filter(id => Types.ObjectId.isValid(id))
-                        .map(id => new Types.ObjectId(id));
-                    // Find all runners who are NOT finished/dnf/dns/dq after score sync
-                    const unfinishedRunners = await this.runnerModel.find({
-                        eventId: { $in: eventOids },
-                        status: { $nin: ['finished', 'dnf', 'dns', 'dq'] },
-                    }).select('_id bib').lean().exec();
-                    if (unfinishedRunners.length > 0) {
-                        this.logger.log(`Post-sync DNF/DNS detection: ${unfinishedRunners.length} runners not finished, ${bioFinBibs.size} FIN BIBs excluded`);
-                        // Check which ones have timing records (split data)
-                        const runnerBibs = unfinishedRunners.map((r: any) => r.bib).filter(Boolean);
-                        const timingRecords = await this.timingRecordModel.find({
-                            eventId: { $in: eventOids },
-                            bib: { $in: runnerBibs },
-                        }).select('bib').lean().exec();
-                        const bibsWithTimingRecords = new Set(timingRecords.map((tr: any) => tr.bib));
-                        const dnfIds: Types.ObjectId[] = [];
-                        const dnsIds: Types.ObjectId[] = [];
-                        let skippedFin = 0;
-                        for (const runner of unfinishedRunners) {
-                            const rAny = runner as any;
-                            // Skip runners whose BIO FinishStatus is FIN (still running)
-                            // They are NOT DNF — just haven't crossed the finish line yet.
-                            if (bioFinBibs.has(String(rAny.bib))) {
-                                skippedFin++;
-                                continue;
-                            }
-                            if (bibsWithTimingRecords.has(rAny.bib)) {
-                                dnfIds.push(rAny._id);
-                            } else {
-                                dnsIds.push(rAny._id);
-                            }
-                        }
-                        if (skippedFin > 0) {
-                            this.logger.log(`  Post-sync: skipped ${skippedFin} FIN runners (still running per BIO FinishStatus)`);
-                        }
-                        if (dnfIds.length > 0) {
-                            const dnfResult = await this.runnerModel.updateMany(
-                                { _id: { $in: dnfIds } },
-                                { $set: { status: 'dnf', isStarted: true } },
-                            ).exec();
-                            dnfUpdated = dnfResult.modifiedCount;
-                            this.logger.log(`  DNF: ${dnfUpdated} runners marked as DNF (had timing records but no finish)`);
-                        }
-                        if (dnsIds.length > 0) {
-                            const dnsResult = await this.runnerModel.updateMany(
-                                { _id: { $in: dnsIds } },
-                                { $set: { status: 'dns' } },
-                            ).exec();
-                            dnsUpdated = dnsResult.modifiedCount;
-                            this.logger.log(`  DNS: ${dnsUpdated} runners marked as DNS (no timing records)`);
-                        }
-                    }
-                } catch (dnfDnsErr: any) {
-                    this.logger.warn(`DNF/DNS detection failed (non-fatal): ${dnfDnsErr?.message}`);
-                }
-            } else {
-                this.logger.log(`Post-sync DNF/DNS detection: SKIPPED (race is still live/ongoing)`);
-            }
+            // DNF/DNS/DQ detection is DISABLED — statuses are managed manually by checkpoint staff
+            // or optionally by the CutOff Time scheduler.
+            const dnfUpdated = 0;
+            const dnsUpdated = 0;
             const result = {
                 fetchedAt: new Date().toISOString(),
                 summary: {
@@ -1836,8 +1736,6 @@ export class SyncService {
                 if ((runner as any).athleteId) runnerByEventAthleteId.set(`${evId}:${(runner as any).athleteId}`, runner);
             }
             const bulkOps: any[] = [];
-            // Track DNF/DNS/DQ indicators detected from split Supplement/CutOff fields
-            const splitDnfMap = new Map<string, { status: string; checkpoint: string }>();
             for (const eid of eidsToFetch) {
                 try {
                     let totalExpected = Infinity;
@@ -1876,36 +1774,11 @@ export class SyncService {
                             if (!tpName) continue;
                             const passTimeStr = this.toSafeString(row?.PassTime ?? row?.passTime ?? row?.Time ?? row?.time ?? row?.ScanTime ?? row?.scanTime);
 
-                            // --- DNF/DNS/DQ detection from split fields ---
-                            // Must happen BEFORE the passTimeStr skip, because DNF rows in the
-                            // "Not Finished List" may have no PassTime but DO have Supplement="DNF".
+                            // Extract supplement/cutOff fields for storage (informational only — no status detection)
                             const supplement = this.toSafeString(row?.Supplement ?? row?.supplement);
                             const cutOff = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']);
-                            const operatingVal = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note);
-                            // Also check Status/Result/FinishStatus — RaceTiger may put DNF here
-                            const splitStatusVal = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result);
-                            const splitFinishStatus = this.toSafeString(row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus);
-                            if (bulkOps.length < 5) {
-                                this.logger.log(`  [SPLIT STATUS DEBUG] BIB=${runner.bib} CP=${tpName} | Supplement="${supplement}" CutOff="${cutOff}" Operating="${operatingVal}" Status="${splitStatusVal}" FinishStatus="${splitFinishStatus}" PassTime="${passTimeStr}"`);
-                            }
-                            // FIN in FinishStatus = still running → SKIP, do NOT flag as DNF
-                            const splitFinishLower = splitFinishStatus.toLowerCase();
-                            if (splitFinishLower === 'fin' || splitFinishLower === 'finished' || splitFinishLower === 'ok') {
-                                continue; // Not DNF — still running
-                            }
-                            const allSplitStatus = [supplement, cutOff, operatingVal, splitStatusVal, splitFinishStatus].join(' ').toLowerCase();
-                            if (allSplitStatus.includes('dnf') || allSplitStatus.includes('did not finish') || allSplitStatus.includes('withdraw')) {
-                                splitDnfMap.set(String(runner._id), { status: 'dnf', checkpoint: tpName });
-                            } else if (allSplitStatus.includes('dns') || allSplitStatus.includes('did not start')) {
-                                splitDnfMap.set(String(runner._id), { status: 'dns', checkpoint: tpName });
-                            } else if (allSplitStatus.includes('dq') || allSplitStatus.includes('disqualif')) {
-                                splitDnfMap.set(String(runner._id), { status: 'dq', checkpoint: tpName });
-                            }
 
                             // Skip rows with no PassTime — runner hasn't reached this checkpoint yet.
-                            // Without this check, we'd create a timing record with the current time,
-                            // making the runner appear as "Passed" at checkpoints they haven't reached.
-                            // DNF detection above already captured the status before we skip.
                             if (!passTimeStr) continue;
                             const scanTime = new Date(this.appendThaiTzIfNeeded(passTimeStr.replace(' ', 'T')));
                             const netTimeRaw = row?.NetTime ?? row?.netTime;
@@ -1992,79 +1865,7 @@ export class SyncService {
                     result.errors.push(`Split EID ${eid ?? 'all'}: ${err?.message}`);
                 }
             }
-            // ── Secondary DNF detection: also check splitScore (/Dif/splitScore) ──
-            // RaceTiger's "Not Finished List" may only appear in splitScore data,
-            // not in the passedTime (/Dif/split) data we fetched above.
-            const splitDnfBefore = splitDnfMap.size;
-            for (const eid of eidsToFetch) {
-                try {
-                    let totalExpected = Infinity;
-                    let totalFetched = 0;
-                    const maxPages = 50; // fewer pages — only need DNF info
-                    for (let page = 1; page <= maxPages; page++) {
-                        const { response, parsedBody } = await this.requestRaceTiger(campaign, 'split', page, eid);
-                        if (!response.ok || !parsedBody) break;
-                        const rows = this.extractRowsFromPayload(parsedBody);
-                        if (!rows.length) break;
-                        if (page === 1 && rows.length > 0) {
-                            this.logger.log(`  SplitScore DNF check EID=${eid ?? 'all'}: ${rows.length} rows, keys=[${Object.keys(rows[0]).join(', ')}]`);
-                            this.logger.log(`  SplitScore sample: ${JSON.stringify(rows[0]).substring(0, 600)}`);
-                        }
-                        const apiTotal = this.parseNumericValue(parsedBody?.total);
-                        if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
-                        totalFetched += rows.length;
-                        for (const row of rows) {
-                            const athleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId);
-                            const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
-                            if (!athleteId && !bib) continue;
-                            const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
-                            let eventId: string | null = null;
-                            if (rtEventId !== null) eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
-                            if (!eventId && eid !== undefined) eventId = eventResolver.eventIdByRaceTigerEventId.get(eid) || null;
-                            if (!eventId) eventId = eventResolver.fallbackEventId;
-                            if (!eventId) continue;
-                            let runner: any = null;
-                            if (athleteId) runner = runnerByEventAthleteId.get(`${eventId}:${athleteId}`);
-                            if (!runner && bib) runner = runnerByEventBib.get(`${eventId}:${bib}`);
-                            if (!runner && athleteId) runner = runnerByEventBib.get(`${eventId}:${athleteId}`);
-                            if (!runner) continue;
-                            const rId = String(runner._id);
-                            if (splitDnfMap.has(rId)) continue; // Already detected from PassTime
-                            // Check ALL possible fields for DNF/DNS/DQ
-                            const cpName = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.CheckpointName ?? row?.checkpointName ?? row?.['Split name']);
-                            const ssStatus = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result);
-                            const ssSupplement = this.toSafeString(row?.Supplement ?? row?.supplement);
-                            const ssCutOff = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']);
-                            const ssOperating = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note);
-                            const ssFinishStatus = this.toSafeString(row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus);
-                            const ssFinishLower = ssFinishStatus.toLowerCase();
-                            // FIN in FinishStatus = still running (not finished yet) → SKIP, do NOT flag as DNF
-                            // The splitScore endpoint may return Status="DNF" for ALL Not Finished List entries,
-                            // but FinishStatus distinguishes real DNFs ("DNF") from still-running ("FIN").
-                            if (ssFinishLower === 'fin' || ssFinishLower === 'finished' || ssFinishLower === 'ok') {
-                                this.logger.debug(`  SplitScore: BIB=${bib} FinishStatus="${ssFinishStatus}" → SKIP (still running)`);
-                                continue;
-                            }
-                            this.logger.log(`  [SPLITSCORE DEBUG] BIB=${bib} CP=${cpName} Status="${ssStatus}" Supplement="${ssSupplement}" CutOff="${ssCutOff}" Operating="${ssOperating}" FinishStatus="${ssFinishStatus}"`);
-                            const allFields = [ssStatus, ssSupplement, ssCutOff, ssOperating, ssFinishStatus].join(' ').toLowerCase();
-                            if (allFields.includes('dnf') || allFields.includes('did not finish') || allFields.includes('withdraw')) {
-                                splitDnfMap.set(rId, { status: 'dnf', checkpoint: cpName || 'unknown' });
-                            } else if (allFields.includes('dns') || allFields.includes('did not start')) {
-                                splitDnfMap.set(rId, { status: 'dns', checkpoint: cpName || 'unknown' });
-                            } else if (allFields.includes('dq') || allFields.includes('disqualif')) {
-                                splitDnfMap.set(rId, { status: 'dq', checkpoint: cpName || 'unknown' });
-                            }
-                        }
-                        if (totalFetched >= totalExpected) break;
-                    }
-                } catch (err: any) {
-                    this.logger.warn(`SplitScore DNF check EID ${eid ?? 'all'} failed (non-fatal): ${err?.message}`);
-                }
-            }
-            const newDnfFromSplitScore = splitDnfMap.size - splitDnfBefore;
-            if (newDnfFromSplitScore > 0) {
-                this.logger.log(`  SplitScore: found ${newDnfFromSplitScore} additional DNF/DNS/DQ runners from Not Finished List`);
-            }
+            // DNF/DNS/DQ detection from splitScore is DISABLED — statuses are manual-only
             if (bulkOps.length > 0) {
                 const batchSize = 1000;
                 for (let i = 0; i < bulkOps.length; i += batchSize) {
@@ -2113,18 +1914,10 @@ export class SyncService {
                     const avgLap = validSplits.length > 0 ? Math.round(validSplits.reduce((a, b) => a + b, 0) / validSplits.length) : undefined;
                     // Find the runner to check current status
                     const existingRunner = allRunners.find(r => String(r._id) === rId);
-                    // Check if split data flagged this runner as DNF/DNS/DQ
-                    const splitDnf = splitDnfMap.get(rId);
+                    // Split sync only promotes not_started → in_progress. DNF/DNS/DQ is manual-only.
                     let statusUpdate: Record<string, any> = {};
-                    if (splitDnf) {
-                        // DNF/DNS/DQ from split Supplement/CutOff takes priority
-                        statusUpdate = { status: splitDnf.status, statusCheckpoint: splitDnf.checkpoint, isStarted: true };
-                    } else if (existingRunner && acc.lapCount > 0) {
+                    if (existingRunner && acc.lapCount > 0) {
                         const curStatus = (existingRunner.status || '').toLowerCase();
-                        // Split sync should ONLY promote not_started → in_progress.
-                        // Do NOT use FINISH checkpoint to mark as "finished" — RaceTiger's split
-                        // endpoint gives FINISH PassTime to ALL runners including DNF ones.
-                        // Only the Score endpoint (syncTimingOnly) should determine finished status.
                         if (curStatus === 'not_started') {
                             statusUpdate = { status: 'in_progress', isStarted: true };
                         }
@@ -2149,27 +1942,6 @@ export class SyncService {
                 if (runnerPassedOps.length > 0) {
                     await this.runnersService.bulkUpdateTiming(runnerPassedOps);
                     this.logger.log(`  Split sync: updated passedCount + latestCheckpoint + lap stats on ${runnerPassedOps.length} runners`);
-                }
-                // Also update DNF/DNS/DQ for runners that have split data but no timing records in this batch
-                // (e.g., runners flagged DNF in split but not in lapAccByRunner)
-                const handledRunnerIds = new Set(lapAccByRunner.keys());
-                const extraDnfOps: any[] = [];
-                for (const [rId, dnfInfo] of splitDnfMap.entries()) {
-                    if (!handledRunnerIds.has(rId)) {
-                        extraDnfOps.push({
-                            updateOne: {
-                                filter: { _id: new Types.ObjectId(rId) },
-                                update: { $set: { status: dnfInfo.status, statusCheckpoint: dnfInfo.checkpoint, isStarted: true } },
-                            },
-                        });
-                    }
-                }
-                if (extraDnfOps.length > 0) {
-                    await this.runnerModel.bulkWrite(extraDnfOps, { ordered: false });
-                    this.logger.log(`  Split sync: updated ${extraDnfOps.length} runners with DNF/DNS/DQ from split Supplement/CutOff`);
-                }
-                if (splitDnfMap.size > 0) {
-                    this.logger.log(`  Split sync: detected ${splitDnfMap.size} DNF/DNS/DQ from split data (Supplement/CutOff fields)`);
                 }
             }
         } catch (err: any) {
@@ -2355,41 +2127,9 @@ export class SyncService {
                                     updateData.elapsedTime = gunTimeMs;
                                 }
                             }
-                            // ── Status detection ──
-                            // Check ALL possible RaceTiger fields that may contain DNF/DNS/DQ info
-                            const scoreStatus = this.toSafeString(row?.Status ?? row?.status ?? row?.Result ?? row?.result).toLowerCase();
-                            const supplementStatus = this.toSafeString(row?.Supplement ?? row?.supplement).toLowerCase();
-                            const cutOffStatus = this.toSafeString(row?.CutOff ?? row?.cutOff ?? row?.Cutoff ?? row?.cutoff ?? row?.['Cut-off']).toLowerCase();
-                            const operatingStatus = this.toSafeString(row?.Operating ?? row?.operating ?? row?.Remark ?? row?.remark ?? row?.Note ?? row?.note).toLowerCase();
-                            // Also check FinishStatus — this is the "Not finished list" field in RaceTiger Results
-                            const scoreFinishStatus = this.toSafeString(
-                                row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
-                                ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
-                            ).toLowerCase();
-                            // In Score data, FinishStatus "FIN" means "Finished" (completed the race),
-                            // NOT "still running". So we do NOT skip FIN runners here — they ARE finished.
-                            const allStatusFields = [scoreStatus, supplementStatus, cutOffStatus, operatingStatus, scoreFinishStatus].join(' ');
-                            const hasDnf = allStatusFields.includes('dnf') || allStatusFields.includes('did not finish') || allStatusFields.includes('withdraw');
-                            const hasDns = allStatusFields.includes('dns') || allStatusFields.includes('did not start');
-                            const hasDq = allStatusFields.includes('dq') || allStatusFields.includes('disqualif');
-                            // NOTE: Do NOT use scoreFinishStatus ("FIN") as a finish indicator here!
-                            // RaceTiger returns FinishStatus="FIN" as a DEFAULT for ALL runners in the Score endpoint,
-                            // including in-progress and DNF runners. Using it would incorrectly mark everyone as "finished".
-                            // Real finish detection is handled by the split sync (FINISH checkpoint) and BIO sync.
+                            // ── Status: only promote not_started → in_progress. DNF/DNS/DQ is manual-only. ──
                             const currentStatus = (existingRunner.status || '').toLowerCase();
-                            // Log status detection for first few runners to help debug
-                            if (result.updated < 3) {
-                                this.logger.log(`  [STATUS DEBUG] BIB=${bib} currentDB=${currentStatus} | Status="${scoreStatus}" Supplement="${supplementStatus}" CutOff="${cutOffStatus}" Operating="${operatingStatus}" FinishStatus="${scoreFinishStatus}" → hasDnf=${hasDnf} hasDns=${hasDns} hasDq=${hasDq}`);
-                            }
-                            // Score sync should ONLY set DNF/DNS/DQ status — never promote to "finished".
-                            // Finish detection is handled by split sync (FINISH checkpoint) and BIO sync (FinishStatus).
-                            if (hasDnf && currentStatus !== 'dnf') {
-                                updateData.status = 'dnf'; result.statusChanges++;
-                            } else if (hasDns && currentStatus !== 'dns') {
-                                updateData.status = 'dns'; result.statusChanges++;
-                            } else if (hasDq && currentStatus !== 'dq') {
-                                updateData.status = 'dq'; result.statusChanges++;
-                            } else if ((updateData.gunTime && updateData.gunTime > 0 || updateData.netTime && updateData.netTime > 0) && currentStatus === 'not_started') {
+                            if ((updateData.gunTime && updateData.gunTime > 0 || updateData.netTime && updateData.netTime > 0) && currentStatus === 'not_started') {
                                 updateData.status = 'in_progress'; updateData.isStarted = true; result.statusChanges++;
                             }
                             // ── Rankings — prefer Net Time positions, fall back to Gun Time positions ──
@@ -2475,53 +2215,8 @@ export class SyncService {
                 );
                 this.logger.log(`Score sync: batch-updated ${bulkOps.length} runners`);
             }
-            // ── Finished/DNF detection from Score data ──
-            // The Score endpoint only returns finished runners. Use runnersInScore
-            // set to determine: IN Score = finished, NOT in Score = DNF candidate.
-            // IMPORTANT: Only apply DNF detection to events that have at least 1
-            // finisher in Score data. Events with no Score data are untouched.
-            this.logger.log(`Score sync: runnersInScore=${runnersInScore.size}, allRunners=${allRunners.length}`);
-            if (runnersInScore.size > 0) {
-                // Build set of eventIds that have at least one runner in Score
-                const eventsWithScoreData = new Set<string>();
-                for (const runner of allRunners) {
-                    if (runnersInScore.has(String(runner._id))) {
-                        eventsWithScoreData.add(String(runner.eventId));
-                    }
-                }
-                this.logger.log(`Score sync: eventsWithScoreData=${[...eventsWithScoreData].length} events`);
-                const dnfOps: Array<{ id: any; data: any }> = [];
-                const finishOps: Array<{ id: any; data: any }> = [];
-                for (const runner of allRunners) {
-                    const rId = String(runner._id);
-                    const evId = String(runner.eventId);
-                    // Skip runners from events that have NO Score data at all
-                    if (!eventsWithScoreData.has(evId)) continue;
-                    const curStatus = (runner.status || '').toLowerCase();
-                    if (runnersInScore.has(rId)) {
-                        // Runner IS in Score data → mark as finished
-                        if (curStatus !== 'finished' && !['dnf', 'dns', 'dq'].includes(curStatus)) {
-                            finishOps.push({ id: runner._id, data: { status: 'finished', isStarted: true } });
-                        }
-                    } else {
-                        // Runner NOT in Score data → DNF candidate
-                        // Only mark as DNF if currently finished or in_progress
-                        if (curStatus === 'finished' || curStatus === 'in_progress') {
-                            dnfOps.push({ id: runner._id, data: { status: 'dnf', isStarted: true } });
-                        }
-                    }
-                }
-                if (finishOps.length > 0) {
-                    await this.runnersService.bulkUpdateTiming(finishOps);
-                    this.logger.log(`Score sync: marked ${finishOps.length} runners as finished (in Score data)`);
-                    result.statusChanges += finishOps.length;
-                }
-                if (dnfOps.length > 0) {
-                    await this.runnersService.bulkUpdateTiming(dnfOps);
-                    this.logger.log(`Score sync: marked ${dnfOps.length} runners as DNF (not in Score data)`);
-                    result.statusChanges += dnfOps.length;
-                }
-            }
+            // Finished/DNF detection from Score data is DISABLED — statuses are manual-only
+            this.logger.log(`Score sync: ${runnersInScore.size} runners had score data updated`);
         } catch (err: any) {
             result.errors.push(err?.message || 'syncTimingOnly failed');
         }
@@ -2549,123 +2244,9 @@ export class SyncService {
      * This ensures that when an admin sets Finish status in RaceTiger during
      * a live race, our system picks it up without requiring a full re-sync.
      */
-    async syncBioFinishStatus(campaignId: string): Promise<{ updated: number; errors: string[] }> {
-        const result = { updated: 0, errors: [] as string[] };
-        try {
-            const campaign = await this.getSyncEnabledCampaign(campaignId);
-            const eventResolver = await this.buildEventResolver(campaignId);
-            // Pre-load all runners
-            const allEventIds = [...eventResolver.eventIdByRaceTigerEventId.values()];
-            if (eventResolver.fallbackEventId && !allEventIds.includes(eventResolver.fallbackEventId)) {
-                allEventIds.push(eventResolver.fallbackEventId);
-            }
-            const allRunners = allEventIds.length > 0
-                ? await this.runnersService.findByEventIds(allEventIds, {}, 100000)
-                : [];
-            const runnerByEventBib = new Map<string, any>();
-            const runnerByEventAthleteId = new Map<string, any>();
-            for (const runner of allRunners) {
-                const evId = String(runner.eventId);
-                if (runner.bib) runnerByEventBib.set(`${evId}:${runner.bib}`, runner);
-                if ((runner as any).athleteId) runnerByEventAthleteId.set(`${evId}:${(runner as any).athleteId}`, runner);
-            }
-            // Get RaceTiger event IDs
-            const campaignEventsForSync = await this.eventModel
-                .find({ $or: [{ campaignId }, { campaignId: this.toCampaignObjectId(campaignId) }] })
-                .select('_id rfidEventId').lean().exec();
-            const raceTigerEids = campaignEventsForSync
-                .map((ev: any) => this.parseNumericValue(ev.rfidEventId))
-                .filter((eid): eid is number => eid !== null);
-            const uniqueRaceTigerEids = [...new Set(raceTigerEids)];
-            const eidsToFetch: Array<number | undefined> = uniqueRaceTigerEids.length > 0 ? uniqueRaceTigerEids : [undefined];
-            const bulkOps: Array<{ updateOne: { filter: any; update: any } }> = [];
-            for (const eid of eidsToFetch) {
-                try {
-                    let totalExpected = Infinity;
-                    let totalFetched = 0;
-                    for (let page = 1; page <= 100; page++) {
-                        const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page, eid);
-                        if (!response.ok || !parsedBody) break;
-                        const rows = this.extractRowsFromPayload(parsedBody);
-                        if (!rows.length) break;
-                        const apiTotal = this.parseNumericValue(parsedBody?.total);
-                        if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
-                        totalFetched += rows.length;
-                        if (page === 1) this.logger.log(`  [BIO SYNC] EID=${eid ?? 'all'}: ${rows.length} rows on page 1 (total=${apiTotal ?? '?'})`);
-                        let rowDebugCount = 0;
-                        for (const row of rows) {
-                            const bib = this.toSafeString(row?.BIB ?? row?.Bib ?? row?.bib);
-                            const athleteId = this.toSafeString(row?.AthleteId ?? row?.athleteId ?? row?.athleteid);
-                            if (!bib && !athleteId) continue;
-                            // Read FinishStatus from Athlete info
-                            const finishStatus = this.toSafeString(
-                                row?.FinishStatus ?? row?.finishStatus ?? row?.Finishstatus ?? row?.finishstatus
-                                ?? row?.['Finish status'] ?? row?.['finish status'] ?? row?.['Finish Status']
-                                ?? this.findRowValueByNormalizedKeys(row, ['finishstatus', 'finish_status']),
-                            ).toLowerCase();
-                            // Debug: log first few BIO rows (even empty FinishStatus)
-                            if (rowDebugCount < 3) {
-                                rowDebugCount++;
-                                const rowKeys = Object.keys(row || {}).join(',');
-                                this.logger.log(`  [BIO RAW] BIB=${bib} AthleteId=${athleteId} FinishStatus="${finishStatus}" keys=[${rowKeys}]`);
-                            }
-                            // Determine target status from FinishStatus
-                            // RaceTiger BIO uses: "Not Finished List" for DNF, "Did Not Start" for DNS, etc.
-                            let targetStatus: string | null = null;
-                            if (finishStatus.includes('dnf') || finishStatus.includes('did not finish')
-                                || finishStatus.includes('not finished')) {
-                                targetStatus = 'dnf';
-                            } else if (finishStatus.includes('dns') || finishStatus.includes('did not start')) {
-                                targetStatus = 'dns';
-                            } else if (finishStatus.includes('dq') || finishStatus.includes('disqualif')) {
-                                targetStatus = 'dq';
-                            } else if (finishStatus.includes('withdraw')) {
-                                targetStatus = 'dnf'; // Withdraw treated as DNF
-                            }
-                            if (!targetStatus) continue; // All, Unknown, Penalty time, empty → skip
-                            // Resolve event
-                            const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
-                            let eventId: string | null = null;
-                            if (rtEventId !== null) eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
-                            if (!eventId && eid !== undefined) eventId = eventResolver.eventIdByRaceTigerEventId.get(eid) || null;
-                            if (!eventId) eventId = eventResolver.fallbackEventId;
-                            if (!eventId) continue;
-                            // Find existing runner
-                            let runner: any = null;
-                            if (bib) runner = runnerByEventBib.get(`${eventId}:${bib}`);
-                            if (!runner && athleteId) runner = runnerByEventAthleteId.get(`${eventId}:${athleteId}`);
-                            if (!runner && athleteId && athleteId !== bib) runner = runnerByEventBib.get(`${eventId}:${athleteId}`);
-                            if (!runner) continue;
-                            const currentStatus = (runner.status || '').toLowerCase();
-                            // Only update if status actually changed and NOT admin-overridden
-                            if (currentStatus === targetStatus) continue;
-                            // Don't override admin-set status (has statusCheckpoint from manual edit)
-                            if (runner.statusCheckpoint && ['dnf', 'dns', 'dq'].includes(currentStatus)) continue;
-                            const updateData: Record<string, any> = { status: targetStatus };
-                            if (['dnf', 'dns', 'dq'].includes(targetStatus)) {
-                                updateData.isStarted = targetStatus !== 'dns';
-                            } else if (targetStatus === 'finished') {
-                                updateData.isStarted = true;
-                            }
-                            bulkOps.push({ updateOne: { filter: { _id: runner._id }, update: { $set: updateData } } });
-                        }
-                        if (totalFetched >= totalExpected) break;
-                    }
-                } catch (err: any) {
-                    result.errors.push(`BIO FinishStatus EID ${eid ?? 'all'}: ${err?.message}`);
-                }
-            }
-            if (bulkOps.length > 0) {
-                await this.runnersService.bulkUpdateTiming(
-                    bulkOps.map(op => ({ id: op.updateOne.filter._id, data: op.updateOne.update.$set })),
-                );
-                result.updated = bulkOps.length;
-                this.logger.log(`BIO FinishStatus sync: ${bulkOps.length} runners updated (DNF/DNS/DQ/FIN from Athlete info)`);
-            }
-        } catch (err: any) {
-            result.errors.push(err?.message || 'syncBioFinishStatus failed');
-        }
-        return result;
+    async syncBioFinishStatus(_campaignId: string): Promise<{ updated: number; errors: string[] }> {
+        // DISABLED: DNF/DNS/DQ statuses are now managed manually by checkpoint staff.
+        return { updated: 0, errors: [] };
     }
     /**
      * Append +08:00 (China Standard Time) to an ISO datetime string if it has no timezone indicator.
