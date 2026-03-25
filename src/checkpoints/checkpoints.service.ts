@@ -1,16 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Checkpoint, CheckpointDocument } from './checkpoint.schema';
 import { CheckpointMapping, CheckpointMappingDocument } from './checkpoint-mapping.schema';
 import { CreateCheckpointDto, CreateCheckpointMappingDto } from './dto/create-checkpoint.dto';
+import { CheckpointSchedulerService } from './checkpoint-scheduler.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class CheckpointsService {
+    private readonly logger = new Logger(CheckpointsService.name);
+
     constructor(
         @InjectModel(Checkpoint.name) private checkpointModel: Model<CheckpointDocument>,
         @InjectModel(CheckpointMapping.name) private mappingModel: Model<CheckpointMappingDocument>,
+        private readonly schedulerService: CheckpointSchedulerService,
     ) { }
 
     async create(createDto: CreateCheckpointDto): Promise<CheckpointDocument> {
@@ -52,13 +56,40 @@ export class CheckpointsService {
     }
 
     async update(id: string, updateData: Partial<CreateCheckpointDto>): Promise<CheckpointDocument> {
+        // Read old checkpoint before updating to detect cutoff extension
+        const oldCp = updateData.cutoffTime !== undefined
+            ? await this.checkpointModel.findById(id).lean().exec()
+            : null;
+
         const checkpoint = await this.checkpointModel.findByIdAndUpdate(id, updateData, { new: true }).exec();
         if (!checkpoint) throw new NotFoundException('Checkpoint not found');
+
+        // Detect cutoff extension → revert auto-DNF'd runners
+        if (oldCp && updateData.cutoffTime !== undefined) {
+            await this.handleCutoffExtension(
+                (oldCp as any).cutoffTime,
+                updateData.cutoffTime,
+                (oldCp as any).name,
+                String((oldCp as any).campaignId),
+                (oldCp as any).type,
+            );
+        }
+
         return checkpoint;
     }
 
     async updateMany(checkpoints: Array<{ id: string } & Partial<CreateCheckpointDto>>): Promise<void> {
         if (checkpoints.length === 0) return;
+
+        // Pre-read old cutoff values for checkpoints that have cutoffTime changes
+        const cutoffChanges = checkpoints.filter(cp => cp.cutoffTime !== undefined);
+        const oldCpMap = new Map<string, any>();
+        if (cutoffChanges.length > 0) {
+            const ids = cutoffChanges.map(cp => new Types.ObjectId(cp.id));
+            const oldCps = await this.checkpointModel.find({ _id: { $in: ids } }).lean().exec();
+            for (const oc of oldCps) oldCpMap.set(String((oc as any)._id), oc);
+        }
+
         const bulkOps = checkpoints.map(cp => {
             const { id, ...updateData } = cp;
             return {
@@ -69,6 +100,20 @@ export class CheckpointsService {
             };
         });
         await this.checkpointModel.bulkWrite(bulkOps as any, { ordered: false });
+
+        // After bulk write, check for cutoff extensions and revert auto-DNF'd runners
+        for (const cp of cutoffChanges) {
+            const oldCp = oldCpMap.get(cp.id);
+            if (oldCp) {
+                await this.handleCutoffExtension(
+                    (oldCp as any).cutoffTime,
+                    cp.cutoffTime,
+                    (oldCp as any).name,
+                    String((oldCp as any).campaignId),
+                    (oldCp as any).type,
+                );
+            }
+        }
     }
 
     async delete(id: string): Promise<void> {
@@ -77,6 +122,45 @@ export class CheckpointsService {
 
     async deleteByCampaign(campaignId: string): Promise<void> {
         await this.checkpointModel.deleteMany({ campaignId: new Types.ObjectId(campaignId) }).exec();
+    }
+
+    /**
+     * Compare old and new cutoff times. If cutoff was EXTENDED (new > old),
+     * revert auto-DNF'd/DNS'd runners for that checkpoint back to running.
+     */
+    private async handleCutoffExtension(
+        oldCutoff: string | undefined,
+        newCutoff: string | undefined,
+        cpName: string,
+        campaignId: string,
+        cpType: string,
+    ): Promise<void> {
+        if (!newCutoff || newCutoff === '-' || newCutoff === '') return;
+
+        const newDate = new Date(newCutoff);
+        if (isNaN(newDate.getTime())) return;
+
+        // If there was no old cutoff, or it's being set for the first time, no revert needed
+        if (!oldCutoff || oldCutoff === '-' || oldCutoff === '') return;
+
+        const oldDate = new Date(oldCutoff);
+        if (isNaN(oldDate.getTime())) return;
+
+        // Only revert if the new cutoff is LATER than the old one (extension)
+        if (newDate.getTime() <= oldDate.getTime()) {
+            this.logger.debug(
+                `CP "${cpName}": cutoff not extended (old=${oldDate.toISOString()}, new=${newDate.toISOString()})`
+            );
+            return;
+        }
+
+        this.logger.log(
+            `CP "${cpName}": cutoff EXTENDED from ${oldDate.toISOString()} → ${newDate.toISOString()}, reverting auto-DNF'd runners`
+        );
+        const { revertedCount } = await this.schedulerService.revertCutoffRunners(cpName, campaignId, cpType);
+        if (revertedCount > 0) {
+            this.logger.log(`CP "${cpName}": ${revertedCount} runner(s) reverted to running/not_started`);
+        }
     }
 
     // Checkpoint Mapping methods

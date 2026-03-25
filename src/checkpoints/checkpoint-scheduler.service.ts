@@ -199,6 +199,97 @@ export class CheckpointSchedulerService implements OnModuleInit {
     }
 
     /**
+     * Revert runners auto-DNF'd/DNS'd by the cutoff scheduler for a specific checkpoint
+     * when its cutoff time is EXTENDED. Only reverts runners where:
+     *   - statusChangedBy = 'cutoff-scheduler'
+     *   - statusCheckpoint matches the checkpoint name
+     *   - isManualStatus != true (safety: never touch manual overrides)
+     *
+     * DNF → in_progress, DNS → not_started
+     */
+    async revertCutoffRunners(
+        cpName: string,
+        campaignId: string,
+        cpType: string,
+    ): Promise<{ revertedCount: number }> {
+        const now = new Date();
+        let revertedCount = 0;
+
+        try {
+            // Resolve event IDs for this campaign
+            const campaignOid = Types.ObjectId.isValid(campaignId) ? new Types.ObjectId(campaignId) : null;
+            const eventQuery: any = campaignOid
+                ? { $or: [{ campaignId }, { campaignId: campaignOid }] }
+                : { campaignId };
+            const events = await this.eventModel.find(eventQuery).select('_id').lean().exec();
+            const eventOids: Types.ObjectId[] = events.map((e: any) => new Types.ObjectId(String(e._id)));
+            if (campaignOid) eventOids.push(campaignOid);
+            if (!eventOids.length) {
+                this.logger.debug(`revertCutoffRunners: no events for campaign ${campaignId}`);
+                return { revertedCount: 0 };
+            }
+
+            const isStart = cpType === 'start' || cpName.toUpperCase() === 'START';
+
+            if (isStart) {
+                // Revert DNS → not_started for runners auto-DNS'd at this START checkpoint
+                const result = await this.runnerModel.updateMany(
+                    {
+                        eventId: { $in: eventOids },
+                        status: 'dns',
+                        statusChangedBy: 'cutoff-scheduler',
+                        statusCheckpoint: { $regex: new RegExp(`^${cpName}$`, 'i') },
+                        isManualStatus: { $ne: true },
+                    },
+                    {
+                        $set: {
+                            status: 'not_started',
+                            statusCheckpoint: '',
+                            statusChangedAt: now,
+                            statusChangedBy: 'cutoff-extension',
+                        },
+                    },
+                ).exec();
+                revertedCount = result.modifiedCount;
+                if (revertedCount > 0) {
+                    this.logger.warn(
+                        `Cutoff extended "${cpName}": ${revertedCount} runner(s) DNS → not_started`
+                    );
+                }
+            } else {
+                // Revert DNF → in_progress for runners auto-DNF'd at this checkpoint
+                const result = await this.runnerModel.updateMany(
+                    {
+                        eventId: { $in: eventOids },
+                        status: 'dnf',
+                        statusChangedBy: 'cutoff-scheduler',
+                        statusCheckpoint: { $regex: new RegExp(`^${cpName}$`, 'i') },
+                        isManualStatus: { $ne: true },
+                    },
+                    {
+                        $set: {
+                            status: 'in_progress',
+                            statusCheckpoint: '',
+                            statusChangedAt: now,
+                            statusChangedBy: 'cutoff-extension',
+                        },
+                    },
+                ).exec();
+                revertedCount = result.modifiedCount;
+                if (revertedCount > 0) {
+                    this.logger.warn(
+                        `Cutoff extended "${cpName}": ${revertedCount} runner(s) DNF → in_progress`
+                    );
+                }
+            }
+        } catch (err) {
+            this.logger.error(`Failed to revert cutoff runners for CP "${cpName}"`, err);
+        }
+
+        return { revertedCount };
+    }
+
+    /**
      * Parse cutoffTime string into a Date.
      * Supports formats: ISO datetime "2026-02-15T10:30", or time-only "10:30" (today).
      */
