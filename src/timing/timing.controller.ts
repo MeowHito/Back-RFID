@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
 import { TimingService } from './timing.service';
 import type { ScanData } from './timing.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
@@ -48,6 +48,14 @@ export class TimingController {
             if (campaign) resolvedId = String(campaign._id);
         } catch { /* use original if not found */ }
         return this.timingService.getCheckpointRecordsByCampaign(resolvedId, checkpoint);
+    }
+
+    @Put(':id')
+    updateRecord(
+        @Param('id') id: string,
+        @Body() body: { scanTime: string },
+    ) {
+        return this.timingService.updateRecordScanTime(id, body.scanTime);
     }
 
     @Delete(':id')

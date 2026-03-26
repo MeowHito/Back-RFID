@@ -725,6 +725,15 @@ export class TimingService {
         return deduped;
     }
 
+    async updateRecordScanTime(id: string, scanTime: string): Promise<TimingRecordDocument | null> {
+        const record = await this.timingModel.findByIdAndUpdate(
+            id,
+            { scanTime: new Date(scanTime) },
+            { new: true },
+        ).lean().exec();
+        return record as TimingRecordDocument | null;
+    }
+
     async deleteRecord(id: string): Promise<void> {
         await this.timingModel.findByIdAndDelete(id).exec();
     }
