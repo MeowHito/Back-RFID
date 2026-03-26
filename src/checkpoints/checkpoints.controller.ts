@@ -1,8 +1,11 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { CheckpointsService } from './checkpoints.service';
 import { CheckpointSchedulerService } from './checkpoint-scheduler.service';
 import { CreateCheckpointDto, CreateCheckpointMappingDto } from './dto/create-checkpoint.dto';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { AdminOnly } from '../auth/decorators/permissions.decorator';
 
 @Controller('checkpoints')
 export class CheckpointsController {
@@ -13,16 +16,22 @@ export class CheckpointsController {
     ) { }
 
     @Post('cutoff/check')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     triggerCutOffCheck() {
         return this.schedulerService.triggerCutOffCheck();
     }
 
     @Post()
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     create(@Body() createDto: CreateCheckpointDto) {
         return this.checkpointsService.create(createDto);
     }
 
     @Post('bulk')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     createMany(@Body() checkpoints: CreateCheckpointDto[]) {
         return this.checkpointsService.createMany(checkpoints);
     }
@@ -49,27 +58,37 @@ export class CheckpointsController {
     }
 
     @Put(':id')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     update(@Param('id') id: string, @Body() updateData: Partial<CreateCheckpointDto>) {
         return this.checkpointsService.update(id, updateData);
     }
 
     @Put('bulk/update')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     updateMany(@Body() checkpoints: Array<{ id: string } & Partial<CreateCheckpointDto>>) {
         return this.checkpointsService.updateMany(checkpoints);
     }
 
     @Delete(':id')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     delete(@Param('id') id: string) {
         return this.checkpointsService.delete(id);
     }
 
     // Mapping endpoints
     @Post('mapping')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     createMapping(@Body() createDto: CreateCheckpointMappingDto) {
         return this.checkpointsService.createMapping(createDto);
     }
 
     @Post('mapping/bulk')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     createManyMappings(@Body() mappings: CreateCheckpointMappingDto[]) {
         return this.checkpointsService.createManyMappings(mappings);
     }
@@ -88,6 +107,8 @@ export class CheckpointsController {
     }
 
     @Put('mapping/bulk')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     updateMappings(
         @Body() mappings: Array<{ checkpointId: string; eventId: string } & Partial<CreateCheckpointMappingDto>>
     ) {

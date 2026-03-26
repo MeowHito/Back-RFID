@@ -4,19 +4,23 @@ import { Types } from 'mongoose';
 import { RunnersService } from './runners.service';
 import type { RunnerFilter, PagingData } from './runners.service';
 import { CreateRunnerDto } from './dto/create-runner.dto';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/permissions.decorator';
 
 @Controller('runners')
-// TODO: Re-enable auth guards once admin login flow is implemented
-// @UseGuards(AuthGuard('jwt'))
 export class RunnersController {
     constructor(private readonly runnersService: RunnersService) { }
 
     @Post()
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
     create(@Body() createRunnerDto: CreateRunnerDto) {
         return this.runnersService.create(createRunnerDto);
     }
 
     @Post('bulk')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
     createMany(@Body() runners: CreateRunnerDto[], @Query('updateExisting') updateExisting?: string) {
         return this.runnersService.createMany(runners, updateExisting === 'true');
     }
@@ -54,6 +58,8 @@ export class RunnersController {
     }
 
     @Delete('bulk')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'delete')
     deleteMany(@Body() body: { ids: string[] }) {
         return this.runnersService.deleteMany(body.ids || []);
     }
@@ -122,11 +128,15 @@ export class RunnersController {
     }
 
     @Put(':id')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
     update(@Param('id') id: string, @Body() updateData: any) {
         return this.runnersService.update(id, updateData);
     }
 
     @Put(':id/status')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
     updateStatus(
         @Param('id') id: string,
         @Body() body: { status: string; statusCheckpoint?: string; statusNote?: string; changedBy?: string },
@@ -135,16 +145,22 @@ export class RunnersController {
     }
 
     @Put(':id/photo')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
     updatePhoto(@Param('id') id: string, @Body() body: any) {
         return this.runnersService.updatePhoto(id, body.photo);
     }
 
     @Delete(':id')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'delete')
     delete(@Param('id') id: string) {
         return this.runnersService.delete(id);
     }
 
     @Delete('event/:eventId')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'delete')
     deleteByEvent(@Param('eventId') eventId: string) {
         return this.runnersService.deleteByEvent(eventId);
     }

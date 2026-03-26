@@ -3,17 +3,16 @@ import { AuthGuard } from '@nestjs/passport';
 import { CampaignsService } from './campaigns.service';
 import type { PagingData, CampaignFilter } from './campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { AdminOnly } from '../auth/decorators/permissions.decorator';
 
 @Controller('campaigns')
 export class CampaignsController {
     constructor(private readonly campaignsService: CampaignsService) { }
 
     @Post()
-    // TODO: Re-enable auth guards once admin login flow is implemented
-    // @UseGuards(AuthGuard('jwt'), RolesGuard)
-    // @Roles('admin', 'organizer')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     create(@Body() createCampaignDto: CreateCampaignDto) {
         return this.campaignsService.create(createCampaignDto);
     }
@@ -42,6 +41,8 @@ export class CampaignsController {
     }
 
     @Put(':id/featured')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     setFeatured(@Param('id') id: string, @Body('value') value: boolean) {
         if (value) {
             return this.campaignsService.setFeatured(id);
@@ -65,25 +66,22 @@ export class CampaignsController {
     }
 
     @Put(':id')
-    // TODO: Re-enable auth guards once admin login flow is implemented
-    // @UseGuards(AuthGuard('jwt'), RolesGuard)
-    // @Roles('admin', 'organizer')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     update(@Param('id') id: string, @Body() updateData: Partial<CreateCampaignDto>) {
         return this.campaignsService.update(id, updateData);
     }
 
     @Put(':id/status')
-    // TODO: Re-enable auth guards once admin login flow is implemented
-    // @UseGuards(AuthGuard('jwt'), RolesGuard)
-    // @Roles('admin', 'organizer')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     updateStatus(@Param('id') id: string, @Body('status') status: string) {
         return this.campaignsService.updateStatus(id, status);
     }
 
     @Delete(':id')
-    // TODO: Re-enable auth guards once admin login flow is implemented
-    // @UseGuards(AuthGuard('jwt'), RolesGuard)
-    // @Roles('admin')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     delete(@Param('id') id: string) {
         return this.campaignsService.delete(id);
     }
