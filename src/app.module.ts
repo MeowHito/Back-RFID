@@ -20,6 +20,7 @@ import { Runner, RunnerSchema } from './runners/runner.schema';
 import { Checkpoint, CheckpointSchema } from './checkpoints/checkpoint.schema';
 import { User, UserSchema } from './users/user.schema';
 import { AdminLogsModule } from './admin-logs/admin-logs.module';
+import { CctvCamerasModule } from './cctv-cameras/cctv-cameras.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { AdminLogsModule } from './admin-logs/admin-logs.module';
     PublicApiModule,
     SyncModule,
     AdminLogsModule,
+    CctvCamerasModule,
   ],
   controllers: [AppController],
   providers: [AppService, SeedService],
