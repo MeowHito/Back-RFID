@@ -1,6 +1,9 @@
-import { Controller, Get, Query, Headers, Post, Body } from '@nestjs/common';
+import { Controller, Get, Query, Headers, Post, Body, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { SyncService } from './sync.service';
 import { SyncSchedulerService } from './sync-scheduler.service';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { AdminOnly } from '../auth/decorators/permissions.decorator';
 
 interface NormalizedResponse {
     status: {
@@ -61,6 +64,8 @@ export class SyncController {
     }
 
     @Post('import-events')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     async importEventsFromRaceTiger(
         @Headers() headers: Record<string, string>,
         @Query('id') id: string,
@@ -70,6 +75,8 @@ export class SyncController {
     }
 
     @Post('full-sync')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     async syncAllRunners(
         @Headers() headers: Record<string, string>,
         @Query('id') id: string,
@@ -88,6 +95,8 @@ export class SyncController {
     }
 
     @Post('auto-sync')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     async toggleAutoSync(
         @Query('id') id: string,
         @Query('enabled') enabled: string,
