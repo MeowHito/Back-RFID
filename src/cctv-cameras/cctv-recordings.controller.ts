@@ -1,5 +1,5 @@
 import {
-    Controller, Get, Delete, Param, Res, UseGuards, HttpCode,
+    Controller, Get, Delete, Post, Param, Res, UseGuards, HttpCode, Body,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import * as fs from 'fs';
@@ -36,6 +36,23 @@ export class CctvRecordingsController {
         res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
         res.setHeader('Accept-Ranges', 'bytes');
         fs.createReadStream(filePath).pipe(res);
+    }
+
+    @Post('clip')
+    @UseGuards()
+    @HttpCode(201)
+    saveClip(@Body() body: {
+        videoBase64: string;
+        mimeType: string;
+        cameraId: string;
+        cameraName: string;
+        campaignId?: string;
+        checkpointName?: string;
+        location?: string;
+        deviceId?: string;
+        durationSeconds?: number;
+    }) {
+        return this.service.saveClip(body);
     }
 
     @Delete('all')

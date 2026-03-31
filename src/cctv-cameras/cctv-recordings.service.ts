@@ -131,6 +131,46 @@ export class CctvRecordingsService {
         return { deleted };
     }
 
+    async saveClip(opts: {
+        videoBase64: string;
+        mimeType: string;
+        cameraId: string;
+        cameraName: string;
+        campaignId?: string;
+        checkpointName?: string;
+        location?: string;
+        deviceId?: string;
+        durationSeconds?: number;
+    }): Promise<CctvRecordingDocument> {
+        const startTime = new Date();
+        const ts = startTime.toISOString().replace(/[:.]/g, '-');
+        const ext = opts.mimeType.includes('mp4') ? 'mp4' : 'webm';
+        const fileName = `clip_${opts.cameraId}_${ts}.${ext}`;
+        const filePath = path.join(RECORDINGS_DIR, fileName);
+
+        const buf = Buffer.from(opts.videoBase64, 'base64');
+        fs.writeFileSync(filePath, buf);
+
+        const doc = await this.recordingModel.create({
+            cameraId: opts.cameraId,
+            cameraName: opts.cameraName,
+            campaignId: opts.campaignId || '',
+            checkpointName: opts.checkpointName || '',
+            location: opts.location || '',
+            deviceId: opts.deviceId || '',
+            startTime,
+            endTime: new Date(),
+            duration: opts.durationSeconds || 0,
+            fileSize: buf.byteLength,
+            fileName,
+            filePath,
+            mimeType: opts.mimeType || 'video/webm',
+            recordingStatus: 'completed',
+        });
+        this.logger.log(`Clip saved: ${fileName} (${buf.byteLength} bytes)`);
+        return doc;
+    }
+
     getFilePath(id: string): Promise<{ filePath: string; mimeType: string; fileName: string }> {
         return this.recordingModel.findById(id).exec().then(rec => {
             if (!rec) throw new NotFoundException('Recording not found');
