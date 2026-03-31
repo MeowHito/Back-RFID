@@ -1,7 +1,7 @@
 import {
-    Controller, Get, Delete, Post, Param, Query, Res, UseGuards, HttpCode, Body,
+    Controller, Get, Delete, Post, Param, Query, Req, Res, UseGuards, HttpCode, Body,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import * as fs from 'fs';
 import { CctvRecordingsService } from './cctv-recordings.service';
 import { AuthGuard } from '@nestjs/passport';
@@ -31,17 +31,50 @@ export class CctvRecordingsController {
     }
 
     @Get(':id/stream')
-    async streamVideo(@Param('id') id: string, @Res() res: Response) {
-        const { filePath, mimeType, fileName } = await this.service.getFilePath(id);
+    async streamVideo(
+        @Param('id') id: string,
+        @Req() req: Request,
+        @Res() res: Response,
+    ) {
+        const { filePath, mimeType, fileName, duration } = await this.service.getFilePath(id);
         if (!fs.existsSync(filePath)) {
             return res.status(404).json({ error: 'File not found' });
         }
         const stat = fs.statSync(filePath);
-        res.setHeader('Content-Type', mimeType || 'video/webm');
-        res.setHeader('Content-Length', stat.size);
-        res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
-        res.setHeader('Accept-Ranges', 'bytes');
-        fs.createReadStream(filePath).pipe(res);
+        const fileSize = stat.size;
+
+        // Support HTTP Range requests for video seeking
+        const range = req.headers.range;
+
+        if (range) {
+            const parts = range.replace(/bytes=/, '').split('-');
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+            const chunkSize = end - start + 1;
+
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Content-Length', chunkSize);
+            res.setHeader('Content-Type', mimeType || 'video/webm');
+            res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+            if (duration && duration > 0) {
+                res.setHeader('X-Content-Duration', String(duration));
+            }
+
+            const stream = fs.createReadStream(filePath, { start, end });
+            stream.pipe(res);
+        } else {
+            res.setHeader('Content-Type', mimeType || 'video/webm');
+            res.setHeader('Content-Length', fileSize);
+            res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+            res.setHeader('Accept-Ranges', 'bytes');
+            if (duration && duration > 0) {
+                res.setHeader('X-Content-Duration', String(duration));
+            }
+
+            fs.createReadStream(filePath).pipe(res);
+        }
     }
 
     @Post('clip')
