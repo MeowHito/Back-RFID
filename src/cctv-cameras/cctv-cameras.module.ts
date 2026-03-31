@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { CctvCamera, CctvCameraSchema } from './cctv-camera.schema';
 import { CctvCamerasService } from './cctv-cameras.service';
 import { CctvCamerasController } from './cctv-cameras.controller';
+import { CctvGateway } from './cctv.gateway';
 import { User, UserSchema } from '../users/user.schema';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 
@@ -14,7 +15,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
         ]),
     ],
     controllers: [CctvCamerasController],
-    providers: [CctvCamerasService, PermissionsGuard],
-    exports: [CctvCamerasService],
+    providers: [CctvCamerasService, PermissionsGuard, CctvGateway],
+    exports: [CctvCamerasService, CctvGateway],
 })
 export class CctvCamerasModule {}

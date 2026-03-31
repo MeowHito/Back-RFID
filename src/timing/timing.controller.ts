@@ -36,6 +36,14 @@ export class TimingController {
         return this.timingService.getCheckpointRecords(eventId, checkpoint);
     }
 
+    @Get('recent-arrivals/:campaignId')
+    getRecentArrivals(
+        @Param('campaignId') campaignId: string,
+        @Query('withinSeconds') withinSeconds: string,
+    ) {
+        return this.timingService.getRecentArrivals(campaignId, parseInt(withinSeconds || '60', 10));
+    }
+
     @Get('checkpoint-by-campaign/:campaignId')
     async getCheckpointRecordsByCampaign(
         @Param('campaignId') campaignId: string,

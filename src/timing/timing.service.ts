@@ -725,6 +725,48 @@ export class TimingService {
         return deduped;
     }
 
+    async getRecentArrivals(campaignId: string, withinSeconds: number): Promise<any[]> {
+        const events = await this.eventsService.findByCampaign(campaignId);
+        const eventIdSet = new Set<string>([campaignId]);
+        if (events && events.length > 0) {
+            events.forEach((e: any) => {
+                const id = String(e._id || '');
+                if (id) eventIdSet.add(id);
+            });
+        }
+        const eventIds = Array.from(eventIdSet)
+            .filter(id => Types.ObjectId.isValid(id))
+            .map(id => new Types.ObjectId(id));
+        const since = new Date(Date.now() - withinSeconds * 1000);
+        return this.timingModel.aggregate([
+            { $match: { eventId: { $in: eventIds }, scanTime: { $gte: since } } },
+            { $sort: { scanTime: -1 } },
+            {
+                $lookup: {
+                    from: 'runners',
+                    localField: 'runnerId',
+                    foreignField: '_id',
+                    as: 'runner',
+                },
+            },
+            { $unwind: { path: '$runner', preserveNullAndEmptyArrays: true } },
+            {
+                $project: {
+                    bib: 1,
+                    checkpoint: 1,
+                    scanTime: 1,
+                    elapsedTime: 1,
+                    firstName: { $ifNull: ['$runner.firstName', ''] },
+                    lastName: { $ifNull: ['$runner.lastName', ''] },
+                    firstNameTh: { $ifNull: ['$runner.firstNameTh', ''] },
+                    lastNameTh: { $ifNull: ['$runner.lastNameTh', ''] },
+                    category: { $ifNull: ['$runner.category', ''] },
+                    gender: { $ifNull: ['$runner.gender', ''] },
+                },
+            },
+        ]).exec();
+    }
+
     async updateRecordScanTime(id: string, scanTime: string): Promise<TimingRecordDocument | null> {
         const record = await this.timingModel.findByIdAndUpdate(
             id,

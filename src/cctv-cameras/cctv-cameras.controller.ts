@@ -50,6 +50,19 @@ export class CctvCamerasController {
         return this.camerasService.create(dto);
     }
 
+    @Post('register')
+    publicRegister(@Body() dto: CreateCctvCameraDto) {
+        return this.camerasService.create(dto);
+    }
+
+    @Put('register/:id')
+    publicRegisterUpdate(
+        @Param('id') id: string,
+        @Body() updateData: Partial<CreateCctvCameraDto>,
+    ) {
+        return this.camerasService.update(id, updateData);
+    }
+
     @Put(':id')
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @AdminOnly()
@@ -61,6 +74,8 @@ export class CctvCamerasController {
     }
 
     @Put(':id/status')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
     updateStatus(
         @Param('id') id: string,
         @Body() body: { status: string },
