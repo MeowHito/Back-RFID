@@ -30,6 +30,9 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     server: Server;
 
     private cameras = new Map<string, LiveCameraInfo>();
+    private initChunks = new Map<string, { chunk: Buffer; mimeType: string }>();
+    private recentChunks = new Map<string, { chunk: Buffer; mimeType: string }[]>();
+    private static readonly MAX_RECENT_CHUNKS = 5;
 
     constructor(private readonly recordingsService: CctvRecordingsService) {}
 
@@ -41,6 +44,8 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const cam = this.cameras.get(client.id);
         if (cam) {
             this.cameras.delete(client.id);
+            this.initChunks.delete(cam.cameraId);
+            this.recentChunks.delete(cam.cameraId);
             console.log(`[CCTV] camera offline: ${cam.name} (${cam.cameraId})`);
             this.server
                 .to(`campaign:${cam.campaignId}`)
@@ -81,6 +86,21 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     ) {
         if (data.mimeType) this.recordingsService.updateMimeType(data.cameraId, data.mimeType);
         this.recordingsService.appendChunk(data.cameraId, data.chunk);
+
+        const buf = Buffer.isBuffer(data.chunk) ? data.chunk : Buffer.from(data.chunk as any);
+        const mime = data.mimeType || 'video/webm;codecs=vp8';
+
+        // Cache init chunk (first chunk from this camera)
+        if (!this.initChunks.has(data.cameraId)) {
+            this.initChunks.set(data.cameraId, { chunk: buf, mimeType: mime });
+        } else {
+            // Cache recent chunks for replay
+            let recent = this.recentChunks.get(data.cameraId);
+            if (!recent) { recent = []; this.recentChunks.set(data.cameraId, recent); }
+            recent.push({ chunk: buf, mimeType: mime });
+            if (recent.length > CctvGateway.MAX_RECENT_CHUNKS) recent.shift();
+        }
+
         this.server
             .to(`camera:${data.cameraId}:viewers`)
             .emit('camera:chunk', { cameraId: data.cameraId, chunk: data.chunk, mimeType: data.mimeType });
@@ -90,6 +110,8 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     handleCameraStop(client: Socket) {
         const cam = this.cameras.get(client.id);
         if (cam) {
+            this.initChunks.delete(cam.cameraId);
+            this.recentChunks.delete(cam.cameraId);
             this.server
                 .to(`campaign:${cam.campaignId}`)
                 .emit('camera:offline', { cameraId: cam.cameraId });
@@ -109,6 +131,17 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @SubscribeMessage('viewer:watch')
     handleViewerWatch(client: Socket, cameraId: string) {
         client.join(`camera:${cameraId}:viewers`);
+
+        // Send cached init chunk + recent chunks so late-joiners can start playback
+        const init = this.initChunks.get(cameraId);
+        if (init) {
+            client.emit('camera:chunk', { cameraId, chunk: init.chunk, mimeType: init.mimeType });
+            const recent = this.recentChunks.get(cameraId) || [];
+            for (const r of recent) {
+                client.emit('camera:chunk', { cameraId, chunk: r.chunk, mimeType: r.mimeType });
+            }
+        }
+
         return { success: true };
     }
 
