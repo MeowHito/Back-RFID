@@ -15,13 +15,13 @@ export class CctvRecordingsController {
     constructor(private readonly service: CctvRecordingsService) {}
 
     @Get()
-    findAll() {
-        return this.service.findAll();
+    findAll(@Query('campaignId') campaignId?: string) {
+        return this.service.findAll(campaignId);
     }
 
     @Get('storage')
-    storageInfo() {
-        return this.service.getStorageInfo();
+    storageInfo(@Query('campaignId') campaignId?: string) {
+        return this.service.getStorageInfo(campaignId);
     }
 
     @Get('runner-lookup')

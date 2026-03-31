@@ -109,8 +109,10 @@ export class CctvRecordingsService {
         this.logger.log(`Recording finalized: ${rec.fileName} (${fileSize} bytes, ${duration}s)`);
     }
 
-    async findAll(): Promise<CctvRecordingDocument[]> {
-        const recs = await this.recordingModel.find({ recordingStatus: { $in: ['completed', 'recording'] } }).sort({ startTime: -1 }).exec();
+    async findAll(campaignId?: string): Promise<CctvRecordingDocument[]> {
+        const filter: any = { recordingStatus: { $in: ['completed', 'recording'] } };
+        if (campaignId) filter.campaignId = campaignId;
+        const recs = await this.recordingModel.find(filter).sort({ startTime: -1 }).exec();
         // For in-progress recordings, compute live duration and fileSize
         for (const rec of recs) {
             if (rec.recordingStatus === 'recording') {
@@ -121,8 +123,10 @@ export class CctvRecordingsService {
         return recs;
     }
 
-    async getStorageInfo(): Promise<{ totalSize: number; count: number; dirPath: string }> {
-        const recs = await this.recordingModel.find({ recordingStatus: { $in: ['completed', 'recording'] } }).exec();
+    async getStorageInfo(campaignId?: string): Promise<{ totalSize: number; count: number; dirPath: string }> {
+        const filter: any = { recordingStatus: { $in: ['completed', 'recording'] } };
+        if (campaignId) filter.campaignId = campaignId;
+        const recs = await this.recordingModel.find(filter).exec();
         let totalSize = 0;
         for (const r of recs) {
             if (r.recordingStatus === 'recording') {
