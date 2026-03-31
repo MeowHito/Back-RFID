@@ -1,8 +1,11 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { CctvCamera, CctvCameraSchema } from './cctv-camera.schema';
+import { CctvRecording, CctvRecordingSchema } from './cctv-recording.schema';
 import { CctvCamerasService } from './cctv-cameras.service';
 import { CctvCamerasController } from './cctv-cameras.controller';
+import { CctvRecordingsController } from './cctv-recordings.controller';
+import { CctvRecordingsService } from './cctv-recordings.service';
 import { CctvGateway } from './cctv.gateway';
 import { User, UserSchema } from '../users/user.schema';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -11,11 +14,12 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
     imports: [
         MongooseModule.forFeature([
             { name: CctvCamera.name, schema: CctvCameraSchema },
+            { name: CctvRecording.name, schema: CctvRecordingSchema },
             { name: User.name, schema: UserSchema },
         ]),
     ],
-    controllers: [CctvCamerasController],
-    providers: [CctvCamerasService, PermissionsGuard, CctvGateway],
-    exports: [CctvCamerasService, CctvGateway],
+    controllers: [CctvCamerasController, CctvRecordingsController],
+    providers: [CctvCamerasService, CctvRecordingsService, PermissionsGuard, CctvGateway],
+    exports: [CctvCamerasService, CctvRecordingsService, CctvGateway],
 })
 export class CctvCamerasModule {}

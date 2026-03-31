@@ -6,6 +6,7 @@ import {
     OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { CctvRecordingsService } from './cctv-recordings.service';
 
 export interface LiveCameraInfo {
     cameraId: string;
@@ -30,6 +31,8 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     private cameras = new Map<string, LiveCameraInfo>();
 
+    constructor(private readonly recordingsService: CctvRecordingsService) {}
+
     handleConnection(client: Socket) {
         console.log(`[CCTV] client connected: ${client.id}`);
     }
@@ -42,6 +45,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
             this.server
                 .to(`campaign:${cam.campaignId}`)
                 .emit('camera:offline', { cameraId: cam.cameraId });
+            this.recordingsService.finalizeRecording(cam.cameraId).catch(() => {});
         }
     }
 
@@ -66,6 +70,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.server
             .to(`campaign:${info.campaignId}`)
             .emit('camera:online', info);
+        this.recordingsService.startRecording(cameraId, info).catch(() => {});
         return { success: true, cameraId };
     }
 
@@ -74,6 +79,8 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
         client: Socket,
         data: { cameraId: string; chunk: Buffer; mimeType?: string },
     ) {
+        if (data.mimeType) this.recordingsService.updateMimeType(data.cameraId, data.mimeType);
+        this.recordingsService.appendChunk(data.cameraId, data.chunk);
         this.server
             .to(`camera:${data.cameraId}:viewers`)
             .emit('camera:chunk', { cameraId: data.cameraId, chunk: data.chunk, mimeType: data.mimeType });
@@ -86,6 +93,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
             this.server
                 .to(`campaign:${cam.campaignId}`)
                 .emit('camera:offline', { cameraId: cam.cameraId });
+            this.recordingsService.finalizeRecording(cam.cameraId).catch(() => {});
         }
     }
 
