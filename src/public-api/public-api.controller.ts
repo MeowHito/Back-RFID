@@ -1,4 +1,6 @@
-import { Controller, Get, Post, Body, Query, Headers, Param, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, Headers, Param, BadRequestException, Res } from '@nestjs/common';
+import type { Response } from 'express';
+import * as fs from 'fs';
 import { UsersService } from '../users/users.service';
 import { AuthService } from '../auth/auth.service';
 import { CampaignsService, PagingData } from '../campaigns/campaigns.service';
@@ -6,6 +8,7 @@ import { RunnersService } from '../runners/runners.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
 import { TimingService } from '../timing/timing.service';
 import { EventsService } from '../events/events.service';
+import { CctvRecordingsService } from '../cctv-cameras/cctv-recordings.service';
 import { CreateUserDto, LoginStationDto, UpdatePasswordDto } from '../users/dto/user.dto';
 
 interface NormalizedResponse {
@@ -26,6 +29,7 @@ export class PublicApiController {
         private readonly checkpointsService: CheckpointsService,
         private readonly timingService: TimingService,
         private readonly eventsService: EventsService,
+        private readonly cctvRecordingsService: CctvRecordingsService,
     ) { }
 
     private successResponse(data?: any): NormalizedResponse {
@@ -48,6 +52,22 @@ export class PublicApiController {
 
         const campaign = await this.campaignsService.findById(id);
         return String(campaign._id);
+    }
+
+    private async getRunnerCctvContext(runnerId: string) {
+        const runner = await this.runnersService.findOne(runnerId);
+        if (!runner) {
+            throw new BadRequestException('Runner not found');
+        }
+
+        const event = await this.eventsService.findOne(String(runner.eventId)).catch(() => null);
+        const campaignId = event?.campaignId ? String(event.campaignId) : String(runner.eventId);
+        if (!campaignId) {
+            throw new BadRequestException('Campaign not found for runner');
+        }
+
+        const hits = await this.cctvRecordingsService.runnerLookup(runner.bib, campaignId);
+        return { runner, campaignId, hits };
     }
 
     // User Registration
@@ -565,6 +585,46 @@ export class PublicApiController {
             });
         } catch (error) {
             return this.errorResponse('500', error.message);
+        }
+    }
+
+    @Get('runner/:id/cctv')
+    async getRunnerCctv(@Param('id') id: string) {
+        try {
+            const { campaignId, hits } = await this.getRunnerCctvContext(id);
+            return this.successResponse({ campaignId, hits });
+        } catch (error) {
+            return this.errorResponse('500', error.message);
+        }
+    }
+
+    @Get('runner/:runnerId/cctv/:recordingId/stream')
+    async streamRunnerCctv(
+        @Param('runnerId') runnerId: string,
+        @Param('recordingId') recordingId: string,
+        @Query('download') download: string,
+        @Res() res: Response,
+    ) {
+        try {
+            const { hits } = await this.getRunnerCctvContext(runnerId);
+            const matched = hits.find((hit: any) => String(hit?.recording?._id || '') === recordingId);
+            if (!matched?.recording) {
+                return res.status(404).json({ error: 'Recording not found for runner' });
+            }
+
+            const { filePath, mimeType, fileName } = await this.cctvRecordingsService.getFilePath(recordingId);
+            if (!fs.existsSync(filePath)) {
+                return res.status(404).json({ error: 'File not found' });
+            }
+
+            const stat = fs.statSync(filePath);
+            res.setHeader('Content-Type', mimeType || 'video/webm');
+            res.setHeader('Content-Length', stat.size);
+            res.setHeader('Content-Disposition', `${download === '1' ? 'attachment' : 'inline'}; filename="${fileName}"`);
+            res.setHeader('Accept-Ranges', 'bytes');
+            fs.createReadStream(filePath).pipe(res);
+        } catch (error: any) {
+            return res.status(500).json({ error: error?.message || 'Internal server error' });
         }
     }
 

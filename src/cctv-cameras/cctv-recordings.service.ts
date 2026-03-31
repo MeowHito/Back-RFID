@@ -34,6 +34,39 @@ export class CctvRecordingsService {
         fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
     }
 
+    private normalizeCheckpointName(value?: string): string {
+        return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+    }
+
+    private getRecordingSnapshot(recording: any) {
+        const startTime = new Date(recording?.startTime);
+        const endTime = recording?.recordingStatus === 'recording' || !recording?.endTime
+            ? new Date()
+            : new Date(recording.endTime);
+
+        let fileSize = recording?.fileSize || 0;
+        if (recording?.recordingStatus === 'recording') {
+            try {
+                fileSize = fs.statSync(recording.filePath).size;
+            } catch {
+                fileSize = recording?.fileSize || 0;
+            }
+        }
+
+        const duration = Number.isFinite(recording?.duration)
+            ? recording.duration
+            : 0;
+
+        return {
+            startTime,
+            endTime,
+            fileSize,
+            duration: recording?.recordingStatus === 'recording'
+                ? Math.max(0, Math.floor((endTime.getTime() - startTime.getTime()) / 1000))
+                : duration,
+        };
+    }
+
     async startRecording(cameraId: string, info: LiveCameraInfo): Promise<void> {
         if (this.activeRecordings.has(cameraId)) return;
         const startTime = new Date();
@@ -214,6 +247,7 @@ export class CctvRecordingsService {
         const objectIds = [...new Set(eventIdSet)]
             .filter(id => Types.ObjectId.isValid(id))
             .map(id => new Types.ObjectId(id));
+        const campaignIdsToMatch = [...new Set(eventIdSet)];
 
         // 2. Find all TimingRecords for this bib in these events
         const timings = await this.timingModel
@@ -229,21 +263,27 @@ export class CctvRecordingsService {
         for (const t of timings) {
             const checkpoint = (t as any).checkpoint;
             const scanTime = new Date((t as any).scanTime);
+            const normalizedCheckpoint = this.normalizeCheckpointName(checkpoint);
 
-            // Find recording covering this scanTime at this checkpoint
-            const recording = await this.recordingModel.findOne({
-                campaignId,
-                checkpointName: checkpoint,
-                recordingStatus: 'completed',
+            const candidates = await this.recordingModel.find({
+                campaignId: { $in: campaignIdsToMatch },
+                recordingStatus: { $in: ['completed', 'recording'] },
                 startTime: { $lte: scanTime },
                 $or: [
                     { endTime: { $gte: scanTime } },
                     { endTime: null },
+                    { recordingStatus: 'recording' },
                 ],
-            }).lean().exec();
+            }).sort({ startTime: -1 }).lean().exec();
 
-            const seekSeconds = recording
-                ? Math.max(0, Math.floor((scanTime.getTime() - new Date((recording as any).startTime).getTime()) / 1000))
+            const recording = candidates.find((candidate: any) => {
+                return this.normalizeCheckpointName(candidate?.checkpointName) === normalizedCheckpoint;
+            }) || (candidates.length === 1 ? candidates[0] : null);
+
+            const snapshot = recording ? this.getRecordingSnapshot(recording) : null;
+
+            const seekSeconds = snapshot
+                ? Math.max(0, Math.floor((scanTime.getTime() - snapshot.startTime.getTime()) / 1000))
                 : 0;
 
             results.push({
@@ -254,10 +294,12 @@ export class CctvRecordingsService {
                 recording: recording ? {
                     _id: (recording as any)._id,
                     cameraName: (recording as any).cameraName,
-                    startTime: (recording as any).startTime,
-                    endTime: (recording as any).endTime,
-                    duration: (recording as any).duration,
-                    fileSize: (recording as any).fileSize,
+                    checkpointName: (recording as any).checkpointName,
+                    startTime: snapshot?.startTime,
+                    endTime: snapshot?.endTime,
+                    duration: snapshot?.duration,
+                    fileSize: snapshot?.fileSize,
+                    recordingStatus: (recording as any).recordingStatus,
                 } : null,
                 seekSeconds,
             });

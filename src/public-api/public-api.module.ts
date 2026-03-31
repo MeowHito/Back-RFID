@@ -7,6 +7,7 @@ import { RunnersModule } from '../runners/runners.module';
 import { CheckpointsModule } from '../checkpoints/checkpoints.module';
 import { TimingModule } from '../timing/timing.module';
 import { EventsModule } from '../events/events.module';
+import { CctvCamerasModule } from '../cctv-cameras/cctv-cameras.module';
 
 @Module({
     imports: [
@@ -17,6 +18,7 @@ import { EventsModule } from '../events/events.module';
         RunnersModule,
         CheckpointsModule,
         TimingModule,
+        CctvCamerasModule,
     ],
     controllers: [PublicApiController],
 })
