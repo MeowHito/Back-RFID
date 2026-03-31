@@ -25,3 +25,4 @@ export const CctvRecordingSchema = SchemaFactory.createForClass(CctvRecording);
 CctvRecordingSchema.index({ campaignId: 1 });
 CctvRecordingSchema.index({ cameraId: 1 });
 CctvRecordingSchema.index({ startTime: -1 });
+CctvRecordingSchema.index({ campaignId: 1, checkpointName: 1, startTime: 1, endTime: 1 });

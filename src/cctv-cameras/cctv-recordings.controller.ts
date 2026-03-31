@@ -1,5 +1,5 @@
 import {
-    Controller, Get, Delete, Post, Param, Res, UseGuards, HttpCode, Body,
+    Controller, Get, Delete, Post, Param, Query, Res, UseGuards, HttpCode, Body,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import * as fs from 'fs';
@@ -22,6 +22,12 @@ export class CctvRecordingsController {
     @Get('storage')
     storageInfo() {
         return this.service.getStorageInfo();
+    }
+
+    @Get('runner-lookup')
+    runnerLookup(@Query('bib') bib: string, @Query('campaignId') campaignId: string) {
+        if (!bib || !campaignId) return [];
+        return this.service.runnerLookup(bib, campaignId);
     }
 
     @Get(':id/stream')

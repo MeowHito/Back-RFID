@@ -3,6 +3,8 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { CctvCamera, CctvCameraSchema } from './cctv-camera.schema';
 import { CctvRecording, CctvRecordingSchema } from './cctv-recording.schema';
 import { CctvSettings, CctvSettingsSchema } from './cctv-settings.schema';
+import { TimingRecord, TimingRecordSchema } from '../timing/timing-record.schema';
+import { Event, EventSchema } from '../events/event.schema';
 import { CctvCamerasService } from './cctv-cameras.service';
 import { CctvCamerasController } from './cctv-cameras.controller';
 import { CctvRecordingsController } from './cctv-recordings.controller';
@@ -19,6 +21,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
             { name: CctvCamera.name, schema: CctvCameraSchema },
             { name: CctvRecording.name, schema: CctvRecordingSchema },
             { name: CctvSettings.name, schema: CctvSettingsSchema },
+            { name: TimingRecord.name, schema: TimingRecordSchema },
+            { name: Event.name, schema: EventSchema },
             { name: User.name, schema: UserSchema },
         ]),
     ],

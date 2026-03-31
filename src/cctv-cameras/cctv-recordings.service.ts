@@ -1,9 +1,11 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CctvRecording, CctvRecordingDocument } from './cctv-recording.schema';
+import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
+import { Event, EventDocument } from '../events/event.schema';
 import { LiveCameraInfo } from './cctv.gateway';
 
 const RECORDINGS_DIR = path.join(process.cwd(), 'uploads', 'recordings');
@@ -24,6 +26,10 @@ export class CctvRecordingsService {
     constructor(
         @InjectModel(CctvRecording.name)
         private recordingModel: Model<CctvRecordingDocument>,
+        @InjectModel(TimingRecord.name)
+        private timingModel: Model<TimingRecordDocument>,
+        @InjectModel(Event.name)
+        private eventModel: Model<EventDocument>,
     ) {
         fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
     }
@@ -169,6 +175,75 @@ export class CctvRecordingsService {
         });
         this.logger.log(`Clip saved: ${fileName} (${buf.byteLength} bytes)`);
         return doc;
+    }
+
+    /**
+     * Given a runner bib + campaignId, find all checkpoint arrival times
+     * and match them to CCTV recordings, returning seek offsets.
+     */
+    async runnerLookup(bib: string, campaignId: string): Promise<any[]> {
+        // 1. Find all eventIds belonging to this campaign
+        const eventIdSet: string[] = [campaignId];
+        if (Types.ObjectId.isValid(campaignId)) {
+            const events = await this.eventModel
+                .find({ $or: [{ campaignId }, { campaignId: new Types.ObjectId(campaignId) }] })
+                .select('_id')
+                .lean()
+                .exec();
+            events.forEach((e: any) => eventIdSet.push(String(e._id)));
+        }
+        const objectIds = [...new Set(eventIdSet)]
+            .filter(id => Types.ObjectId.isValid(id))
+            .map(id => new Types.ObjectId(id));
+
+        // 2. Find all TimingRecords for this bib in these events
+        const timings = await this.timingModel
+            .find({ bib, eventId: { $in: objectIds } })
+            .sort({ scanTime: 1 })
+            .lean()
+            .exec();
+
+        if (!timings.length) return [];
+
+        // 3. For each timing record, find matching CCTV recording
+        const results: any[] = [];
+        for (const t of timings) {
+            const checkpoint = (t as any).checkpoint;
+            const scanTime = new Date((t as any).scanTime);
+
+            // Find recording covering this scanTime at this checkpoint
+            const recording = await this.recordingModel.findOne({
+                campaignId,
+                checkpointName: checkpoint,
+                recordingStatus: 'completed',
+                startTime: { $lte: scanTime },
+                $or: [
+                    { endTime: { $gte: scanTime } },
+                    { endTime: null },
+                ],
+            }).lean().exec();
+
+            const seekSeconds = recording
+                ? Math.max(0, Math.floor((scanTime.getTime() - new Date((recording as any).startTime).getTime()) / 1000))
+                : 0;
+
+            results.push({
+                checkpoint,
+                scanTime: scanTime.toISOString(),
+                elapsedTime: (t as any).elapsedTime || null,
+                splitTime: (t as any).splitTime || null,
+                recording: recording ? {
+                    _id: (recording as any)._id,
+                    cameraName: (recording as any).cameraName,
+                    startTime: (recording as any).startTime,
+                    endTime: (recording as any).endTime,
+                    duration: (recording as any).duration,
+                    fileSize: (recording as any).fileSize,
+                } : null,
+                seekSeconds,
+            });
+        }
+        return results;
     }
 
     getFilePath(id: string): Promise<{ filePath: string; mimeType: string; fileName: string }> {
