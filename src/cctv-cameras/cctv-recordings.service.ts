@@ -110,12 +110,27 @@ export class CctvRecordingsService {
     }
 
     async findAll(): Promise<CctvRecordingDocument[]> {
-        return this.recordingModel.find({ recordingStatus: 'completed' }).sort({ startTime: -1 }).exec();
+        const recs = await this.recordingModel.find({ recordingStatus: { $in: ['completed', 'recording'] } }).sort({ startTime: -1 }).exec();
+        // For in-progress recordings, compute live duration and fileSize
+        for (const rec of recs) {
+            if (rec.recordingStatus === 'recording') {
+                rec.duration = Math.floor((Date.now() - new Date(rec.startTime).getTime()) / 1000);
+                try { rec.fileSize = fs.statSync(rec.filePath).size; } catch { rec.fileSize = 0; }
+            }
+        }
+        return recs;
     }
 
     async getStorageInfo(): Promise<{ totalSize: number; count: number; dirPath: string }> {
-        const recs = await this.recordingModel.find({ recordingStatus: 'completed' }).exec();
-        const totalSize = recs.reduce((sum, r) => sum + (r.fileSize || 0), 0);
+        const recs = await this.recordingModel.find({ recordingStatus: { $in: ['completed', 'recording'] } }).exec();
+        let totalSize = 0;
+        for (const r of recs) {
+            if (r.recordingStatus === 'recording') {
+                try { totalSize += fs.statSync(r.filePath).size; } catch { /* ignore */ }
+            } else {
+                totalSize += r.fileSize || 0;
+            }
+        }
         return { totalSize, count: recs.length, dirPath: RECORDINGS_DIR };
     }
 
