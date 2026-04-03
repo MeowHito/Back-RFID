@@ -626,13 +626,14 @@ export class PublicApiController {
             const t = Number(tParam);
             const hasTrim = Number.isFinite(ss) && ss >= 0 && Number.isFinite(t) && t > 0;
 
-            // Download: trim + convert to mp4 (cached)
-            if (download === '1') {
+            // Trim + convert to mp4 (cached) — for both download and streaming with ss/t params
+            if (download === '1' || hasTrim) {
                 const baseName = fileName.replace(/\.[^.]+$/, '');
                 const cacheKey = hasTrim ? `${baseName}_ss${ss}_t${t}.mp4` : `${baseName}.mp4`;
                 const cacheDir = path.dirname(filePath);
                 const cachedPath = path.join(cacheDir, cacheKey);
                 const mp4FileName = `${baseName}.mp4`;
+                const disposition = download === '1' ? 'attachment' : 'inline';
 
                 // Serve cached file if it exists
                 if (fs.existsSync(cachedPath)) {
@@ -640,7 +641,7 @@ export class PublicApiController {
                     if (mp4Stat.size > 0) {
                         res.setHeader('Content-Type', 'video/mp4');
                         res.setHeader('Content-Length', mp4Stat.size);
-                        res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
+                        res.setHeader('Content-Disposition', `${disposition}; filename="${mp4FileName}"`);
                         res.setHeader('Accept-Ranges', 'bytes');
                         fs.createReadStream(cachedPath).pipe(res);
                         return;
@@ -675,7 +676,7 @@ export class PublicApiController {
                         const mp4Stat = fs.statSync(cachedPath);
                         res.setHeader('Content-Type', 'video/mp4');
                         res.setHeader('Content-Length', mp4Stat.size);
-                        res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
+                        res.setHeader('Content-Disposition', `${disposition}; filename="${mp4FileName}"`);
                         res.setHeader('Accept-Ranges', 'bytes');
                         fs.createReadStream(cachedPath).pipe(res);
                         return;
