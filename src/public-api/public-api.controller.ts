@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Body, Query, Headers, Param, BadRequestException, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import * as fs from 'fs';
-import { spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { UsersService } from '../users/users.service';
 import { AuthService } from '../auth/auth.service';
 import { CampaignsService, PagingData } from '../campaigns/campaigns.service';
@@ -618,77 +618,56 @@ export class PublicApiController {
                 return res.status(404).json({ error: 'File not found' });
             }
 
-            // When downloading and file is webm, try to transcode to mp4 so mobile can save to Photos/Gallery
+            // When downloading and file is webm, convert to mp4 (cached) so mobile can save to Photos/Gallery
             const isWebm = (mimeType || '').includes('webm') || fileName.endsWith('.webm');
             if (download === '1' && isWebm) {
+                const mp4FileName = fileName.replace(/\.webm$/i, '.mp4');
+                const cachedMp4Path = filePath.replace(/\.webm$/i, '.mp4');
+
+                // Serve cached mp4 if it already exists
+                if (fs.existsSync(cachedMp4Path)) {
+                    const mp4Stat = fs.statSync(cachedMp4Path);
+                    if (mp4Stat.size > 0) {
+                        res.setHeader('Content-Type', 'video/mp4');
+                        res.setHeader('Content-Length', mp4Stat.size);
+                        res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
+                        res.setHeader('Accept-Ranges', 'bytes');
+                        fs.createReadStream(cachedMp4Path).pipe(res);
+                        return;
+                    }
+                }
+
+                // Convert webm → mp4 and cache to disk
                 try {
-                    const mp4FileName = fileName.replace(/\.webm$/i, '.mp4');
-
-                    const ffmpeg = spawn('ffmpeg', [
-                        '-i', filePath,
-                        '-c:v', 'libx264',
-                        '-preset', 'veryfast',
-                        '-crf', '23',
-                        '-c:a', 'aac',
-                        '-b:a', '128k',
-                        '-movflags', '+faststart+frag_keyframe+empty_moov',
-                        '-f', 'mp4',
-                        'pipe:1',
-                    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-                    let hasData = false;
-                    let ffmpegExited = false;
-
-                    ffmpeg.on('error', () => {
-                        // ffmpeg binary not found – fall back to original file
-                        if (!res.headersSent) {
-                            const fallbackStat = fs.statSync(filePath);
-                            res.setHeader('Content-Type', mimeType || 'video/webm');
-                            res.setHeader('Content-Length', fallbackStat.size);
-                            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-                            fs.createReadStream(filePath).pipe(res);
-                        }
+                    await new Promise<void>((resolve, reject) => {
+                        execFile('ffmpeg', [
+                            '-y',
+                            '-i', filePath,
+                            '-c:v', 'libx264',
+                            '-preset', 'ultrafast',
+                            '-crf', '28',
+                            '-c:a', 'aac',
+                            '-b:a', '96k',
+                            '-movflags', '+faststart',
+                            cachedMp4Path,
+                        ], { timeout: 120_000 }, (err) => {
+                            if (err) reject(err);
+                            else resolve();
+                        });
                     });
 
-                    ffmpeg.stdout.on('data', (chunk) => {
-                        if (!hasData) {
-                            hasData = true;
-                            // First chunk received – send mp4 headers
-                            res.setHeader('Content-Type', 'video/mp4');
-                            res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
-                        }
-                        res.write(chunk);
-                    });
-
-                    ffmpeg.stdout.on('end', () => {
-                        if (hasData) {
-                            res.end();
-                        }
-                    });
-
-                    ffmpeg.on('close', (code) => {
-                        ffmpegExited = true;
-                        // If ffmpeg failed before producing any data, fall back to original
-                        if (!hasData && !res.headersSent) {
-                            const fallbackStat = fs.statSync(filePath);
-                            res.setHeader('Content-Type', mimeType || 'video/webm');
-                            res.setHeader('Content-Length', fallbackStat.size);
-                            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-                            fs.createReadStream(filePath).pipe(res);
-                        } else if (!hasData) {
-                            res.end();
-                        }
-                    });
-
-                    ffmpeg.stderr.on('data', () => { /* suppress ffmpeg logs */ });
-
-                    res.on('close', () => {
-                        if (!ffmpegExited) ffmpeg.kill('SIGTERM');
-                    });
-
-                    return;
+                    if (fs.existsSync(cachedMp4Path)) {
+                        const mp4Stat = fs.statSync(cachedMp4Path);
+                        res.setHeader('Content-Type', 'video/mp4');
+                        res.setHeader('Content-Length', mp4Stat.size);
+                        res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
+                        res.setHeader('Accept-Ranges', 'bytes');
+                        fs.createReadStream(cachedMp4Path).pipe(res);
+                        return;
+                    }
                 } catch {
-                    // ffmpeg setup failed entirely – fall through to serve original file
+                    // ffmpeg failed – clean up partial file and fall through to serve original
+                    try { if (fs.existsSync(cachedMp4Path)) fs.unlinkSync(cachedMp4Path); } catch {}
                 }
             }
 
