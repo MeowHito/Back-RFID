@@ -304,6 +304,7 @@ export class TimingService {
                     order: 1,
                     overallRank: '$runner.overallRank',
                     genderRank: '$runner.genderRank',
+                    ageGroupRank: '$runner.ageGroupRank',
                     categoryRank: '$runner.categoryRank',
                     netTimeStr: '$runner.netTimeStr',
                     gunTimeStr: '$runner.gunTimeStr',

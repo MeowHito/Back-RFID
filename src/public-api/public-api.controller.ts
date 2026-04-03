@@ -284,6 +284,7 @@ export class PublicApiController {
                 gunTime: r.gunTime,
                 overallRank: r.overallRank,
                 genderRank: r.genderRank,
+                ageGroupRank: r.ageGroupRank,
                 categoryRank: r.categoryRank,
                 netTimeStr: r.netTimeStr,
                 gunTimeStr: r.gunTimeStr,
