@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Query, Headers, Param, BadRequestException, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import * as fs from 'fs';
+import { spawn } from 'child_process';
 import { UsersService } from '../users/users.service';
 import { AuthService } from '../auth/auth.service';
 import { CampaignsService, PagingData } from '../campaigns/campaigns.service';
@@ -615,6 +616,44 @@ export class PublicApiController {
             const { filePath, mimeType, fileName } = await this.cctvRecordingsService.getFilePath(recordingId);
             if (!fs.existsSync(filePath)) {
                 return res.status(404).json({ error: 'File not found' });
+            }
+
+            // When downloading and file is webm, transcode to mp4 so mobile can save to Photos/Gallery
+            const isWebm = (mimeType || '').includes('webm') || fileName.endsWith('.webm');
+            if (download === '1' && isWebm) {
+                const mp4FileName = fileName.replace(/\.webm$/i, '.mp4');
+                res.setHeader('Content-Type', 'video/mp4');
+                res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
+                res.setHeader('Transfer-Encoding', 'chunked');
+
+                const ffmpeg = spawn('ffmpeg', [
+                    '-i', filePath,
+                    '-c:v', 'libx264',
+                    '-preset', 'fast',
+                    '-crf', '23',
+                    '-c:a', 'aac',
+                    '-b:a', '128k',
+                    '-movflags', '+faststart+frag_keyframe+empty_moov',
+                    '-f', 'mp4',
+                    'pipe:1',
+                ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+                ffmpeg.stdout.pipe(res);
+
+                ffmpeg.on('error', () => {
+                    if (!res.headersSent) {
+                        return res.status(500).json({ error: 'FFmpeg not available' });
+                    }
+                    res.end();
+                });
+
+                ffmpeg.stderr.on('data', () => { /* suppress ffmpeg logs */ });
+
+                res.on('close', () => {
+                    ffmpeg.kill('SIGTERM');
+                });
+
+                return;
             }
 
             const stat = fs.statSync(filePath);
