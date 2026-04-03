@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Query, Headers, Param, BadRequestException, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import * as fs from 'fs';
+import * as path from 'path';
 import { execFile } from 'child_process';
 import { UsersService } from '../users/users.service';
 import { AuthService } from '../auth/auth.service';
@@ -604,6 +605,8 @@ export class PublicApiController {
         @Param('runnerId') runnerId: string,
         @Param('recordingId') recordingId: string,
         @Query('download') download: string,
+        @Query('ss') ssParam: string,
+        @Query('t') tParam: string,
         @Res() res: Response,
     ) {
         try {
@@ -618,59 +621,72 @@ export class PublicApiController {
                 return res.status(404).json({ error: 'File not found' });
             }
 
-            // When downloading and file is webm, convert to mp4 (cached) so mobile can save to Photos/Gallery
-            const isWebm = (mimeType || '').includes('webm') || fileName.endsWith('.webm');
-            if (download === '1' && isWebm) {
-                const mp4FileName = fileName.replace(/\.webm$/i, '.mp4');
-                const cachedMp4Path = filePath.replace(/\.webm$/i, '.mp4');
+            // Parse trim parameters
+            const ss = Number(ssParam);
+            const t = Number(tParam);
+            const hasTrim = Number.isFinite(ss) && ss >= 0 && Number.isFinite(t) && t > 0;
 
-                // Serve cached mp4 if it already exists
-                if (fs.existsSync(cachedMp4Path)) {
-                    const mp4Stat = fs.statSync(cachedMp4Path);
+            // Download: trim + convert to mp4 (cached)
+            if (download === '1') {
+                const baseName = fileName.replace(/\.[^.]+$/, '');
+                const cacheKey = hasTrim ? `${baseName}_ss${ss}_t${t}.mp4` : `${baseName}.mp4`;
+                const cacheDir = path.dirname(filePath);
+                const cachedPath = path.join(cacheDir, cacheKey);
+                const mp4FileName = `${baseName}.mp4`;
+
+                // Serve cached file if it exists
+                if (fs.existsSync(cachedPath)) {
+                    const mp4Stat = fs.statSync(cachedPath);
                     if (mp4Stat.size > 0) {
                         res.setHeader('Content-Type', 'video/mp4');
                         res.setHeader('Content-Length', mp4Stat.size);
                         res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
                         res.setHeader('Accept-Ranges', 'bytes');
-                        fs.createReadStream(cachedMp4Path).pipe(res);
+                        fs.createReadStream(cachedPath).pipe(res);
                         return;
                     }
                 }
 
-                // Convert webm → mp4 and cache to disk
+                // Build ffmpeg args: trim + convert to mp4
                 try {
+                    const ffmpegArgs: string[] = ['-y'];
+                    if (hasTrim) {
+                        ffmpegArgs.push('-ss', String(ss), '-t', String(t));
+                    }
+                    ffmpegArgs.push(
+                        '-i', filePath,
+                        '-c:v', 'libx264',
+                        '-preset', 'ultrafast',
+                        '-crf', '28',
+                        '-c:a', 'aac',
+                        '-b:a', '96k',
+                        '-movflags', '+faststart',
+                        cachedPath,
+                    );
+
                     await new Promise<void>((resolve, reject) => {
-                        execFile('ffmpeg', [
-                            '-y',
-                            '-i', filePath,
-                            '-c:v', 'libx264',
-                            '-preset', 'ultrafast',
-                            '-crf', '28',
-                            '-c:a', 'aac',
-                            '-b:a', '96k',
-                            '-movflags', '+faststart',
-                            cachedMp4Path,
-                        ], { timeout: 120_000 }, (err) => {
+                        execFile('ffmpeg', ffmpegArgs, { timeout: 120_000 }, (err) => {
                             if (err) reject(err);
                             else resolve();
                         });
                     });
 
-                    if (fs.existsSync(cachedMp4Path)) {
-                        const mp4Stat = fs.statSync(cachedMp4Path);
+                    if (fs.existsSync(cachedPath)) {
+                        const mp4Stat = fs.statSync(cachedPath);
                         res.setHeader('Content-Type', 'video/mp4');
                         res.setHeader('Content-Length', mp4Stat.size);
                         res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
                         res.setHeader('Accept-Ranges', 'bytes');
-                        fs.createReadStream(cachedMp4Path).pipe(res);
+                        fs.createReadStream(cachedPath).pipe(res);
                         return;
                     }
                 } catch {
-                    // ffmpeg failed – clean up partial file and fall through to serve original
-                    try { if (fs.existsSync(cachedMp4Path)) fs.unlinkSync(cachedMp4Path); } catch {}
+                    // ffmpeg failed – clean up and fall through to serve original
+                    try { if (fs.existsSync(cachedPath)) fs.unlinkSync(cachedPath); } catch {}
                 }
             }
 
+            // Streaming / fallback: serve original file as-is
             const stat = fs.statSync(filePath);
             res.setHeader('Content-Type', mimeType || 'video/webm');
             res.setHeader('Content-Length', stat.size);
