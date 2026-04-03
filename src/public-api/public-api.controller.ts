@@ -618,42 +618,78 @@ export class PublicApiController {
                 return res.status(404).json({ error: 'File not found' });
             }
 
-            // When downloading and file is webm, transcode to mp4 so mobile can save to Photos/Gallery
+            // When downloading and file is webm, try to transcode to mp4 so mobile can save to Photos/Gallery
             const isWebm = (mimeType || '').includes('webm') || fileName.endsWith('.webm');
             if (download === '1' && isWebm) {
-                const mp4FileName = fileName.replace(/\.webm$/i, '.mp4');
-                res.setHeader('Content-Type', 'video/mp4');
-                res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
-                res.setHeader('Transfer-Encoding', 'chunked');
+                try {
+                    const mp4FileName = fileName.replace(/\.webm$/i, '.mp4');
 
-                const ffmpeg = spawn('ffmpeg', [
-                    '-i', filePath,
-                    '-c:v', 'libx264',
-                    '-preset', 'fast',
-                    '-crf', '23',
-                    '-c:a', 'aac',
-                    '-b:a', '128k',
-                    '-movflags', '+faststart+frag_keyframe+empty_moov',
-                    '-f', 'mp4',
-                    'pipe:1',
-                ], { stdio: ['ignore', 'pipe', 'pipe'] });
+                    const ffmpeg = spawn('ffmpeg', [
+                        '-i', filePath,
+                        '-c:v', 'libx264',
+                        '-preset', 'veryfast',
+                        '-crf', '23',
+                        '-c:a', 'aac',
+                        '-b:a', '128k',
+                        '-movflags', '+faststart+frag_keyframe+empty_moov',
+                        '-f', 'mp4',
+                        'pipe:1',
+                    ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-                ffmpeg.stdout.pipe(res);
+                    let hasData = false;
+                    let ffmpegExited = false;
 
-                ffmpeg.on('error', () => {
-                    if (!res.headersSent) {
-                        return res.status(500).json({ error: 'FFmpeg not available' });
-                    }
-                    res.end();
-                });
+                    ffmpeg.on('error', () => {
+                        // ffmpeg binary not found – fall back to original file
+                        if (!res.headersSent) {
+                            const fallbackStat = fs.statSync(filePath);
+                            res.setHeader('Content-Type', mimeType || 'video/webm');
+                            res.setHeader('Content-Length', fallbackStat.size);
+                            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+                            fs.createReadStream(filePath).pipe(res);
+                        }
+                    });
 
-                ffmpeg.stderr.on('data', () => { /* suppress ffmpeg logs */ });
+                    ffmpeg.stdout.on('data', (chunk) => {
+                        if (!hasData) {
+                            hasData = true;
+                            // First chunk received – send mp4 headers
+                            res.setHeader('Content-Type', 'video/mp4');
+                            res.setHeader('Content-Disposition', `attachment; filename="${mp4FileName}"`);
+                        }
+                        res.write(chunk);
+                    });
 
-                res.on('close', () => {
-                    ffmpeg.kill('SIGTERM');
-                });
+                    ffmpeg.stdout.on('end', () => {
+                        if (hasData) {
+                            res.end();
+                        }
+                    });
 
-                return;
+                    ffmpeg.on('close', (code) => {
+                        ffmpegExited = true;
+                        // If ffmpeg failed before producing any data, fall back to original
+                        if (!hasData && !res.headersSent) {
+                            const fallbackStat = fs.statSync(filePath);
+                            res.setHeader('Content-Type', mimeType || 'video/webm');
+                            res.setHeader('Content-Length', fallbackStat.size);
+                            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+                            fs.createReadStream(filePath).pipe(res);
+                        } else if (!hasData) {
+                            res.end();
+                        }
+                    });
+
+                    ffmpeg.stderr.on('data', () => { /* suppress ffmpeg logs */ });
+
+                    res.on('close', () => {
+                        if (!ffmpegExited) ffmpeg.kill('SIGTERM');
+                    });
+
+                    return;
+                } catch {
+                    // ffmpeg setup failed entirely – fall through to serve original file
+                }
             }
 
             const stat = fs.statSync(filePath);
