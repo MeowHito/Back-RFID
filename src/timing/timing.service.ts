@@ -89,7 +89,12 @@ function dedupeCheckpointRunnerRecords<T extends { _id?: any; scanTime?: string 
 export class TimingService {
     // In-memory cache for getLatestPerRunner (TTL 5s)
     private latestPerRunnerCache = new Map<string, { data: any[]; expiry: number }>();
+    // In-memory cache for getCheckpointRecordsByCampaign (TTL 5s)
+    private checkpointByCampaignCache = new Map<string, { data: any[]; expiry: number }>();
+    // In-memory cache for allRunners by eventIds (TTL 10s)
+    private allRunnersCache = new Map<string, { data: any[]; expiry: number }>();
     private static readonly CACHE_TTL_MS = 5000;
+    private static readonly RUNNERS_CACHE_TTL_MS = 10000;
 
     constructor(
         @InjectModel(TimingRecord.name) private timingModel: Model<TimingRecordDocument>,
@@ -401,6 +406,13 @@ export class TimingService {
     }
 
     async getCheckpointRecordsByCampaign(campaignId: string, checkpoint: string): Promise<any[]> {
+        // --- In-memory cache (5s TTL) ---
+        const cacheKey = `${campaignId}::${checkpoint}`;
+        const cached = this.checkpointByCampaignCache.get(cacheKey);
+        if (cached && cached.expiry > Date.now()) {
+            return cached.data;
+        }
+
         const events = await this.eventsService.findByCampaign(campaignId);
         // Include campaignId itself in the event IDs set (runners/timing records may use campaignId as eventId)
         const eventIdSet = new Set<string>([campaignId]);
@@ -438,29 +450,12 @@ export class TimingService {
                 },
             },
             { $sort: { scanTime: 1, bib: 1 } },
-            // Pipeline-based lookup: try runnerId first, fall back to bib+eventId match
+            // Simple localField/foreignField $lookup (uses indexes efficiently)
             {
                 $lookup: {
                     from: 'runners',
-                    let: { rid: '$runnerId', bibVal: '$bib' },
-                    pipeline: [
-                        {
-                            $match: {
-                                $expr: {
-                                    $or: [
-                                        { $eq: ['$_id', '$$rid'] },
-                                        {
-                                            $and: [
-                                                { $eq: ['$bib', '$$bibVal'] },
-                                                { $in: ['$eventId', eventIds] },
-                                            ],
-                                        },
-                                    ],
-                                },
-                            },
-                        },
-                        { $limit: 1 },
-                    ],
+                    localField: 'runnerId',
+                    foreignField: '_id',
                     as: 'runner',
                 },
             },
@@ -518,7 +513,16 @@ export class TimingService {
 
         // ── Merge DNF/DNS/DQ runners + fix statuses per-checkpoint ──
         const eventIdStrings = eventIds.map(id => id.toHexString());
-        const allRunners = await this.runnersService.findByEventIds(eventIdStrings, {});
+        // Use cached allRunners (10s TTL) to avoid repeated full-collection loads
+        const runnersCacheKey = eventIdStrings.sort().join(',');
+        let allRunners: any[];
+        const cachedRunners = this.allRunnersCache.get(runnersCacheKey);
+        if (cachedRunners && cachedRunners.expiry > Date.now()) {
+            allRunners = cachedRunners.data;
+        } else {
+            allRunners = await this.runnersService.findByEventIds(eventIdStrings, {});
+            this.allRunnersCache.set(runnersCacheKey, { data: allRunners, expiry: Date.now() + TimingService.RUNNERS_CACHE_TTL_MS });
+        }
         if (allRunners && allRunners.length > 0) {
             const runnerByBib = new Map<string, any>();
             for (const runner of allRunners) {
@@ -634,9 +638,10 @@ export class TimingService {
                 }
                 if (prevCpNames.length > 0) {
                     // Find runners who have timing at any previous checkpoint
+                    // Use exact $in match instead of regex for better index utilization
                     const prevCpTimingRecords = await this.timingModel.find({
                         eventId: { $in: eventIds },
-                        checkpoint: { $in: prevCpNames.map(n => new RegExp(`^${n}$`, 'i')) },
+                        checkpoint: { $in: prevCpNames },
                     }).select('bib runnerId checkpoint scanTime').lean().exec();
                     // Get unique BIBs from previous checkpoints
                     const bibsAtPrevCp = new Set<string>();
@@ -739,6 +744,9 @@ export class TimingService {
                 r.categoryRank = 0;
             }
         }
+
+        // Store in cache
+        this.checkpointByCampaignCache.set(cacheKey, { data: deduped, expiry: Date.now() + TimingService.CACHE_TTL_MS });
 
         return deduped;
     }

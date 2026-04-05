@@ -64,6 +64,13 @@ export class RunnersController {
         return this.runnersService.deleteMany(body.ids || []);
     }
 
+    @Put('bulk-status')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
+    bulkUpdateStatus(@Body() body: { runners: Array<{ id: string; status: string; statusCheckpoint?: string; statusNote?: string; changedBy?: string }> }) {
+        return this.runnersService.bulkUpdateStatus(body.runners || []);
+    }
+
     @Get('statistics/:eventId')
     async getStatistics(@Param('eventId') eventId: string) {
         const [status, starters, withdrawals, finishTimes] = await Promise.all([

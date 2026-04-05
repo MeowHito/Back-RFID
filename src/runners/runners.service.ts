@@ -788,6 +788,115 @@ export class RunnersService {
         return this.runnerModel.findByIdAndUpdate(runnerId, { $set: update }, { new: true }).lean().exec() as Promise<RunnerDocument | null>;
     }
 
+    /** Bulk-update status for multiple runners (admin bulk action) */
+    async bulkUpdateStatus(
+        updates: Array<{
+            id: string;
+            status: string;
+            statusCheckpoint?: string;
+            statusNote?: string;
+            changedBy?: string;
+        }>,
+    ): Promise<{ updated: number; errors: string[] }> {
+        const validStatuses = ['not_started', 'in_progress', 'finished', 'dnf', 'dns', 'dq'];
+        const result = { updated: 0, errors: [] as string[] };
+        if (!updates || updates.length === 0) return result;
+
+        // Pre-load runners to check current status and determine auto-promote logic
+        const runnerIds = updates.map(u => new Types.ObjectId(u.id));
+        const runners = await this.runnerModel.find({ _id: { $in: runnerIds } }).lean().exec();
+        const runnerMap = new Map<string, any>();
+        for (const r of runners) {
+            runnerMap.set(String(r._id), r);
+        }
+
+        // Pre-load finish checkpoint names for auto-promote check
+        let finishNames: string[] = ['FINISH'];
+        try {
+            const CheckpointModel = this.runnerModel.db.model('Checkpoint');
+            const finishCps = await CheckpointModel.find({ type: 'finish' }).select('name').lean().exec();
+            if (finishCps.length > 0) {
+                finishNames = finishCps.map((cp: any) => (cp.name || '').toUpperCase());
+            }
+        } catch { /* fallback to ['FINISH'] */ }
+
+        // Check which runners have finish timing (for auto-promote from in_progress)
+        const TimingModel = this.runnerModel.db.model('TimingRecord');
+        const runnersNeedingFinishCheck = updates.filter(u => u.status === 'in_progress');
+        const finishBibs = new Set<string>();
+        if (runnersNeedingFinishCheck.length > 0) {
+            const bibs = runnersNeedingFinishCheck
+                .map(u => runnerMap.get(u.id)?.bib)
+                .filter(Boolean);
+            const eventIds = [...new Set(runnersNeedingFinishCheck
+                .map(u => runnerMap.get(u.id)?.eventId)
+                .filter(Boolean)
+                .map((id: any) => new Types.ObjectId(String(id))))];
+            if (bibs.length > 0 && eventIds.length > 0) {
+                const finishTimings = await TimingModel.find({
+                    eventId: { $in: eventIds },
+                    bib: { $in: bibs },
+                    checkpoint: { $regex: new RegExp(`^(${finishNames.join('|')})$`, 'i') },
+                }).select('bib').lean().exec();
+                for (const ft of finishTimings) {
+                    finishBibs.add(String((ft as any).bib));
+                }
+            }
+        }
+
+        const bulkOps: any[] = [];
+        for (const u of updates) {
+            if (!validStatuses.includes(u.status)) {
+                result.errors.push(`Invalid status "${u.status}" for runner ${u.id}`);
+                continue;
+            }
+
+            const runner = runnerMap.get(u.id);
+            if (!runner) {
+                result.errors.push(`Runner not found: ${u.id}`);
+                continue;
+            }
+
+            const curStatus = ((runner.status || '') as string).toLowerCase();
+            const isManualStop = ['dnf', 'dns', 'dq'].includes(u.status);
+            const isRevertFromStopped = u.status === 'in_progress' && ['dnf', 'dns', 'dq'].includes(curStatus);
+
+            // Auto-promote to finished if runner has FINISH timing
+            let targetStatus = u.status;
+            if (u.status === 'in_progress' && runner.bib && finishBibs.has(String(runner.bib))) {
+                targetStatus = 'finished';
+            }
+
+            const update: any = {
+                status: targetStatus,
+                statusChangedAt: new Date(),
+                isManualStatus: isManualStop || isRevertFromStopped,
+            };
+            if (isManualStop) {
+                if (u.statusCheckpoint !== undefined) update.statusCheckpoint = u.statusCheckpoint;
+                if (u.statusNote !== undefined) update.statusNote = u.statusNote;
+            } else {
+                update.statusCheckpoint = '';
+                update.statusNote = '';
+            }
+            if (u.changedBy) update.statusChangedBy = u.changedBy;
+
+            bulkOps.push({
+                updateOne: {
+                    filter: { _id: new Types.ObjectId(u.id) },
+                    update: { $set: update },
+                },
+            });
+        }
+
+        if (bulkOps.length > 0) {
+            const res = await this.runnerModel.bulkWrite(bulkOps, { ordered: false });
+            result.updated = res.modifiedCount || 0;
+        }
+
+        return result;
+    }
+
     /** Save photo (base64 data URI) to runner */
     async updatePhoto(runnerId: string, photoUrl: string): Promise<RunnerDocument | null> {
         return this.runnerModel.findByIdAndUpdate(
