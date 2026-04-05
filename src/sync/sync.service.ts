@@ -1399,7 +1399,7 @@ export class SyncService {
                         const foundTime = startTimeByEventEid.get(remoteNo);
                         if (foundTime) {
                             // Try to parse the time string into a datetime-local format
-                            // Apply timezone conversion: RaceTiger PassTime is in UTC+8 (China time)
+                            // Apply timezone conversion: RaceTiger PassTime is in UTC+7 (Thailand time)
                             const parsed = new Date(this.appendThaiTzIfNeeded(foundTime.replace(' ', 'T')));
                             if (!isNaN(parsed.getTime())) {
                                 const yyyy = parsed.getFullYear();
@@ -2287,7 +2287,7 @@ export class SyncService {
     private appendThaiTzIfNeeded(isoStr: string): string {
         // Already has timezone info (Z, +HH:MM, -HH:MM)
         if (/[Zz]$/.test(isoStr) || /[+\-]\d{2}:\d{2}$/.test(isoStr)) return isoStr;
-        return isoStr + '+08:00';
+        return isoStr + '+07:00';
     }
 
     /**
