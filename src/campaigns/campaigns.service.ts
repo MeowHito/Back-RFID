@@ -81,7 +81,6 @@ export class CampaignsService {
     }
 
     async findAll(paging?: PagingData): Promise<{ data: CampaignDocument[]; total: number }> {
-        await this.backfillMissingSlugs();
 
         const page = paging?.page || 1;
         const limit = paging?.limit || 20;
@@ -106,31 +105,26 @@ export class CampaignsService {
      * Find campaign by ID - handles MongoDB ObjectId, UUID and slug formats
      */
     async findById(id: string): Promise<CampaignDocument> {
-        let campaign: CampaignDocument | null = null;
+        const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
 
-        // Try MongoDB ObjectId first (24 hex characters)
-        if (/^[0-9a-fA-F]{24}$/.test(id)) {
-            campaign = await this.campaignModel.findById(id).exec();
-        }
+        // Single query with $or — replaces 3 sequential queries
+        const orConditions: any[] = [{ uuid: id }, { slug: id }];
+        if (isObjectId) orConditions.unshift({ _id: id });
 
-        // If not found by _id, try uuid lookup
-        if (!campaign) {
-            campaign = await this.campaignModel.findOne({ uuid: id }).exec();
-        }
-
-        // If not found by uuid, try slug lookup
-        if (!campaign) {
-            campaign = await this.campaignModel.findOne({ slug: id }).exec();
-        }
-
-        // Ensure older records always get slug assigned once accessed
-        if (campaign && !campaign.slug) {
-            campaign.slug = await this.generateUniqueSlug(campaign.name || String(campaign._id), String(campaign._id));
-            await campaign.save();
-        }
+        const campaign = await this.campaignModel
+            .findOne({ $or: orConditions })
+            .lean()
+            .exec() as CampaignDocument | null;
 
         if (!campaign) {
             throw new NotFoundException('Campaign not found');
+        }
+
+        // Backfill slug lazily if missing (rare — only old records without slug)
+        if (!campaign.slug) {
+            const slug = await this.generateUniqueSlug(campaign.name || String(campaign._id), String(campaign._id));
+            await this.campaignModel.updateOne({ _id: campaign._id }, { $set: { slug } }).exec();
+            (campaign as any).slug = slug;
         }
 
         return campaign;
@@ -143,7 +137,6 @@ export class CampaignsService {
     }
 
     async findByDate(filter: CampaignFilter, paging?: PagingData): Promise<{ data: CampaignDocument[]; total: number }> {
-        await this.backfillMissingSlugs();
 
         const page = paging?.page || 1;
         const limit = paging?.limit || 20;

@@ -369,13 +369,8 @@ export class PublicApiController {
     @Get('campaign/getAllStatusByEvent')
     async getAllStatusByEvent(@Query('id') id: string) {
         const eventId = await this.resolveCampaignObjectId(id);
-        // Get statistics by status
-        const runners = await this.runnersService.findByEvent({ eventId });
-        const statusCounts: Record<string, number> = {};
-        runners.forEach(runner => {
-            statusCounts[runner.status] = (statusCounts[runner.status] || 0) + 1;
-        });
-        const data = Object.entries(statusCounts).map(([status, count]) => ({ status, count }));
+        // Use server-side aggregation instead of loading all runners into memory
+        const data = await this.runnersService.getAllStatusByEvent(eventId);
         return this.successResponse(data);
     }
 

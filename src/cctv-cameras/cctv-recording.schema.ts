@@ -26,3 +26,5 @@ CctvRecordingSchema.index({ campaignId: 1 });
 CctvRecordingSchema.index({ cameraId: 1 });
 CctvRecordingSchema.index({ startTime: -1 });
 CctvRecordingSchema.index({ campaignId: 1, checkpointName: 1, startTime: 1, endTime: 1 });
+CctvRecordingSchema.index({ campaignId: 1, recordingStatus: 1, startTime: 1 }); // runnerLookup queries
+CctvRecordingSchema.index({ recordingStatus: 1 }); // findAll filter

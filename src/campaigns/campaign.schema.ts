@@ -213,6 +213,7 @@ export class Campaign {
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);
 
 // Indexes
+CampaignSchema.index({ uuid: 1 });  // findById $or query
 CampaignSchema.index({ eventDate: -1 });
 CampaignSchema.index({ status: 1 });
 CampaignSchema.index({ isDraft: 1, status: 1 }); // For filtering published campaigns

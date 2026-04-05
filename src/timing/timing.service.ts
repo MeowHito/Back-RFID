@@ -87,6 +87,10 @@ function dedupeCheckpointRunnerRecords<T extends { _id?: any; scanTime?: string 
 
 @Injectable()
 export class TimingService {
+    // In-memory cache for getLatestPerRunner (TTL 5s)
+    private latestPerRunnerCache = new Map<string, { data: any[]; expiry: number }>();
+    private static readonly CACHE_TTL_MS = 5000;
+
     constructor(
         @InjectModel(TimingRecord.name) private timingModel: Model<TimingRecordDocument>,
         private runnersService: RunnersService,
@@ -193,27 +197,29 @@ export class TimingService {
     /**
      * Get per-checkpoint ranks for a specific runner within their event.
      * Returns a map: checkpoint name → rank (1-based, by netTime ascending).
+     * Optimized: uses targeted $count per checkpoint instead of loading all runners.
      */
     async getCheckpointRanksForRunner(eventId: string, bib: string): Promise<Map<string, number>> {
         const objectId = new Types.ObjectId(eventId);
-        // Aggregate: for each checkpoint, rank all runners by netTime, find this runner's position
-        const results = await this.timingModel.aggregate([
-            { $match: { eventId: objectId, netTime: { $gt: 0 } } },
-            { $sort: { netTime: 1 } },
-            {
-                $group: {
-                    _id: '$checkpoint',
-                    runners: { $push: { bib: '$bib', netTime: '$netTime' } },
-                },
-            },
-        ]).exec();
+
+        // 1. Get this runner's timing records (their netTime per checkpoint)
+        const runnerTimings = await this.timingModel.find(
+            { eventId: objectId, bib, netTime: { $gt: 0 } },
+        ).select('checkpoint netTime').lean().exec();
+
+        if (!runnerTimings.length) return new Map();
+
+        // 2. For each checkpoint, count how many runners are faster
         const rankMap = new Map<string, number>();
-        for (const cp of results) {
-            const idx = cp.runners.findIndex((r: any) => String(r.bib) === String(bib));
-            if (idx >= 0) {
-                rankMap.set(cp._id, idx + 1);
-            }
-        }
+        await Promise.all(runnerTimings.map(async (t: any) => {
+            const fasterCount = await this.timingModel.countDocuments({
+                eventId: objectId,
+                checkpoint: t.checkpoint,
+                netTime: { $gt: 0, $lt: t.netTime },
+            }).exec();
+            rankMap.set(t.checkpoint, fasterCount + 1);
+        }));
+
         return rankMap;
     }
 
@@ -227,10 +233,17 @@ export class TimingService {
     }
 
     async getLatestPerRunner(eventIds: string[]): Promise<any[]> {
+        // --- In-memory cache (5s TTL) ---
+        const cacheKey = [...eventIds].sort().join(',');
+        const cached = this.latestPerRunnerCache.get(cacheKey);
+        if (cached && cached.expiry > Date.now()) {
+            return cached.data;
+        }
+
         const objectIds = eventIds.map(id => new Types.ObjectId(id));
         // Group by bib+eventId (not runnerId) so we survive clean-slate re-imports
         // that delete & recreate Runner docs with new ObjectIds.
-        return this.timingModel.aggregate([
+        const result = await this.timingModel.aggregate([
             { $match: { eventId: { $in: objectIds } } },
             { $sort: { scanTime: -1 } },
             {
@@ -339,6 +352,10 @@ export class TimingService {
             },
             { $sort: { scanTime: -1 } },
         ]).exec();
+
+        // Store in cache
+        this.latestPerRunnerCache.set(cacheKey, { data: result, expiry: Date.now() + TimingService.CACHE_TTL_MS });
+        return result;
     }
 
     async getCheckpointRecords(eventId: string, checkpoint: string): Promise<any[]> {

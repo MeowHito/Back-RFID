@@ -232,6 +232,7 @@ export class CctvRecordingsService {
     /**
      * Given a runner bib + campaignId, find all checkpoint arrival times
      * and match them to CCTV recordings, returning seek offsets.
+     * Optimized: single batch query for recordings instead of N per-checkpoint queries.
      */
     async runnerLookup(bib: string, campaignId: string): Promise<any[]> {
         // 1. Find all eventIds belonging to this campaign
@@ -258,23 +259,34 @@ export class CctvRecordingsService {
 
         if (!timings.length) return [];
 
-        // 3. For each timing record, find matching CCTV recording
+        // 3. Batch: fetch ALL relevant recordings for this campaign ONCE
+        const earliestScan = new Date((timings[0] as any).scanTime);
+        const latestScan = new Date((timings[timings.length - 1] as any).scanTime);
+        const allRecordings = await this.recordingModel.find({
+            campaignId: { $in: campaignIdsToMatch },
+            recordingStatus: { $in: ['completed', 'recording'] },
+            startTime: { $lte: latestScan },
+            $or: [
+                { endTime: { $gte: earliestScan } },
+                { endTime: null },
+                { recordingStatus: 'recording' },
+            ],
+        }).sort({ startTime: -1 }).lean().exec();
+
+        // 4. For each timing record, match recording in memory
         const results: any[] = [];
         for (const t of timings) {
             const checkpoint = (t as any).checkpoint;
             const scanTime = new Date((t as any).scanTime);
             const normalizedCheckpoint = this.normalizeCheckpointName(checkpoint);
 
-            const candidates = await this.recordingModel.find({
-                campaignId: { $in: campaignIdsToMatch },
-                recordingStatus: { $in: ['completed', 'recording'] },
-                startTime: { $lte: scanTime },
-                $or: [
-                    { endTime: { $gte: scanTime } },
-                    { endTime: null },
-                    { recordingStatus: 'recording' },
-                ],
-            }).sort({ startTime: -1 }).lean().exec();
+            // Filter recordings that cover this scanTime
+            const candidates = allRecordings.filter((r: any) => {
+                const recStart = new Date(r.startTime);
+                if (recStart > scanTime) return false;
+                if (r.recordingStatus === 'recording' || !r.endTime) return true;
+                return new Date(r.endTime) >= scanTime;
+            });
 
             const recording = candidates.find((candidate: any) => {
                 return this.normalizeCheckpointName(candidate?.checkpointName) === normalizedCheckpoint;
