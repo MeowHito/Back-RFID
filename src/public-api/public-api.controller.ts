@@ -236,6 +236,102 @@ export class PublicApiController {
         };
 
         const data = await this.runnersService.findByEventIds(eventIds, filter);
+
+        // Supplement runner documents with timing-based time values for accurate ranking
+        try {
+            const timingData = await this.timingService.getLatestPerRunner(eventIds);
+            const timingByRunner = new Map<string, any>();
+            for (const t of timingData) {
+                if (t._id) timingByRunner.set(String(t._id), t);
+            }
+            for (const r of data as any[]) {
+                const timing = timingByRunner.get(String(r._id));
+                if (timing) {
+                    if (!r.netTime || r.netTime <= 0) r.netTime = timing.netTime || 0;
+                    if (!r.gunTime || r.gunTime <= 0) r.gunTime = timing.gunTime || 0;
+                    if (!r.passedCount || r.passedCount <= 0) r.passedCount = timing.passedCount || 0;
+                }
+            }
+        } catch { /* timing supplement failed, proceed with runner data */ }
+
+        // Compute fallback ranks for runners missing rank fields (same logic as getPassTimeByEvent)
+        const rankable = data.filter((r: any) => {
+            const s = (r.status || '').toLowerCase();
+            return s === 'finished' || s === 'in_progress';
+        });
+        const rankSort = (a: any, b: any) => {
+            const aFin = a.status === 'finished' ? 0 : 1;
+            const bFin = b.status === 'finished' ? 0 : 1;
+            if (aFin !== bFin) return aFin - bFin;
+            if (a.status === 'finished' && b.status === 'finished') {
+                const aNet = a.netTime || a.gunTime || 0;
+                const bNet = b.netTime || b.gunTime || 0;
+                if (aNet > 0 && bNet > 0) {
+                    if (aNet !== bNet) return aNet - bNet;
+                    return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
+                }
+                if (aNet > 0) return -1;
+                if (bNet > 0) return 1;
+                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
+            }
+            const aPassed = a.passedCount ?? 0;
+            const bPassed = b.passedCount ?? 0;
+            if (aPassed !== bPassed) return bPassed - aPassed;
+            const aTime = a.netTime || a.gunTime || 0;
+            const bTime = b.netTime || b.gunTime || 0;
+            if (aTime > 0 && bTime > 0) {
+                if (aTime !== bTime) return aTime - bTime;
+                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
+            }
+            if (aTime > 0) return -1;
+            if (bTime > 0) return 1;
+            return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
+        };
+
+        // Overall rank
+        const overallSorted = [...rankable].sort(rankSort);
+        const overallRankMap = new Map<string, number>();
+        overallSorted.forEach((r, i) => overallRankMap.set(String(r._id), i + 1));
+
+        // Gender rank
+        const genderGroups = new Map<string, any[]>();
+        rankable.forEach((r: any) => {
+            const g = (r.gender || '').toUpperCase();
+            if (!genderGroups.has(g)) genderGroups.set(g, []);
+            genderGroups.get(g)!.push(r);
+        });
+        const genderRankMap = new Map<string, number>();
+        genderGroups.forEach((group) => {
+            group.sort(rankSort).forEach((r, i) => genderRankMap.set(String(r._id), i + 1));
+        });
+
+        // Category (ageGroup) rank
+        const catGroups = new Map<string, any[]>();
+        rankable.forEach((r: any) => {
+            const c = r.ageGroup || '';
+            if (!c) return;
+            if (!catGroups.has(c)) catGroups.set(c, []);
+            catGroups.get(c)!.push(r);
+        });
+        const catRankMap = new Map<string, number>();
+        catGroups.forEach((group) => {
+            group.sort(rankSort).forEach((r, i) => catRankMap.set(String(r._id), i + 1));
+        });
+
+        // Apply computed ranks only where real ranks are missing
+        for (const r of data as any[]) {
+            const rid = String(r._id);
+            if ((!r.overallRank || r.overallRank <= 0) && overallRankMap.has(rid)) {
+                r.overallRank = overallRankMap.get(rid);
+            }
+            if ((!r.genderRank || r.genderRank <= 0) && (!r.genderNetRank || r.genderNetRank <= 0) && genderRankMap.has(rid)) {
+                r.genderRank = genderRankMap.get(rid);
+            }
+            if ((!r.ageGroupRank || r.ageGroupRank <= 0) && (!r.ageGroupNetRank || r.ageGroupNetRank <= 0) && catRankMap.has(rid)) {
+                r.ageGroupRank = catRankMap.get(rid);
+            }
+        }
+
         return this.successResponse({ data, total: data.length });
     }
 
@@ -312,10 +408,13 @@ export class PublicApiController {
             if (a.status === 'finished' && b.status === 'finished') {
                 const aNet = a.netTime || a.gunTime || 0;
                 const bNet = b.netTime || b.gunTime || 0;
-                if (aNet > 0 && bNet > 0) return aNet - bNet;
+                if (aNet > 0 && bNet > 0) {
+                    if (aNet !== bNet) return aNet - bNet;
+                    return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
+                }
                 if (aNet > 0) return -1;
                 if (bNet > 0) return 1;
-                return 0;
+                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
             }
             // in_progress: more checkpoints passed = better, then faster time
             const aPassed = a.passedCount ?? 0;
@@ -323,10 +422,13 @@ export class PublicApiController {
             if (aPassed !== bPassed) return bPassed - aPassed;
             const aTime = a.netTime || a.gunTime || 0;
             const bTime = b.netTime || b.gunTime || 0;
-            if (aTime > 0 && bTime > 0) return aTime - bTime;
+            if (aTime > 0 && bTime > 0) {
+                if (aTime !== bTime) return aTime - bTime;
+                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
+            }
             if (aTime > 0) return -1;
             if (bTime > 0) return 1;
-            return 0;
+            return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
         };
 
         // Overall rank
@@ -587,8 +689,26 @@ export class PublicApiController {
                         ...events.map((e: any) => String(e._id || '')).filter(Boolean),
                     ]));
 
-                    // Get all runners for ranking
-                    const allRunners = await this.runnersService.findByEventIds(eventIds);
+                    // Get all runners + timing data for accurate ranking
+                    const [allRunners, timingForRank] = await Promise.all([
+                        this.runnersService.findByEventIds(eventIds),
+                        this.timingService.getLatestPerRunner(eventIds),
+                    ]);
+
+                    // Supplement runner documents with timing-based time values
+                    const timingByRunnerId = new Map<string, any>();
+                    for (const t of timingForRank) {
+                        if (t._id) timingByRunnerId.set(String(t._id), t);
+                    }
+                    for (const r of allRunners as any[]) {
+                        const timing = timingByRunnerId.get(String(r._id));
+                        if (timing) {
+                            if (!r.netTime || r.netTime <= 0) r.netTime = timing.netTime || 0;
+                            if (!r.gunTime || r.gunTime <= 0) r.gunTime = timing.gunTime || 0;
+                            if (!r.passedCount || r.passedCount <= 0) r.passedCount = timing.passedCount || 0;
+                        }
+                    }
+
                     const rankable = allRunners.filter((r: any) => {
                         const s = (r.status || '').toLowerCase();
                         return s === 'finished' || s === 'in_progress';
@@ -601,20 +721,26 @@ export class PublicApiController {
                         if (a.status === 'finished' && b.status === 'finished') {
                             const aNet = a.netTime || a.gunTime || 0;
                             const bNet = b.netTime || b.gunTime || 0;
-                            if (aNet > 0 && bNet > 0) return aNet - bNet;
+                            if (aNet > 0 && bNet > 0) {
+                                if (aNet !== bNet) return aNet - bNet;
+                                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
+                            }
                             if (aNet > 0) return -1;
                             if (bNet > 0) return 1;
-                            return 0;
+                            return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
                         }
                         const aPassed = a.passedCount ?? 0;
                         const bPassed = b.passedCount ?? 0;
                         if (aPassed !== bPassed) return bPassed - aPassed;
                         const aTime = a.netTime || a.gunTime || 0;
                         const bTime = b.netTime || b.gunTime || 0;
-                        if (aTime > 0 && bTime > 0) return aTime - bTime;
+                        if (aTime > 0 && bTime > 0) {
+                            if (aTime !== bTime) return aTime - bTime;
+                            return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
+                        }
                         if (aTime > 0) return -1;
                         if (bTime > 0) return 1;
-                        return 0;
+                        return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
                     };
 
                     // Overall rank
