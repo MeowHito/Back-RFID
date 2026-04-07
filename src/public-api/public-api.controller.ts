@@ -284,8 +284,11 @@ export class PublicApiController {
                 gunTime: r.gunTime,
                 overallRank: r.overallRank,
                 genderRank: r.genderRank,
+                genderNetRank: r.genderNetRank,
                 ageGroupRank: r.ageGroupRank,
+                ageGroupNetRank: r.ageGroupNetRank,
                 categoryRank: r.categoryRank,
+                categoryNetRank: r.categoryNetRank,
                 netTimeStr: r.netTimeStr,
                 gunTimeStr: r.gunTimeStr,
                 gunPace: r.gunPace,
@@ -346,7 +349,8 @@ export class PublicApiController {
         // Category rank
         const catGroups = new Map<string, any[]>();
         rankable.forEach((r: any) => {
-            const c = r.category || r.ageGroup || '';
+            const c = r.ageGroup || '';
+            if (!c) return;
             if (!catGroups.has(c)) catGroups.set(c, []);
             catGroups.get(c)!.push(r);
         });
@@ -358,9 +362,15 @@ export class PublicApiController {
         // Apply computed ranks to merged data
         for (const r of merged) {
             const id = String(r._id);
-            if (overallRankMap.has(id)) r.overallRank = overallRankMap.get(id);
-            if (genderRankMap.has(id)) r.genderRank = genderRankMap.get(id);
-            if (catRankMap.has(id)) r.categoryRank = catRankMap.get(id);
+            if ((!r.overallRank || r.overallRank <= 0) && overallRankMap.has(id)) {
+                r.overallRank = overallRankMap.get(id);
+            }
+            if ((!r.genderRank || r.genderRank <= 0) && (!r.genderNetRank || r.genderNetRank <= 0) && genderRankMap.has(id)) {
+                r.genderRank = genderRankMap.get(id);
+            }
+            if ((!r.ageGroupRank || r.ageGroupRank <= 0) && (!r.ageGroupNetRank || r.ageGroupNetRank <= 0) && catRankMap.has(id)) {
+                r.ageGroupRank = catRankMap.get(id);
+            }
         }
 
         return this.successResponse({ data: merged, total: merged.length });
@@ -563,7 +573,7 @@ export class PublicApiController {
             const runnerObj = (runner as any).toObject ? (runner as any).toObject() : { ...runner as any };
             const needsOverallRank = !runnerObj.overallRank || runnerObj.overallRank <= 0;
             const needsGenderRank = !runnerObj.genderRank && !runnerObj.genderNetRank;
-            const needsCategoryRank = !runnerObj.categoryRank && !runnerObj.categoryNetRank;
+            const needsCategoryRank = !runnerObj.ageGroupRank && !runnerObj.ageGroupNetRank;
             const needsFinishTime = !runnerObj.netTime && !runnerObj.gunTime && !runnerObj.elapsedTime;
 
             if (needsOverallRank || needsGenderRank || needsCategoryRank || needsFinishTime) {
@@ -625,11 +635,11 @@ export class PublicApiController {
                     }
 
                     // Category rank
-                    if (needsCategoryRank) {
-                        const catGroup = rankable.filter((r: any) => (r.category || '') === (runnerObj.category || ''));
+                    if (needsCategoryRank && runnerObj.ageGroup) {
+                        const catGroup = rankable.filter((r: any) => (r.ageGroup || '') === (runnerObj.ageGroup || ''));
                         const sorted = [...catGroup].sort(rankSort);
                         const idx = sorted.findIndex((r: any) => String(r._id) === runnerId);
-                        if (idx >= 0) runnerObj.categoryRank = idx + 1;
+                        if (idx >= 0) runnerObj.ageGroupRank = idx + 1;
                     }
 
                     // Finish time from timing records
