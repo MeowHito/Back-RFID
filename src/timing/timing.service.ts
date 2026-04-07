@@ -85,6 +85,68 @@ function dedupeCheckpointRunnerRecords<T extends { _id?: any; scanTime?: string 
     return Array.from(deduped.values());
 }
 
+function getCheckpointRankPrimaryTimeMs(record: any): number {
+    const candidates = [
+        record?.netTimeMs,
+        record?.totalNetTimeMs,
+        record?.totalNetTime,
+        record?.netTime,
+        record?.gunTimeMs,
+        record?.totalGunTimeMs,
+        record?.totalGunTime,
+        record?.gunTime,
+        record?.elapsedTime,
+    ];
+    for (const value of candidates) {
+        const num = Number(value || 0);
+        if (Number.isFinite(num) && num > 0) return num;
+    }
+    return 0;
+}
+
+function compareCheckpointStableBib(a: any, b: any): number {
+    const bibCompare = String(a?.bib || '').localeCompare(String(b?.bib || ''), undefined, { numeric: true });
+    if (bibCompare !== 0) return bibCompare;
+    return String(a?._id || '').localeCompare(String(b?._id || ''));
+}
+
+function compareCheckpointRaceRankOrder(a: any, b: any): number {
+    const statusOrder: Record<string, number> = { finished: 0, in_progress: 1, dnf: 2, dns: 3, dq: 4, not_started: 5 };
+    const aStatus = String(a?.status || '').toLowerCase();
+    const bStatus = String(b?.status || '').toLowerCase();
+    const statusDiff = (statusOrder[aStatus] ?? 6) - (statusOrder[bStatus] ?? 6);
+    if (statusDiff !== 0) return statusDiff;
+
+    if (aStatus === 'finished' && bStatus === 'finished') {
+        const aTime = getCheckpointRankPrimaryTimeMs(a);
+        const bTime = getCheckpointRankPrimaryTimeMs(b);
+        if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
+        if (aTime > 0 && bTime <= 0) return -1;
+        if (aTime <= 0 && bTime > 0) return 1;
+        const aScan = getCheckpointRunnerScanTimeValue(a?.scanTime);
+        const bScan = getCheckpointRunnerScanTimeValue(b?.scanTime);
+        if (aScan !== bScan) return aScan - bScan;
+        return compareCheckpointStableBib(a, b);
+    }
+
+    if (aStatus === 'in_progress' && bStatus === 'in_progress') {
+        const aPassed = Number(a?.passedCount ?? 0);
+        const bPassed = Number(b?.passedCount ?? 0);
+        if (aPassed !== bPassed) return bPassed - aPassed;
+        const aTime = getCheckpointRankPrimaryTimeMs(a);
+        const bTime = getCheckpointRankPrimaryTimeMs(b);
+        if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
+        if (aTime > 0 && bTime <= 0) return -1;
+        if (aTime <= 0 && bTime > 0) return 1;
+        const aScan = getCheckpointRunnerScanTimeValue(a?.scanTime);
+        const bScan = getCheckpointRunnerScanTimeValue(b?.scanTime);
+        if (aScan !== bScan) return aScan - bScan;
+        return compareCheckpointStableBib(a, b);
+    }
+
+    return compareCheckpointStableBib(a, b);
+}
+
 @Injectable()
 export class TimingService {
     // In-memory cache for getLatestPerRunner (TTL 5s)
@@ -537,6 +599,59 @@ export class TimingService {
                 }
             }
 
+            const latestPerRunner = await this.getLatestPerRunner(eventIdStrings);
+            const rankSourceByBib = new Map<string, any>();
+            for (const latest of latestPerRunner) {
+                const bib = String((latest as any)?.bib || '');
+                if (!bib) continue;
+                rankSourceByBib.set(bib, { ...latest });
+            }
+            for (const runner of allRunners) {
+                const r = runner as any;
+                const bib = String(r.bib || '');
+                if (!bib || rankSourceByBib.has(bib)) continue;
+                rankSourceByBib.set(bib, { ...r, passedCount: 0 });
+            }
+
+            const rankable = Array.from(rankSourceByBib.values()).filter((runner: any) => {
+                const status = String(runner?.status || '').toLowerCase();
+                return status === 'finished' || status === 'in_progress';
+            });
+            const overallRankMap = new Map<string, number>();
+            [...rankable].sort(compareCheckpointRaceRankOrder).forEach((runner: any, index: number) => {
+                overallRankMap.set(String(runner?.bib || ''), index + 1);
+            });
+            const genderRankMap = new Map<string, number>();
+            const genderGroups = new Map<string, any[]>();
+            rankable.forEach((runner: any) => {
+                const gender = String(runner?.gender || '').toUpperCase();
+                if (!genderGroups.has(gender)) genderGroups.set(gender, []);
+                genderGroups.get(gender)!.push(runner);
+            });
+            genderGroups.forEach((group) => {
+                group.sort(compareCheckpointRaceRankOrder).forEach((runner, index) => {
+                    genderRankMap.set(String(runner?.bib || ''), index + 1);
+                });
+            });
+            const categoryRankMap = new Map<string, number>();
+            const categoryGroups = new Map<string, any[]>();
+            rankable.forEach((runner: any) => {
+                const categoryKey = String(runner?.ageGroup || '');
+                if (!categoryKey) return;
+                if (!categoryGroups.has(categoryKey)) categoryGroups.set(categoryKey, []);
+                categoryGroups.get(categoryKey)!.push(runner);
+            });
+            categoryGroups.forEach((group) => {
+                group.sort(compareCheckpointRaceRankOrder).forEach((runner, index) => {
+                    categoryRankMap.set(String(runner?.bib || ''), index + 1);
+                });
+            });
+            const applyRaceRanks = (record: any, bib: string) => {
+                record.overallRank = overallRankMap.get(bib) || 0;
+                record.genderRank = genderRankMap.get(bib) || 0;
+                record.categoryRank = categoryRankMap.get(bib) || 0;
+            };
+
             // 1) Fix status for runners already in results (have timing at this CP)
             const existingBibs = new Set<string>();
             for (const rec of deduped) {
@@ -569,12 +684,10 @@ export class TimingService {
                         if (!rec.lastName && dbRunner.lastName) rec.lastName = dbRunner.lastName;
                         if (!rec.gender && dbRunner.gender) rec.gender = dbRunner.gender;
                         if (!rec.category && dbRunner.category) rec.category = dbRunner.category;
-                        if ((!rec.overallRank || rec.overallRank === 0) && dbRunner.overallRank) rec.overallRank = dbRunner.overallRank;
-                        if ((!rec.genderRank || rec.genderRank === 0) && dbRunner.genderRank) rec.genderRank = dbRunner.genderRank;
-                        if ((!rec.categoryRank || rec.categoryRank === 0) && dbRunner.categoryRank) rec.categoryRank = dbRunner.categoryRank;
                         rec.statusCheckpoint = dbRunner.statusCheckpoint || '';
                         rec.statusNote = dbRunner.statusNote || '';
                     }
+                    applyRaceRanks(rec, String(rec.bib));
                 }
             }
 
@@ -631,6 +744,7 @@ export class TimingService {
                     statusCheckpoint: r.statusCheckpoint || '',
                     statusNote: r.statusNote || '',
                 } as any);
+                applyRaceRanks(deduped[deduped.length - 1], String(r.bib));
             }
 
             // ── Add "incoming" runners: passed a previous checkpoint but NOT this one ──
@@ -701,52 +815,10 @@ export class TimingService {
                             statusCheckpoint: prevInfo?.checkpoint || '',
                             statusNote: '',
                         } as any);
+                        applyRaceRanks(deduped[deduped.length - 1], bibStr);
                         existingBibs.add(bibStr); // Prevent duplicates
                     }
                 }
-            }
-        }
-
-        // ── Compute per-checkpoint arrival rankings from scanTime order ──
-        // Skip ranking at the START checkpoint (lowest orderNum) — everyone starts together.
-        // Only DNS runners are relevant at START (they never started).
-        const isStartCheckpoint = cpOrderMap.size > 0 &&
-            currentCpOrder === Math.min(...cpOrderMap.values());
-
-        if (!isStartCheckpoint) {
-            // This provides live rankings even before score sync populates finish rankings.
-            const runnersWithTime = deduped.filter(r => r.scanTime);
-            // Rank by fastest running time: elapsedTime → gunTime → bib tiebreaker
-            // elapsedTime/gunTime = actual running duration (lower = faster = better rank)
-            runnersWithTime.sort((a, b) => {
-                const aTime = a.elapsedTime ?? a.gunTime ?? Number.MAX_SAFE_INTEGER;
-                const bTime = b.elapsedTime ?? b.gunTime ?? Number.MAX_SAFE_INTEGER;
-                if (aTime !== bTime) return aTime - bTime;
-                // Tiebreaker: sort by bib (numeric then string) for stable ordering
-                const aBib = parseInt(a.bib, 10);
-                const bBib = parseInt(b.bib, 10);
-                if (!isNaN(aBib) && !isNaN(bBib)) return aBib - bBib;
-                return (a.bib || '').localeCompare(b.bib || '');
-            });
-            // Overall rank (arrival order)
-            runnersWithTime.forEach((r, i) => { r.overallRank = i + 1; });
-            // Gender rank
-            for (const gender of ['M', 'F']) {
-                const genderRunners = runnersWithTime.filter(r => r.gender === gender);
-                genderRunners.forEach((r, i) => { r.genderRank = i + 1; });
-            }
-            // Category rank
-            const categories = [...new Set(runnersWithTime.map(r => r.category).filter(Boolean))];
-            for (const cat of categories) {
-                const catRunners = runnersWithTime.filter(r => r.category === cat);
-                catRunners.forEach((r, i) => { r.categoryRank = i + 1; });
-            }
-        } else {
-            // START checkpoint: no rankings (set to 0)
-            for (const r of deduped) {
-                r.overallRank = 0;
-                r.genderRank = 0;
-                r.categoryRank = 0;
             }
         }
 
