@@ -56,6 +56,86 @@ export class PublicApiController {
         return String(campaign._id);
     }
 
+    private getRunnerPrimaryTimeMs(runner: any): number {
+        const candidates = [
+            runner?.netTimeMs,
+            runner?.totalNetTimeMs,
+            runner?.totalNetTime,
+            runner?.netTime,
+            runner?.gunTimeMs,
+            runner?.totalGunTimeMs,
+            runner?.totalGunTime,
+            runner?.gunTime,
+            runner?.elapsedTime,
+        ];
+        for (const value of candidates) {
+            const num = Number(value || 0);
+            if (Number.isFinite(num) && num > 0) return num;
+        }
+        return 0;
+    }
+
+    private getRunnerScanTimeMs(runner: any): number {
+        const time = runner?.scanTime ? new Date(runner.scanTime).getTime() : 0;
+        return Number.isFinite(time) && time > 0 ? time : 0;
+    }
+
+    private compareStableRunnerOrder(a: any, b: any): number {
+        const bibCompare = String(a?.bib || '').localeCompare(String(b?.bib || ''), undefined, { numeric: true });
+        if (bibCompare !== 0) return bibCompare;
+        return String(a?._id || '').localeCompare(String(b?._id || ''));
+    }
+
+    private comparePublicRankOrder(a: any, b: any): number {
+        const statusOrder: Record<string, number> = { finished: 0, in_progress: 1, dnf: 2, dns: 3, dq: 4, not_started: 5 };
+        const statusDiff = (statusOrder[a?.status] ?? 6) - (statusOrder[b?.status] ?? 6);
+        if (statusDiff !== 0) return statusDiff;
+
+        if (a?.status === 'finished' && b?.status === 'finished') {
+            const aTime = this.getRunnerPrimaryTimeMs(a);
+            const bTime = this.getRunnerPrimaryTimeMs(b);
+            if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
+            if (aTime > 0 && bTime <= 0) return -1;
+            if (aTime <= 0 && bTime > 0) return 1;
+            const aScan = this.getRunnerScanTimeMs(a);
+            const bScan = this.getRunnerScanTimeMs(b);
+            if (aScan > 0 && bScan > 0 && aScan !== bScan) return aScan - bScan;
+            return this.compareStableRunnerOrder(a, b);
+        }
+
+        if (a?.status === 'in_progress' && b?.status === 'in_progress') {
+            const aPassed = a?.passedCount ?? 0;
+            const bPassed = b?.passedCount ?? 0;
+            if (aPassed !== bPassed) return bPassed - aPassed;
+            const aTime = this.getRunnerPrimaryTimeMs(a);
+            const bTime = this.getRunnerPrimaryTimeMs(b);
+            if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
+            if (aTime > 0 && bTime <= 0) return -1;
+            if (aTime <= 0 && bTime > 0) return 1;
+            const aScan = this.getRunnerScanTimeMs(a);
+            const bScan = this.getRunnerScanTimeMs(b);
+            if (aScan > 0 && bScan > 0 && aScan !== bScan) return aScan - bScan;
+            return this.compareStableRunnerOrder(a, b);
+        }
+
+        return this.compareStableRunnerOrder(a, b);
+    }
+
+    private mergeTimingIntoRunner(target: any, timing: any): void {
+        if (!timing) return;
+        if (!target.netTime || target.netTime <= 0) target.netTime = timing.netTime || 0;
+        if (!target.gunTime || target.gunTime <= 0) target.gunTime = timing.gunTime || 0;
+        if (!target.elapsedTime || target.elapsedTime <= 0) target.elapsedTime = timing.elapsedTime || 0;
+        if (!target.netTimeMs || target.netTimeMs <= 0) target.netTimeMs = timing.netTimeMs || 0;
+        if (!target.gunTimeMs || target.gunTimeMs <= 0) target.gunTimeMs = timing.gunTimeMs || 0;
+        if (!target.totalNetTime || target.totalNetTime <= 0) target.totalNetTime = timing.totalNetTime || 0;
+        if (!target.totalGunTime || target.totalGunTime <= 0) target.totalGunTime = timing.totalGunTime || 0;
+        if (!target.totalNetTimeMs || target.totalNetTimeMs <= 0) target.totalNetTimeMs = timing.totalNetTimeMs || 0;
+        if (!target.totalGunTimeMs || target.totalGunTimeMs <= 0) target.totalGunTimeMs = timing.totalGunTimeMs || 0;
+        if (!target.scanTime) target.scanTime = timing.scanTime;
+        if (!target.passedCount || target.passedCount <= 0) target.passedCount = timing.passedCount || 0;
+    }
+
     private async getRunnerCctvContext(runnerId: string) {
         const runner = await this.runnersService.findOne(runnerId);
         if (!runner) {
@@ -246,11 +326,7 @@ export class PublicApiController {
             }
             for (const r of data as any[]) {
                 const timing = timingByRunner.get(String(r._id));
-                if (timing) {
-                    if (!r.netTime || r.netTime <= 0) r.netTime = timing.netTime || 0;
-                    if (!r.gunTime || r.gunTime <= 0) r.gunTime = timing.gunTime || 0;
-                    if (!r.passedCount || r.passedCount <= 0) r.passedCount = timing.passedCount || 0;
-                }
+                this.mergeTimingIntoRunner(r, timing);
             }
         } catch { /* timing supplement failed, proceed with runner data */ }
 
@@ -259,37 +335,9 @@ export class PublicApiController {
             const s = (r.status || '').toLowerCase();
             return s === 'finished' || s === 'in_progress';
         });
-        const rankSort = (a: any, b: any) => {
-            const aFin = a.status === 'finished' ? 0 : 1;
-            const bFin = b.status === 'finished' ? 0 : 1;
-            if (aFin !== bFin) return aFin - bFin;
-            if (a.status === 'finished' && b.status === 'finished') {
-                const aNet = a.netTime || a.gunTime || 0;
-                const bNet = b.netTime || b.gunTime || 0;
-                if (aNet > 0 && bNet > 0) {
-                    if (aNet !== bNet) return aNet - bNet;
-                    return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-                }
-                if (aNet > 0) return -1;
-                if (bNet > 0) return 1;
-                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-            }
-            const aPassed = a.passedCount ?? 0;
-            const bPassed = b.passedCount ?? 0;
-            if (aPassed !== bPassed) return bPassed - aPassed;
-            const aTime = a.netTime || a.gunTime || 0;
-            const bTime = b.netTime || b.gunTime || 0;
-            if (aTime > 0 && bTime > 0) {
-                if (aTime !== bTime) return aTime - bTime;
-                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-            }
-            if (aTime > 0) return -1;
-            if (bTime > 0) return 1;
-            return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-        };
 
         // Overall rank
-        const overallSorted = [...rankable].sort(rankSort);
+        const overallSorted = [...rankable].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
         const overallRankMap = new Map<string, number>();
         overallSorted.forEach((r, i) => overallRankMap.set(String(r._id), i + 1));
 
@@ -302,7 +350,7 @@ export class PublicApiController {
         });
         const genderRankMap = new Map<string, number>();
         genderGroups.forEach((group) => {
-            group.sort(rankSort).forEach((r, i) => genderRankMap.set(String(r._id), i + 1));
+            group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((r, i) => genderRankMap.set(String(r._id), i + 1));
         });
 
         // Category (ageGroup) rank
@@ -315,19 +363,19 @@ export class PublicApiController {
         });
         const catRankMap = new Map<string, number>();
         catGroups.forEach((group) => {
-            group.sort(rankSort).forEach((r, i) => catRankMap.set(String(r._id), i + 1));
+            group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((r, i) => catRankMap.set(String(r._id), i + 1));
         });
 
-        // Apply computed ranks only where real ranks are missing
+        // Apply computed ranks for all rankable runners so stale stored ranks cannot conflict
         for (const r of data as any[]) {
             const rid = String(r._id);
-            if ((!r.overallRank || r.overallRank <= 0) && overallRankMap.has(rid)) {
+            if (overallRankMap.has(rid)) {
                 r.overallRank = overallRankMap.get(rid);
             }
-            if ((!r.genderRank || r.genderRank <= 0) && (!r.genderNetRank || r.genderNetRank <= 0) && genderRankMap.has(rid)) {
+            if (genderRankMap.has(rid)) {
                 r.genderRank = genderRankMap.get(rid);
             }
-            if ((!r.ageGroupRank || r.ageGroupRank <= 0) && (!r.ageGroupNetRank || r.ageGroupNetRank <= 0) && catRankMap.has(rid)) {
+            if (catRankMap.has(rid)) {
                 r.ageGroupRank = catRankMap.get(rid);
             }
         }
@@ -391,6 +439,14 @@ export class PublicApiController {
                 netPace: r.netPace,
                 statusCheckpoint: r.statusCheckpoint,
                 statusNote: r.statusNote,
+                scanTime: r.scanTime,
+                elapsedTime: r.elapsedTime,
+                gunTimeMs: r.gunTimeMs,
+                netTimeMs: r.netTimeMs,
+                totalGunTime: r.totalGunTime,
+                totalNetTime: r.totalNetTime,
+                totalGunTimeMs: r.totalGunTimeMs,
+                totalNetTimeMs: r.totalNetTimeMs,
             }));
 
         const merged = [...timingData, ...extraRunners];
@@ -401,38 +457,9 @@ export class PublicApiController {
             const s = (r.status || '').toLowerCase();
             return s === 'finished' || s === 'in_progress';
         });
-        const rankSort = (a: any, b: any) => {
-            const aFin = a.status === 'finished' ? 0 : 1;
-            const bFin = b.status === 'finished' ? 0 : 1;
-            if (aFin !== bFin) return aFin - bFin;
-            if (a.status === 'finished' && b.status === 'finished') {
-                const aNet = a.netTime || a.gunTime || 0;
-                const bNet = b.netTime || b.gunTime || 0;
-                if (aNet > 0 && bNet > 0) {
-                    if (aNet !== bNet) return aNet - bNet;
-                    return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-                }
-                if (aNet > 0) return -1;
-                if (bNet > 0) return 1;
-                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-            }
-            // in_progress: more checkpoints passed = better, then faster time
-            const aPassed = a.passedCount ?? 0;
-            const bPassed = b.passedCount ?? 0;
-            if (aPassed !== bPassed) return bPassed - aPassed;
-            const aTime = a.netTime || a.gunTime || 0;
-            const bTime = b.netTime || b.gunTime || 0;
-            if (aTime > 0 && bTime > 0) {
-                if (aTime !== bTime) return aTime - bTime;
-                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-            }
-            if (aTime > 0) return -1;
-            if (bTime > 0) return 1;
-            return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-        };
 
         // Overall rank
-        const overallSorted = [...rankable].sort(rankSort);
+        const overallSorted = [...rankable].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
         const overallRankMap = new Map<string, number>();
         overallSorted.forEach((r, i) => overallRankMap.set(String(r._id), i + 1));
 
@@ -445,7 +472,7 @@ export class PublicApiController {
         });
         const genderRankMap = new Map<string, number>();
         genderGroups.forEach((group) => {
-            group.sort(rankSort).forEach((r, i) => genderRankMap.set(String(r._id), i + 1));
+            group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((r, i) => genderRankMap.set(String(r._id), i + 1));
         });
 
         // Category rank
@@ -458,19 +485,19 @@ export class PublicApiController {
         });
         const catRankMap = new Map<string, number>();
         catGroups.forEach((group) => {
-            group.sort(rankSort).forEach((r, i) => catRankMap.set(String(r._id), i + 1));
+            group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((r, i) => catRankMap.set(String(r._id), i + 1));
         });
 
         // Apply computed ranks to merged data
         for (const r of merged) {
             const id = String(r._id);
-            if ((!r.overallRank || r.overallRank <= 0) && overallRankMap.has(id)) {
+            if (overallRankMap.has(id)) {
                 r.overallRank = overallRankMap.get(id);
             }
-            if ((!r.genderRank || r.genderRank <= 0) && (!r.genderNetRank || r.genderNetRank <= 0) && genderRankMap.has(id)) {
+            if (genderRankMap.has(id)) {
                 r.genderRank = genderRankMap.get(id);
             }
-            if ((!r.ageGroupRank || r.ageGroupRank <= 0) && (!r.ageGroupNetRank || r.ageGroupNetRank <= 0) && catRankMap.has(id)) {
+            if (catRankMap.has(id)) {
                 r.ageGroupRank = catRankMap.get(id);
             }
         }
@@ -671,117 +698,75 @@ export class PublicApiController {
                 checkpointRanksObj[cp] = rank;
             }
 
-            // Compute live ranks if runner document doesn't have them
+            // Compute live ranks from authoritative campaign timing data so runner page matches event page
             const runnerObj = (runner as any).toObject ? (runner as any).toObject() : { ...runner as any };
-            const needsOverallRank = !runnerObj.overallRank || runnerObj.overallRank <= 0;
-            const needsGenderRank = !runnerObj.genderRank && !runnerObj.genderNetRank;
-            const needsCategoryRank = !runnerObj.ageGroupRank && !runnerObj.ageGroupNetRank;
             const needsFinishTime = !runnerObj.netTime && !runnerObj.gunTime && !runnerObj.elapsedTime;
 
-            if (needsOverallRank || needsGenderRank || needsCategoryRank || needsFinishTime) {
-                try {
-                    // Get campaign scope (all events under the campaign)
-                    const campaignId = event?.campaignId ? String(event.campaignId) : eventId;
-                    const events = await this.eventsService.findByCampaign(campaignId);
-                    const eventIds = Array.from(new Set([
-                        campaignId,
-                        eventId,
-                        ...events.map((e: any) => String(e._id || '')).filter(Boolean),
-                    ]));
+            try {
+                // Get campaign scope (all events under the campaign)
+                const campaignId = event?.campaignId ? String(event.campaignId) : eventId;
+                const events = await this.eventsService.findByCampaign(campaignId);
+                const eventIds = Array.from(new Set([
+                    campaignId,
+                    eventId,
+                    ...events.map((e: any) => String(e._id || '')).filter(Boolean),
+                ]));
 
-                    // Get all runners + timing data for accurate ranking
-                    const [allRunners, timingForRank] = await Promise.all([
-                        this.runnersService.findByEventIds(eventIds),
-                        this.timingService.getLatestPerRunner(eventIds),
-                    ]);
+                // Get all runners + timing data for accurate ranking
+                const [allRunners, timingForRank] = await Promise.all([
+                    this.runnersService.findByEventIds(eventIds),
+                    this.timingService.getLatestPerRunner(eventIds),
+                ]);
 
-                    // Supplement runner documents with timing-based time values
-                    const timingByRunnerId = new Map<string, any>();
-                    for (const t of timingForRank) {
-                        if (t._id) timingByRunnerId.set(String(t._id), t);
-                    }
-                    for (const r of allRunners as any[]) {
-                        const timing = timingByRunnerId.get(String(r._id));
-                        if (timing) {
-                            if (!r.netTime || r.netTime <= 0) r.netTime = timing.netTime || 0;
-                            if (!r.gunTime || r.gunTime <= 0) r.gunTime = timing.gunTime || 0;
-                            if (!r.passedCount || r.passedCount <= 0) r.passedCount = timing.passedCount || 0;
+                // Supplement runner documents with timing-based time values
+                const timingByRunnerId = new Map<string, any>();
+                for (const t of timingForRank) {
+                    if (t._id) timingByRunnerId.set(String(t._id), t);
+                }
+                for (const r of allRunners as any[]) {
+                    const timing = timingByRunnerId.get(String(r._id));
+                    this.mergeTimingIntoRunner(r, timing);
+                }
+
+                const rankable = allRunners.filter((r: any) => {
+                    const s = (r.status || '').toLowerCase();
+                    return s === 'finished' || s === 'in_progress';
+                });
+
+                // Overall rank
+                const sorted = [...rankable].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
+                const idx = sorted.findIndex((r: any) => String(r._id) === runnerId);
+                if (idx >= 0) runnerObj.overallRank = idx + 1;
+                runnerObj.totalFinishers = sorted.length;
+
+                // Gender rank
+                const genderGroup = rankable.filter((r: any) => (r.gender || '').toUpperCase() === (runnerObj.gender || '').toUpperCase());
+                const sortedGender = [...genderGroup].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
+                const genderIdx = sortedGender.findIndex((r: any) => String(r._id) === runnerId);
+                if (genderIdx >= 0) runnerObj.genderRank = genderIdx + 1;
+                runnerObj.genderFinishers = sortedGender.length;
+
+                // Category rank
+                if (runnerObj.ageGroup) {
+                    const catGroup = rankable.filter((r: any) => (r.ageGroup || '') === (runnerObj.ageGroup || ''));
+                    const sortedCategory = [...catGroup].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
+                    const categoryIdx = sortedCategory.findIndex((r: any) => String(r._id) === runnerId);
+                    if (categoryIdx >= 0) runnerObj.ageGroupRank = categoryIdx + 1;
+                }
+
+                // Finish time from timing records
+                if (needsFinishTime && timingRecords.length > 0) {
+                    const finishRecord = timingRecords.find((t: any) => (t.checkpoint || '').toLowerCase().includes('finish'));
+                    const lastRecord = timingRecords[timingRecords.length - 1] as any;
+                    const useRecord = finishRecord || (runnerObj.status === 'finished' ? lastRecord : null);
+                    if (useRecord) {
+                        const net = (useRecord as any).netTime || (useRecord as any).elapsedTime || (useRecord as any).gunTime;
+                        if (net && net > 0) {
+                            runnerObj.netTime = net;
                         }
                     }
-
-                    const rankable = allRunners.filter((r: any) => {
-                        const s = (r.status || '').toLowerCase();
-                        return s === 'finished' || s === 'in_progress';
-                    });
-
-                    const rankSort = (a: any, b: any) => {
-                        const aFin = a.status === 'finished' ? 0 : 1;
-                        const bFin = b.status === 'finished' ? 0 : 1;
-                        if (aFin !== bFin) return aFin - bFin;
-                        if (a.status === 'finished' && b.status === 'finished') {
-                            const aNet = a.netTime || a.gunTime || 0;
-                            const bNet = b.netTime || b.gunTime || 0;
-                            if (aNet > 0 && bNet > 0) {
-                                if (aNet !== bNet) return aNet - bNet;
-                                return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-                            }
-                            if (aNet > 0) return -1;
-                            if (bNet > 0) return 1;
-                            return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-                        }
-                        const aPassed = a.passedCount ?? 0;
-                        const bPassed = b.passedCount ?? 0;
-                        if (aPassed !== bPassed) return bPassed - aPassed;
-                        const aTime = a.netTime || a.gunTime || 0;
-                        const bTime = b.netTime || b.gunTime || 0;
-                        if (aTime > 0 && bTime > 0) {
-                            if (aTime !== bTime) return aTime - bTime;
-                            return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-                        }
-                        if (aTime > 0) return -1;
-                        if (bTime > 0) return 1;
-                        return (a.bib || '').localeCompare(b.bib || '', undefined, { numeric: true });
-                    };
-
-                    // Overall rank
-                    if (needsOverallRank) {
-                        const sorted = [...rankable].sort(rankSort);
-                        const idx = sorted.findIndex((r: any) => String(r._id) === runnerId);
-                        if (idx >= 0) runnerObj.overallRank = idx + 1;
-                        runnerObj.totalFinishers = sorted.length;
-                    }
-
-                    // Gender rank
-                    if (needsGenderRank) {
-                        const genderGroup = rankable.filter((r: any) => (r.gender || '').toUpperCase() === (runnerObj.gender || '').toUpperCase());
-                        const sorted = [...genderGroup].sort(rankSort);
-                        const idx = sorted.findIndex((r: any) => String(r._id) === runnerId);
-                        if (idx >= 0) runnerObj.genderRank = idx + 1;
-                        runnerObj.genderFinishers = sorted.length;
-                    }
-
-                    // Category rank
-                    if (needsCategoryRank && runnerObj.ageGroup) {
-                        const catGroup = rankable.filter((r: any) => (r.ageGroup || '') === (runnerObj.ageGroup || ''));
-                        const sorted = [...catGroup].sort(rankSort);
-                        const idx = sorted.findIndex((r: any) => String(r._id) === runnerId);
-                        if (idx >= 0) runnerObj.ageGroupRank = idx + 1;
-                    }
-
-                    // Finish time from timing records
-                    if (needsFinishTime && timingRecords.length > 0) {
-                        const finishRecord = timingRecords.find((t: any) => (t.checkpoint || '').toLowerCase().includes('finish'));
-                        const lastRecord = timingRecords[timingRecords.length - 1] as any;
-                        const useRecord = finishRecord || (runnerObj.status === 'finished' ? lastRecord : null);
-                        if (useRecord) {
-                            const net = (useRecord as any).netTime || (useRecord as any).elapsedTime || (useRecord as any).gunTime;
-                            if (net && net > 0) {
-                                runnerObj.netTime = net;
-                            }
-                        }
-                    }
-                } catch { /* rank computation failed, proceed without */ }
-            }
+                }
+            } catch { /* rank computation failed, proceed without */ }
 
             return this.successResponse({
                 runner: runnerObj,

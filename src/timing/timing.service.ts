@@ -344,6 +344,8 @@ export class TimingService {
                     netTimeMs: 1,
                     totalGunTime: 1,
                     totalNetTime: 1,
+                    totalGunTimeMs: 1,
+                    totalNetTimeMs: 1,
                     supplement: 1,
                     cutOff: 1,
                     legTime: 1,
