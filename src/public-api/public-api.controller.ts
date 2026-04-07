@@ -121,6 +121,54 @@ export class PublicApiController {
         return this.compareStableRunnerOrder(a, b);
     }
 
+    private buildScopedPublicRankMaps(records: any[]) {
+        const overallRankMap = new Map<string, number>();
+        const genderRankMap = new Map<string, number>();
+        const catRankMap = new Map<string, number>();
+
+        const byEvent = new Map<string, any[]>();
+        records.forEach((record: any) => {
+            const status = String(record?.status || '').toLowerCase();
+            if (status !== 'finished' && status !== 'in_progress') return;
+            const eventKey = String(record?.eventId || '');
+            if (!byEvent.has(eventKey)) byEvent.set(eventKey, []);
+            byEvent.get(eventKey)!.push(record);
+        });
+
+        byEvent.forEach((eventRecords) => {
+            [...eventRecords].sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((record, index) => {
+                overallRankMap.set(String(record._id), index + 1);
+            });
+
+            const genderGroups = new Map<string, any[]>();
+            eventRecords.forEach((record: any) => {
+                const gender = String(record?.gender || '').toUpperCase();
+                if (!genderGroups.has(gender)) genderGroups.set(gender, []);
+                genderGroups.get(gender)!.push(record);
+            });
+            genderGroups.forEach((group) => {
+                group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((record, index) => {
+                    genderRankMap.set(String(record._id), index + 1);
+                });
+            });
+
+            const catGroups = new Map<string, any[]>();
+            eventRecords.forEach((record: any) => {
+                const category = String(record?.ageGroup || '');
+                if (!category) return;
+                if (!catGroups.has(category)) catGroups.set(category, []);
+                catGroups.get(category)!.push(record);
+            });
+            catGroups.forEach((group) => {
+                group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((record, index) => {
+                    catRankMap.set(String(record._id), index + 1);
+                });
+            });
+        });
+
+        return { overallRankMap, genderRankMap, catRankMap };
+    }
+
     private mergeTimingIntoRunner(target: any, timing: any): void {
         if (!timing) return;
         if (!target.netTime || target.netTime <= 0) target.netTime = timing.netTime || 0;
@@ -330,41 +378,7 @@ export class PublicApiController {
             }
         } catch { /* timing supplement failed, proceed with runner data */ }
 
-        // Compute fallback ranks for runners missing rank fields (same logic as getPassTimeByEvent)
-        const rankable = data.filter((r: any) => {
-            const s = (r.status || '').toLowerCase();
-            return s === 'finished' || s === 'in_progress';
-        });
-
-        // Overall rank
-        const overallSorted = [...rankable].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
-        const overallRankMap = new Map<string, number>();
-        overallSorted.forEach((r, i) => overallRankMap.set(String(r._id), i + 1));
-
-        // Gender rank
-        const genderGroups = new Map<string, any[]>();
-        rankable.forEach((r: any) => {
-            const g = (r.gender || '').toUpperCase();
-            if (!genderGroups.has(g)) genderGroups.set(g, []);
-            genderGroups.get(g)!.push(r);
-        });
-        const genderRankMap = new Map<string, number>();
-        genderGroups.forEach((group) => {
-            group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((r, i) => genderRankMap.set(String(r._id), i + 1));
-        });
-
-        // Category (ageGroup) rank
-        const catGroups = new Map<string, any[]>();
-        rankable.forEach((r: any) => {
-            const c = r.ageGroup || '';
-            if (!c) return;
-            if (!catGroups.has(c)) catGroups.set(c, []);
-            catGroups.get(c)!.push(r);
-        });
-        const catRankMap = new Map<string, number>();
-        catGroups.forEach((group) => {
-            group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((r, i) => catRankMap.set(String(r._id), i + 1));
-        });
+        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(data as any[]);
 
         // Apply computed ranks for all rankable runners so stale stored ranks cannot conflict
         for (const r of data as any[]) {
@@ -451,42 +465,7 @@ export class PublicApiController {
 
         const merged = [...timingData, ...extraRunners];
 
-        // Compute live ranks for ALL runners (including in_progress) based on timing data
-        // Sort criteria: finished first by netTime, then in_progress by passedCount DESC + netTime ASC
-        const rankable = merged.filter((r: any) => {
-            const s = (r.status || '').toLowerCase();
-            return s === 'finished' || s === 'in_progress';
-        });
-
-        // Overall rank
-        const overallSorted = [...rankable].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
-        const overallRankMap = new Map<string, number>();
-        overallSorted.forEach((r, i) => overallRankMap.set(String(r._id), i + 1));
-
-        // Gender rank
-        const genderGroups = new Map<string, any[]>();
-        rankable.forEach((r: any) => {
-            const g = (r.gender || '').toUpperCase();
-            if (!genderGroups.has(g)) genderGroups.set(g, []);
-            genderGroups.get(g)!.push(r);
-        });
-        const genderRankMap = new Map<string, number>();
-        genderGroups.forEach((group) => {
-            group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((r, i) => genderRankMap.set(String(r._id), i + 1));
-        });
-
-        // Category rank
-        const catGroups = new Map<string, any[]>();
-        rankable.forEach((r: any) => {
-            const c = r.ageGroup || '';
-            if (!c) return;
-            if (!catGroups.has(c)) catGroups.set(c, []);
-            catGroups.get(c)!.push(r);
-        });
-        const catRankMap = new Map<string, number>();
-        catGroups.forEach((group) => {
-            group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((r, i) => catRankMap.set(String(r._id), i + 1));
-        });
+        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(merged as any[]);
 
         // Apply computed ranks to merged data
         for (const r of merged) {
@@ -703,14 +682,8 @@ export class PublicApiController {
             const needsFinishTime = !runnerObj.netTime && !runnerObj.gunTime && !runnerObj.elapsedTime;
 
             try {
-                // Get campaign scope (all events under the campaign)
-                const campaignId = event?.campaignId ? String(event.campaignId) : eventId;
-                const events = await this.eventsService.findByCampaign(campaignId);
-                const eventIds = Array.from(new Set([
-                    campaignId,
-                    eventId,
-                    ...events.map((e: any) => String(e._id || '')).filter(Boolean),
-                ]));
+                // Get event scope only so runner rank matches the selected event distance/tab
+                const eventIds = [eventId];
 
                 // Get all runners + timing data for accurate ranking
                 const [allRunners, timingForRank] = await Promise.all([
@@ -728,31 +701,18 @@ export class PublicApiController {
                     this.mergeTimingIntoRunner(r, timing);
                 }
 
-                const rankable = allRunners.filter((r: any) => {
-                    const s = (r.status || '').toLowerCase();
-                    return s === 'finished' || s === 'in_progress';
+                const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(allRunners as any[]);
+                if (overallRankMap.has(runnerId)) runnerObj.overallRank = overallRankMap.get(runnerId);
+                if (genderRankMap.has(runnerId)) runnerObj.genderRank = genderRankMap.get(runnerId);
+                if (catRankMap.has(runnerId)) runnerObj.ageGroupRank = catRankMap.get(runnerId);
+
+                const eventScopedRankable = (allRunners as any[]).filter((r: any) => {
+                    const sameEvent = String(r?.eventId || '') === eventId;
+                    const status = String(r?.status || '').toLowerCase();
+                    return sameEvent && (status === 'finished' || status === 'in_progress');
                 });
-
-                // Overall rank
-                const sorted = [...rankable].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
-                const idx = sorted.findIndex((r: any) => String(r._id) === runnerId);
-                if (idx >= 0) runnerObj.overallRank = idx + 1;
-                runnerObj.totalFinishers = sorted.length;
-
-                // Gender rank
-                const genderGroup = rankable.filter((r: any) => (r.gender || '').toUpperCase() === (runnerObj.gender || '').toUpperCase());
-                const sortedGender = [...genderGroup].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
-                const genderIdx = sortedGender.findIndex((r: any) => String(r._id) === runnerId);
-                if (genderIdx >= 0) runnerObj.genderRank = genderIdx + 1;
-                runnerObj.genderFinishers = sortedGender.length;
-
-                // Category rank
-                if (runnerObj.ageGroup) {
-                    const catGroup = rankable.filter((r: any) => (r.ageGroup || '') === (runnerObj.ageGroup || ''));
-                    const sortedCategory = [...catGroup].sort((a: any, b: any) => this.comparePublicRankOrder(a, b));
-                    const categoryIdx = sortedCategory.findIndex((r: any) => String(r._id) === runnerId);
-                    if (categoryIdx >= 0) runnerObj.ageGroupRank = categoryIdx + 1;
-                }
+                runnerObj.totalFinishers = eventScopedRankable.length;
+                runnerObj.genderFinishers = eventScopedRankable.filter((r: any) => (r.gender || '').toUpperCase() === (runnerObj.gender || '').toUpperCase()).length;
 
                 // Finish time from timing records
                 if (needsFinishTime && timingRecords.length > 0) {
