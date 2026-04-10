@@ -192,6 +192,9 @@ export class Campaign {
     @Prop({ default: 0 })
     excludeOverallFromAgeGroup: number;
 
+    @Prop({ default: false })
+    disableAgeGroupRanking: boolean;
+
     /** When true, race is finished → show Finish List view.
      *  When false (default), race is ongoing → show Pass Time (live) view. */
     @Prop({ default: false })
