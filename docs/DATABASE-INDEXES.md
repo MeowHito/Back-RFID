@@ -178,3 +178,4 @@ Mongoose เรียก `ensureIndexes()` ตอนเชื่อมต่อ 
    - ดูว่า API ไหนช้า: เปิด DevTools → Network → ดู request ที่ใช้เวลานาน
    - ตรวจสอบว่า Backend กับ MongoDB อยู่ region ใกล้กัน (ลด latency)
    - ถ้า Vercel อยู่คนละ region กับ EC2 อาจใช้ CDN หรือพิจารณา host frontend ใกล้ backend
+http://localhost:3000/admin/age-group-ranking
