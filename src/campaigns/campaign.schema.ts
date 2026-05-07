@@ -204,8 +204,8 @@ export class Campaign {
     @Prop({ type: Object })
     certLayout: any;
 
-    /** Scanning page display template: 'classic' | 'split' */
-    @Prop({ default: 'classic' })
+    /** Scanning page display template: 'athletic' */
+    @Prop({ default: 'athletic' })
     scanningTemplate: string;
 
     /** Background image for scanning page (base64 or URL) */
