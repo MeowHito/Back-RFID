@@ -151,9 +151,9 @@ export class RunnersController {
         return this.runnersService.updateStatus(id, body);
     }
 
+    // Public endpoint — accessed from runner's phone via QR code on the scanning display.
+    // Phone has no JWT token, so this must remain unguarded.
     @Put(':id/photo')
-    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
-    @RequirePermission('participants', 'create')
     updatePhoto(@Param('id') id: string, @Body() body: any) {
         return this.runnersService.updatePhoto(id, body.photo);
     }
