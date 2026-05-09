@@ -464,14 +464,26 @@ export class RunnersService {
 
     /** Global lookup: find runner by BIB, chipCode, printingCode or rfidTag (case-insensitive).
      *  RFID scanners output the full tag (e.g. 24 hex chars) but the DB may store
-     *  only the last 8 chars as chipCode. Handles both directions of partial matching. */
-    async findByAnyCodeGlobal(code: string): Promise<RunnerDocument | null> {
+     *  only the last 8 chars as chipCode. Handles both directions of partial matching.
+     *  When `eventId` is provided, results are scoped to that event only — used by
+     *  bib-check / scanning displays so they never surface runners from other events. */
+    async findByAnyCodeGlobal(code: string, eventId?: string): Promise<RunnerDocument | null> {
         if (!code) return null;
         const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const exactCI = new RegExp(`^${escaped}$`, 'i');
 
+        const eventScope: Record<string, any> = {};
+        if (eventId) {
+            try {
+                eventScope.eventId = new Types.ObjectId(eventId);
+            } catch {
+                return null; // invalid eventId → no results, never leak across events
+            }
+        }
+
         // 1. Try exact match first (BIB, full chipCode, printingCode, rfidTag)
         const exact = await this.runnerModel.findOne({
+            ...eventScope,
             $or: [
                 { bib: code },
                 { chipCode: exactCI },
@@ -491,6 +503,7 @@ export class RunnersService {
                 const last8Escaped = last8.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const last8CI = new RegExp(`^${last8Escaped}$`, 'i');
                 const byLast8 = await this.runnerModel.findOne({
+                    ...eventScope,
                     $or: [
                         { chipCode: last8CI },
                         { printingCode: last8CI },
@@ -503,6 +516,7 @@ export class RunnersService {
             // 2b. Also try: DB chipCode ends with scanned code (opposite direction)
             const endsWith = new RegExp(`${escaped}$`, 'i');
             const partial = await this.runnerModel.findOne({
+                ...eventScope,
                 $or: [
                     { chipCode: endsWith },
                     { rfidTag: endsWith },

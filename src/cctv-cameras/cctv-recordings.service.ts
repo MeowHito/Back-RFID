@@ -288,9 +288,14 @@ export class CctvRecordingsService {
                 return new Date(r.endTime) >= scanTime;
             });
 
+            // Match strictly by checkpoint name. The previous fallback "if there is exactly
+            // one candidate, use it" caused CP1's recording to be returned for a CP2 timing
+            // when only CP1 was rolling at that moment — leaking video across checkpoints.
+            // If no recording for THIS checkpoint covers the scan, return null and let the UI
+            // show "no video" instead of the wrong one.
             const recording = candidates.find((candidate: any) => {
                 return this.normalizeCheckpointName(candidate?.checkpointName) === normalizedCheckpoint;
-            }) || (candidates.length === 1 ? candidates[0] : null);
+            }) || null;
 
             const snapshot = recording ? this.getRecordingSnapshot(recording) : null;
 

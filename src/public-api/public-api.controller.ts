@@ -11,6 +11,7 @@ import { CheckpointsService } from '../checkpoints/checkpoints.service';
 import { TimingService } from '../timing/timing.service';
 import { EventsService } from '../events/events.service';
 import { CctvRecordingsService } from '../cctv-cameras/cctv-recordings.service';
+import { CctvSettingsService } from '../cctv-cameras/cctv-settings.service';
 import { CreateUserDto, LoginStationDto, UpdatePasswordDto } from '../users/dto/user.dto';
 
 interface NormalizedResponse {
@@ -32,6 +33,7 @@ export class PublicApiController {
         private readonly timingService: TimingService,
         private readonly eventsService: EventsService,
         private readonly cctvRecordingsService: CctvRecordingsService,
+        private readonly cctvSettingsService: CctvSettingsService,
     ) { }
 
     private successResponse(data?: any): NormalizedResponse {
@@ -779,6 +781,17 @@ export class PublicApiController {
             const matched = hits.find((hit: any) => String(hit?.recording?._id || '') === recordingId);
             if (!matched?.recording) {
                 return res.status(404).json({ error: 'Recording not found for runner' });
+            }
+
+            // Enforce admin-controlled download switch — applies only to download requests,
+            // streaming/inline playback is always allowed.
+            if (download === '1') {
+                try {
+                    const settings = await this.cctvSettingsService.get();
+                    if (settings && (settings as any).allowDownload === false) {
+                        return res.status(403).json({ error: 'Downloads are disabled by the event admin' });
+                    }
+                } catch { /* if settings unavailable, fall through to allow (back-compat) */ }
             }
 
             const { filePath, mimeType, fileName } = await this.cctvRecordingsService.getFilePath(recordingId);

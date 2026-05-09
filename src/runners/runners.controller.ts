@@ -115,7 +115,7 @@ export class RunnersController {
         if (!code) {
             return { found: false, runner: null };
         }
-        const runner = await this.runnersService.findByAnyCodeGlobal(code.trim());
+        const runner = await this.runnersService.findByAnyCodeGlobal(code.trim(), campaignId || undefined);
         return { found: !!runner, runner };
     }
 

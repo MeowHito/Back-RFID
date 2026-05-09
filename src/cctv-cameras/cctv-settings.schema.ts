@@ -12,6 +12,9 @@ export class CctvSettings {
     @Prop({ default: 30 }) preArrivalBuffer: number; // seconds for runner alert
     @Prop({ default: 10 }) clipBufferSeconds: number; // seconds to keep in rolling buffer for Save Clip
     @Prop({ default: 800 }) videoBitrateKbps: number;
+    /** When false, viewers (followers / public) see the recording but cannot download it.
+     *  Admins always see the download button regardless. */
+    @Prop({ default: true }) allowDownload: boolean;
 }
 
 export const CctvSettingsSchema = SchemaFactory.createForClass(CctvSettings);
