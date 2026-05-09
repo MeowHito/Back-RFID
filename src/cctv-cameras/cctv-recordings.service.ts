@@ -324,10 +324,16 @@ export class CctvRecordingsService {
         return results;
     }
 
-    getFilePath(id: string): Promise<{ filePath: string; mimeType: string; fileName: string; duration: number }> {
+    getFilePath(id: string): Promise<{ filePath: string; mimeType: string; fileName: string; duration: number; startTime: Date }> {
         return this.recordingModel.findById(id).exec().then(rec => {
             if (!rec) throw new NotFoundException('Recording not found');
-            return { filePath: rec.filePath, mimeType: rec.mimeType, fileName: rec.fileName, duration: rec.duration || 0 };
+            return {
+                filePath: rec.filePath,
+                mimeType: rec.mimeType,
+                fileName: rec.fileName,
+                duration: rec.duration || 0,
+                startTime: rec.startTime,
+            };
         });
     }
 }

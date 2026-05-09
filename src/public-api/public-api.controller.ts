@@ -797,7 +797,7 @@ export class PublicApiController {
 
             const isLive = String(matched.recording?.recordingStatus || '') === 'recording';
 
-            const { filePath, mimeType, fileName } = await this.cctvRecordingsService.getFilePath(recordingId);
+            const { filePath, mimeType, fileName, startTime } = await this.cctvRecordingsService.getFilePath(recordingId);
             if (!fs.existsSync(filePath)) {
                 return res.status(404).json({ error: 'File not found' });
             }
@@ -807,9 +807,12 @@ export class PublicApiController {
             const t = Number(tParam);
             const hasTrim = Number.isFinite(ss) && ss >= 0 && Number.isFinite(t) && t > 0;
 
-            // Trim + convert to mp4 (cached) — for both download and streaming with ss/t params.
-            // Skip for live recordings (file still being written, ffmpeg can't safely process it).
-            if ((download === '1' || hasTrim) && !isLive) {
+            // For all completed recordings, transcode to mp4 with a wall-clock timestamp
+            // burned into every frame. This guarantees the time is visible regardless of
+            // whether the client camera could overlay it (older iOS lacks captureStream).
+            // Output is cached so the cost is paid once per recording (or per trim variant).
+            // Live recordings are streamed raw — file is still being written.
+            if (!isLive) {
                 const baseName = fileName.replace(/\.[^.]+$/, '');
                 const cacheKey = hasTrim ? `${baseName}_ss${ss}_t${t}.mp4` : `${baseName}.mp4`;
                 const cacheDir = path.dirname(filePath);
@@ -830,14 +833,24 @@ export class PublicApiController {
                     }
                 }
 
-                // Build ffmpeg args: trim + convert to mp4
-                try {
+                // Build ffmpeg args: trim + burn real-time clock + convert to mp4.
+                // Timestamp is derived from recording.startTime so EVERY video shows the
+                // wall-clock time at which each frame was captured, regardless of whether
+                // the client camera was able to overlay it (older iOS lacks captureStream).
+                const startEpochSec = Math.floor(new Date(startTime).getTime() / 1000)
+                    + (hasTrim ? Math.floor(ss) : 0);
+                const drawtextFilter = this.buildTimestampDrawtext(startEpochSec);
+
+                const runFfmpeg = (withDrawtext: boolean) => new Promise<void>((resolve, reject) => {
                     const ffmpegArgs: string[] = ['-y'];
                     if (hasTrim) {
                         ffmpegArgs.push('-ss', String(ss), '-t', String(t));
                     }
+                    ffmpegArgs.push('-i', filePath);
+                    if (withDrawtext) {
+                        ffmpegArgs.push('-vf', drawtextFilter);
+                    }
                     ffmpegArgs.push(
-                        '-i', filePath,
                         '-c:v', 'libx264',
                         '-preset', 'ultrafast',
                         '-crf', '28',
@@ -846,19 +859,27 @@ export class PublicApiController {
                         '-movflags', '+faststart',
                         cachedPath,
                     );
-
-                    await new Promise<void>((resolve, reject) => {
-                        execFile('ffmpeg', ffmpegArgs, { timeout: 120_000 }, (err) => {
-                            if (err) reject(err);
-                            else resolve();
-                        });
+                    execFile('ffmpeg', ffmpegArgs, { timeout: 180_000 }, (err) => {
+                        if (err) reject(err);
+                        else resolve();
                     });
+                });
+
+                try {
+                    try {
+                        await runFfmpeg(true);
+                    } catch (err) {
+                        // drawtext can fail on systems missing fontconfig/freetype fonts.
+                        // Retry once without the overlay so download/playback still works.
+                        try { if (fs.existsSync(cachedPath)) fs.unlinkSync(cachedPath); } catch {}
+                        await runFfmpeg(false);
+                    }
 
                     if (fs.existsSync(cachedPath)) {
                         return serveCachedMp4(cachedPath);
                     }
                 } catch {
-                    // ffmpeg failed – clean up and fall through to serve original
+                    // ffmpeg failed completely – clean up and fall through to serve original
                     try { if (fs.existsSync(cachedPath)) fs.unlinkSync(cachedPath); } catch {}
                 }
             }
@@ -883,6 +904,25 @@ export class PublicApiController {
         } catch (error: any) {
             return res.status(500).json({ error: error?.message || 'Internal server error' });
         }
+    }
+
+    /** Build an ffmpeg drawtext filter that renders a wall-clock timestamp top-right.
+     *  startEpochSec is the unix-seconds value that should map to pts=0 of the output. */
+    private buildTimestampDrawtext(startEpochSec: number): string {
+        // %{pts\:localtime\:EPOCH\:FORMAT} prints localtime(EPOCH + pts) in the given strftime fmt.
+        // Colons inside the expansion need to be escaped as \: for ffmpeg's filter parser.
+        const fmt = '%Y-%m-%d %H\\:%M\\:%S';
+        const text = `%{pts\\:localtime\\:${startEpochSec}\\:${fmt}}`;
+        return [
+            `drawtext=text='${text}'`,
+            'fontcolor=white',
+            'fontsize=h*0.04',
+            'box=1',
+            'boxcolor=black@0.55',
+            'boxborderw=12',
+            'x=w-tw-30',
+            'y=20',
+        ].join(':');
     }
 
     private serveFileWithRange(
