@@ -774,6 +774,7 @@ export class PublicApiController {
         @Query('download') download: string,
         @Query('ss') ssParam: string,
         @Query('t') tParam: string,
+        @Headers('range') rangeHeader: string,
         @Res() res: Response,
     ) {
         try {
@@ -794,6 +795,8 @@ export class PublicApiController {
                 } catch { /* if settings unavailable, fall through to allow (back-compat) */ }
             }
 
+            const isLive = String(matched.recording?.recordingStatus || '') === 'recording';
+
             const { filePath, mimeType, fileName } = await this.cctvRecordingsService.getFilePath(recordingId);
             if (!fs.existsSync(filePath)) {
                 return res.status(404).json({ error: 'File not found' });
@@ -804,8 +807,9 @@ export class PublicApiController {
             const t = Number(tParam);
             const hasTrim = Number.isFinite(ss) && ss >= 0 && Number.isFinite(t) && t > 0;
 
-            // Trim + convert to mp4 (cached) — for both download and streaming with ss/t params
-            if (download === '1' || hasTrim) {
+            // Trim + convert to mp4 (cached) — for both download and streaming with ss/t params.
+            // Skip for live recordings (file still being written, ffmpeg can't safely process it).
+            if ((download === '1' || hasTrim) && !isLive) {
                 const baseName = fileName.replace(/\.[^.]+$/, '');
                 const cacheKey = hasTrim ? `${baseName}_ss${ss}_t${t}.mp4` : `${baseName}.mp4`;
                 const cacheDir = path.dirname(filePath);
@@ -813,16 +817,16 @@ export class PublicApiController {
                 const mp4FileName = `${baseName}.mp4`;
                 const disposition = download === '1' ? 'attachment' : 'inline';
 
+                const serveCachedMp4 = (cachedFile: string) => {
+                    const mp4Stat = fs.statSync(cachedFile);
+                    return this.serveFileWithRange(res, cachedFile, mp4Stat.size, 'video/mp4', mp4FileName, disposition, rangeHeader);
+                };
+
                 // Serve cached file if it exists
                 if (fs.existsSync(cachedPath)) {
                     const mp4Stat = fs.statSync(cachedPath);
                     if (mp4Stat.size > 0) {
-                        res.setHeader('Content-Type', 'video/mp4');
-                        res.setHeader('Content-Length', mp4Stat.size);
-                        res.setHeader('Content-Disposition', `${disposition}; filename="${mp4FileName}"`);
-                        res.setHeader('Accept-Ranges', 'bytes');
-                        fs.createReadStream(cachedPath).pipe(res);
-                        return;
+                        return serveCachedMp4(cachedPath);
                     }
                 }
 
@@ -851,13 +855,7 @@ export class PublicApiController {
                     });
 
                     if (fs.existsSync(cachedPath)) {
-                        const mp4Stat = fs.statSync(cachedPath);
-                        res.setHeader('Content-Type', 'video/mp4');
-                        res.setHeader('Content-Length', mp4Stat.size);
-                        res.setHeader('Content-Disposition', `${disposition}; filename="${mp4FileName}"`);
-                        res.setHeader('Accept-Ranges', 'bytes');
-                        fs.createReadStream(cachedPath).pipe(res);
-                        return;
+                        return serveCachedMp4(cachedPath);
                     }
                 } catch {
                     // ffmpeg failed – clean up and fall through to serve original
@@ -865,16 +863,70 @@ export class PublicApiController {
                 }
             }
 
-            // Streaming / fallback: serve original file as-is
+            // Live (in-progress) recording: stream what is on disk now without Content-Length
+            // so the browser does not bail when the file size mismatches. No Range support
+            // because the file keeps growing.
+            if (isLive) {
+                const disposition = download === '1' ? 'attachment' : 'inline';
+                res.setHeader('Content-Type', mimeType || 'video/webm');
+                res.setHeader('Content-Disposition', `${disposition}; filename="${fileName}"`);
+                res.setHeader('Cache-Control', 'no-store');
+                fs.createReadStream(filePath).pipe(res);
+                return;
+            }
+
+            // Completed recording: serve original file with proper Range support so browsers
+            // (especially Safari/iOS) can seek and start playback reliably.
             const stat = fs.statSync(filePath);
-            res.setHeader('Content-Type', mimeType || 'video/webm');
-            res.setHeader('Content-Length', stat.size);
-            res.setHeader('Content-Disposition', `${download === '1' ? 'attachment' : 'inline'}; filename="${fileName}"`);
-            res.setHeader('Accept-Ranges', 'bytes');
-            fs.createReadStream(filePath).pipe(res);
+            const disposition = download === '1' ? 'attachment' : 'inline';
+            return this.serveFileWithRange(res, filePath, stat.size, mimeType || 'video/webm', fileName, disposition, rangeHeader);
         } catch (error: any) {
             return res.status(500).json({ error: error?.message || 'Internal server error' });
         }
+    }
+
+    private serveFileWithRange(
+        res: Response,
+        filePath: string,
+        fileSize: number,
+        contentType: string,
+        fileName: string,
+        disposition: 'inline' | 'attachment',
+        rangeHeader?: string,
+    ) {
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `${disposition}; filename="${fileName}"`);
+
+        const rangeMatch = rangeHeader && /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader);
+        if (rangeMatch) {
+            let start = rangeMatch[1] ? parseInt(rangeMatch[1], 10) : NaN;
+            let end = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : NaN;
+
+            // suffix range: bytes=-N → last N bytes
+            if (Number.isNaN(start) && Number.isFinite(end)) {
+                start = Math.max(0, fileSize - end);
+                end = fileSize - 1;
+            } else {
+                if (Number.isNaN(start)) start = 0;
+                if (Number.isNaN(end) || end >= fileSize) end = fileSize - 1;
+            }
+
+            if (start > end || start < 0 || end >= fileSize) {
+                res.status(416).setHeader('Content-Range', `bytes */${fileSize}`);
+                return res.end();
+            }
+
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+            res.setHeader('Content-Length', end - start + 1);
+            fs.createReadStream(filePath, { start, end }).pipe(res);
+            return;
+        }
+
+        res.status(200);
+        res.setHeader('Content-Length', fileSize);
+        fs.createReadStream(filePath).pipe(res);
     }
 
     // ========== Dev/Testing: Seed Sample Runners ==========
