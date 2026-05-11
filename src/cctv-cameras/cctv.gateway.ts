@@ -18,6 +18,7 @@ export interface LiveCameraInfo {
     location?: string;
     description?: string;
     deviceId?: string;
+    streamSessionId?: string;
     connectedAt: Date;
 }
 
@@ -42,8 +43,9 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     constructor(private readonly recordingsService: CctvRecordingsService) {}
 
-    private buildCameraId(deviceId: string | undefined, socketId: string): string {
-        const safe = (deviceId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
+    private buildCameraId(deviceId: string | undefined, socketId: string, streamSessionId?: string): string {
+        const source = streamSessionId || deviceId || '';
+        const safe = source.trim().replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
         if (safe) return `cam_${safe.substring(0, 16)}`;
         return `cam_${socketId.substring(0, 10)}`;
     }
@@ -79,7 +81,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     @SubscribeMessage('camera:register')
     handleCameraRegister(client: Socket, data: Partial<LiveCameraInfo>) {
-        const cameraId = this.buildCameraId(data.deviceId, client.id);
+        const cameraId = this.buildCameraId(data.deviceId, client.id, data.streamSessionId);
 
         // Cancel any pending disconnect cleanup — this is a reconnect.
         const pending = this.disconnectTimers.get(cameraId);
@@ -101,6 +103,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
             location: data.location,
             description: data.description,
             deviceId: data.deviceId,
+            streamSessionId: data.streamSessionId,
             connectedAt: new Date(),
         };
         this.cameras.set(client.id, info);
