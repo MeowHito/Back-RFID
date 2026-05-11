@@ -173,6 +173,33 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
             .emit('camera:chunk', { cameraId: data.cameraId, chunk: data.chunk, mimeType: data.mimeType });
     }
 
+    @SubscribeMessage('camera:rotate')
+    async handleCameraRotate(client: Socket) {
+        const cam = this.cameras.get(client.id);
+        if (!cam) return { success: false };
+        // Drain any in-flight chunks from the previous segment. MediaRecorder
+        // emits one final dataavailable after stop(); that emit is async
+        // (arrayBuffer → socket.emit) and may arrive just after this rotate
+        // message. Waiting 150ms lets the tail land in the old file.
+        await new Promise(resolve => setTimeout(resolve, 150));
+        // Drop cached init/recent — the next chunk will be the new segment's
+        // init (fresh EBML header from the freshly-started MediaRecorder).
+        this.initChunks.delete(cam.cameraId);
+        this.recentChunks.delete(cam.cameraId);
+        try {
+            await this.recordingsService.rotateSegment(cam.cameraId, cam);
+            // Tell live viewers to rebuild their MediaSource — the next chunk
+            // is a fresh WebM init segment that won't append onto the old buffer.
+            this.server
+                .to(`camera:${cam.cameraId}:viewers`)
+                .emit('camera:segment-restart', { cameraId: cam.cameraId });
+            return { success: true };
+        } catch (err) {
+            console.error(`[CCTV] rotate failed for ${cam.cameraId}:`, err);
+            return { success: false };
+        }
+    }
+
     @SubscribeMessage('camera:stop')
     handleCameraStop(client: Socket) {
         const cam = this.cameras.get(client.id);

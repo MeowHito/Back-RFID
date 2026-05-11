@@ -142,6 +142,18 @@ export class CctvRecordingsService {
         this.logger.log(`Recording finalized: ${rec.fileName} (${fileSize} bytes, ${duration}s)`);
     }
 
+    /**
+     * Close the current recording file and immediately open a new one for the
+     * same cameraId. Keeps segments short (~10 min from the mobile) so each
+     * file stays small, ffmpeg-transcodes quickly, and is seekable on disk.
+     */
+    async rotateSegment(cameraId: string, info: LiveCameraInfo): Promise<void> {
+        if (this.activeRecordings.has(cameraId)) {
+            await this.finalizeRecording(cameraId);
+        }
+        await this.startRecording(cameraId, info);
+    }
+
     async findAll(campaignId?: string): Promise<CctvRecordingDocument[]> {
         const filter: any = { recordingStatus: { $in: ['completed', 'recording'] } };
         if (campaignId) filter.campaignId = campaignId;

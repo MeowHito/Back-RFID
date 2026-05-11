@@ -14,7 +14,34 @@ import { AdminOnly } from '../auth/decorators/permissions.decorator';
 @UseGuards(AuthGuard('jwt'), PermissionsGuard)
 @AdminOnly()
 export class CctvRecordingsController {
+    // Track which destination MP4s are currently being transcoded so we don't
+    // spawn duplicate ffmpeg jobs when multiple plays of the same recording
+    // overlap.
+    private static transcodingNow = new Set<string>();
+
     constructor(private readonly service: CctvRecordingsService) {}
+
+    private startBackgroundTranscode(srcPath: string, dstPath: string) {
+        if (CctvRecordingsController.transcodingNow.has(dstPath)) return;
+        if (!fs.existsSync(srcPath)) return;
+        CctvRecordingsController.transcodingNow.add(dstPath);
+        execFile('ffmpeg', [
+            '-y',
+            '-i', srcPath,
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '28',
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            '-movflags', '+faststart',
+            dstPath,
+        ], { timeout: 30 * 60_000 }, (err) => {
+            CctvRecordingsController.transcodingNow.delete(dstPath);
+            if (err) {
+                try { if (fs.existsSync(dstPath)) fs.unlinkSync(dstPath); } catch {}
+            }
+        });
+    }
 
     @Get()
     findAll(@Query('campaignId') campaignId?: string) {
@@ -51,38 +78,18 @@ export class CctvRecordingsController {
             const cachedPath = path.join(cacheDir, `${baseName}.mp4`);
             const mp4FileName = `${baseName}.mp4`;
 
-            const serveCached = () => {
+            // If MP4 cache exists, serve it (fast, seekable).
+            if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size > 0) {
                 const mp4Stat = fs.statSync(cachedPath);
                 return this.serveFileWithRange(res, cachedPath, mp4Stat.size, 'video/mp4', mp4FileName, range, duration);
-            };
-
-            if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size > 0) {
-                return serveCached();
             }
 
-            try {
-                await new Promise<void>((resolve, reject) => {
-                    execFile('ffmpeg', [
-                        '-y',
-                        '-i', filePath,
-                        '-c:v', 'libx264',
-                        '-preset', 'ultrafast',
-                        '-crf', '28',
-                        '-c:a', 'aac',
-                        '-b:a', '96k',
-                        '-movflags', '+faststart',
-                        cachedPath,
-                    ], { timeout: 180_000 }, (err) => {
-                        if (err) reject(err);
-                        else resolve();
-                    });
-                });
-                if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size > 0) {
-                    return serveCached();
-                }
-            } catch {
-                try { if (fs.existsSync(cachedPath)) fs.unlinkSync(cachedPath); } catch {}
-            }
+            // No cache yet: kick off ffmpeg in the background and serve raw
+            // webm immediately. Blocking the response on ffmpeg for a 12h file
+            // takes far longer than any browser will wait — this trades a
+            // first-play "no seek index" cost for an instant response, and
+            // the next play picks up the cached MP4.
+            this.startBackgroundTranscode(filePath, cachedPath);
         }
 
         const stat = fs.statSync(filePath);
