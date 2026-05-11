@@ -310,6 +310,7 @@ export class CctvRecordingsService {
                 splitTime: (t as any).splitTime || null,
                 recording: recording ? {
                     _id: (recording as any)._id,
+                    cameraId: (recording as any).cameraId,
                     cameraName: (recording as any).cameraName,
                     checkpointName: (recording as any).checkpointName,
                     startTime: snapshot?.startTime,
@@ -324,7 +325,7 @@ export class CctvRecordingsService {
         return results;
     }
 
-    getFilePath(id: string): Promise<{ filePath: string; mimeType: string; fileName: string; duration: number; startTime: Date }> {
+    getFilePath(id: string): Promise<{ filePath: string; mimeType: string; fileName: string; duration: number; startTime: Date; endTime?: Date; recordingStatus: string }> {
         return this.recordingModel.findById(id).exec().then(rec => {
             if (!rec) throw new NotFoundException('Recording not found');
             return {
@@ -333,6 +334,8 @@ export class CctvRecordingsService {
                 fileName: rec.fileName,
                 duration: rec.duration || 0,
                 startTime: rec.startTime,
+                endTime: rec.endTime,
+                recordingStatus: rec.recordingStatus,
             };
         });
     }

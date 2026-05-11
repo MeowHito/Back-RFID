@@ -110,6 +110,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     handleCameraStop(client: Socket) {
         const cam = this.cameras.get(client.id);
         if (cam) {
+            this.cameras.delete(client.id);
             this.initChunks.delete(cam.cameraId);
             this.recentChunks.delete(cam.cameraId);
             this.server
@@ -125,6 +126,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const activeCameras = Array.from(this.cameras.values()).filter(
             (c) => c.campaignId === campaignId,
         );
+        client.emit('admin:cameras', { cameras: activeCameras });
         return { cameras: activeCameras };
     }
 
