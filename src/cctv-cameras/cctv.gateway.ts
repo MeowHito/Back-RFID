@@ -30,11 +30,23 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     server: Server;
 
     private cameras = new Map<string, LiveCameraInfo>();
+    private cameraIdToSocketId = new Map<string, string>();
+    private disconnectTimers = new Map<string, NodeJS.Timeout>();
     private initChunks = new Map<string, { chunk: Buffer; mimeType: string }>();
     private recentChunks = new Map<string, { chunk: Buffer; mimeType: string }[]>();
     private static readonly MAX_RECENT_CHUNKS = 30;
+    // Grace period before finalizing a recording on disconnect. WebSocket
+    // can flap (network blip, reverse-proxy timeout, mobile background)
+    // and Socket.IO auto-reconnects; we don't want to tear down state every time.
+    private static readonly DISCONNECT_GRACE_MS = 15000;
 
     constructor(private readonly recordingsService: CctvRecordingsService) {}
+
+    private buildCameraId(deviceId: string | undefined, socketId: string): string {
+        const safe = (deviceId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
+        if (safe) return `cam_${safe.substring(0, 16)}`;
+        return `cam_${socketId.substring(0, 10)}`;
+    }
 
     handleConnection(client: Socket) {
         console.log(`[CCTV] client connected: ${client.id}`);
@@ -42,21 +54,43 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     handleDisconnect(client: Socket) {
         const cam = this.cameras.get(client.id);
-        if (cam) {
-            this.cameras.delete(client.id);
-            this.initChunks.delete(cam.cameraId);
-            this.recentChunks.delete(cam.cameraId);
-            console.log(`[CCTV] camera offline: ${cam.name} (${cam.cameraId})`);
+        if (!cam) return;
+        this.cameras.delete(client.id);
+        // Only finalize if no reconnect with same cameraId arrives in time.
+        const cameraId = cam.cameraId;
+        const existing = this.disconnectTimers.get(cameraId);
+        if (existing) clearTimeout(existing);
+        const timer = setTimeout(() => {
+            this.disconnectTimers.delete(cameraId);
+            // If a new socket has already claimed this cameraId, skip cleanup.
+            const currentSid = this.cameraIdToSocketId.get(cameraId);
+            if (currentSid && this.cameras.has(currentSid)) return;
+            this.cameraIdToSocketId.delete(cameraId);
+            this.initChunks.delete(cameraId);
+            this.recentChunks.delete(cameraId);
+            console.log(`[CCTV] camera offline: ${cam.name} (${cameraId})`);
             this.server
                 .to(`campaign:${cam.campaignId}`)
-                .emit('camera:offline', { cameraId: cam.cameraId });
-            this.recordingsService.finalizeRecording(cam.cameraId).catch(() => {});
-        }
+                .emit('camera:offline', { cameraId });
+            this.recordingsService.finalizeRecording(cameraId).catch(() => {});
+        }, CctvGateway.DISCONNECT_GRACE_MS);
+        this.disconnectTimers.set(cameraId, timer);
     }
 
     @SubscribeMessage('camera:register')
     handleCameraRegister(client: Socket, data: Partial<LiveCameraInfo>) {
-        const cameraId = `cam_${client.id.substring(0, 10)}`;
+        const cameraId = this.buildCameraId(data.deviceId, client.id);
+
+        // Cancel any pending disconnect cleanup — this is a reconnect.
+        const pending = this.disconnectTimers.get(cameraId);
+        if (pending) { clearTimeout(pending); this.disconnectTimers.delete(cameraId); }
+
+        // If another socket previously held this cameraId, drop the stale entry.
+        const oldSocketId = this.cameraIdToSocketId.get(cameraId);
+        if (oldSocketId && oldSocketId !== client.id) {
+            this.cameras.delete(oldSocketId);
+        }
+
         const info: LiveCameraInfo = {
             cameraId,
             socketId: client.id,
@@ -70,11 +104,13 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
             connectedAt: new Date(),
         };
         this.cameras.set(client.id, info);
+        this.cameraIdToSocketId.set(cameraId, client.id);
         client.join(`camera:${cameraId}`);
         console.log(`[CCTV] camera online: ${info.name} → ${cameraId}`);
         this.server
             .to(`campaign:${info.campaignId}`)
             .emit('camera:online', info);
+        // startRecording is a no-op if an active recording already exists for this cameraId
         this.recordingsService.startRecording(cameraId, info).catch(() => {});
         return { success: true, cameraId };
     }
@@ -109,15 +145,18 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @SubscribeMessage('camera:stop')
     handleCameraStop(client: Socket) {
         const cam = this.cameras.get(client.id);
-        if (cam) {
-            this.cameras.delete(client.id);
-            this.initChunks.delete(cam.cameraId);
-            this.recentChunks.delete(cam.cameraId);
-            this.server
-                .to(`campaign:${cam.campaignId}`)
-                .emit('camera:offline', { cameraId: cam.cameraId });
-            this.recordingsService.finalizeRecording(cam.cameraId).catch(() => {});
-        }
+        if (!cam) return;
+        const cameraId = cam.cameraId;
+        const pending = this.disconnectTimers.get(cameraId);
+        if (pending) { clearTimeout(pending); this.disconnectTimers.delete(cameraId); }
+        this.cameras.delete(client.id);
+        this.cameraIdToSocketId.delete(cameraId);
+        this.initChunks.delete(cameraId);
+        this.recentChunks.delete(cameraId);
+        this.server
+            .to(`campaign:${cam.campaignId}`)
+            .emit('camera:offline', { cameraId });
+        this.recordingsService.finalizeRecording(cameraId).catch(() => {});
     }
 
     @SubscribeMessage('admin:join')
