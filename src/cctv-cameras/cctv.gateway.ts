@@ -33,6 +33,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private cameras = new Map<string, LiveCameraInfo>();
     private cameraIdToSocketId = new Map<string, string>();
     private disconnectTimers = new Map<string, NodeJS.Timeout>();
+    private chunkIdleTimers = new Map<string, NodeJS.Timeout>();
     private initChunks = new Map<string, { chunk: Buffer; mimeType: string }>();
     private recentChunks = new Map<string, { chunk: Buffer; mimeType: string }[]>();
     private static readonly MAX_RECENT_CHUNKS = 30;
@@ -40,6 +41,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // can flap (network blip, reverse-proxy timeout, mobile background)
     // and Socket.IO auto-reconnects; we don't want to tear down state every time.
     private static readonly DISCONNECT_GRACE_MS = 15000;
+    private static readonly CHUNK_IDLE_MS = 30000;
 
     constructor(private readonly recordingsService: CctvRecordingsService) {}
 
@@ -48,6 +50,36 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const safe = source.trim().replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
         if (safe) return `cam_${safe.substring(0, 16)}`;
         return `cam_${socketId.substring(0, 10)}`;
+    }
+
+    private clearChunkIdleTimer(cameraId: string) {
+        const timer = this.chunkIdleTimers.get(cameraId);
+        if (timer) clearTimeout(timer);
+        this.chunkIdleTimers.delete(cameraId);
+    }
+
+    private finishCamera(cameraId: string, cam?: LiveCameraInfo) {
+        const sid = this.cameraIdToSocketId.get(cameraId);
+        const activeCam = cam || (sid ? this.cameras.get(sid) : undefined);
+        if (sid) this.cameras.delete(sid);
+        this.cameraIdToSocketId.delete(cameraId);
+        this.clearChunkIdleTimer(cameraId);
+        this.initChunks.delete(cameraId);
+        this.recentChunks.delete(cameraId);
+        if (activeCam) {
+            this.server
+                .to(`campaign:${activeCam.campaignId}`)
+                .emit('camera:offline', { cameraId });
+        }
+        this.recordingsService.finalizeRecording(cameraId).catch(() => {});
+    }
+
+    private resetChunkIdleTimer(cameraId: string) {
+        this.clearChunkIdleTimer(cameraId);
+        const timer = setTimeout(() => {
+            this.finishCamera(cameraId);
+        }, CctvGateway.CHUNK_IDLE_MS);
+        this.chunkIdleTimers.set(cameraId, timer);
     }
 
     handleConnection(client: Socket) {
@@ -67,14 +99,8 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
             // If a new socket has already claimed this cameraId, skip cleanup.
             const currentSid = this.cameraIdToSocketId.get(cameraId);
             if (currentSid && this.cameras.has(currentSid)) return;
-            this.cameraIdToSocketId.delete(cameraId);
-            this.initChunks.delete(cameraId);
-            this.recentChunks.delete(cameraId);
             console.log(`[CCTV] camera offline: ${cam.name} (${cameraId})`);
-            this.server
-                .to(`campaign:${cam.campaignId}`)
-                .emit('camera:offline', { cameraId });
-            this.recordingsService.finalizeRecording(cameraId).catch(() => {});
+            this.finishCamera(cameraId, cam);
         }, CctvGateway.DISCONNECT_GRACE_MS);
         this.disconnectTimers.set(cameraId, timer);
     }
@@ -108,6 +134,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
         };
         this.cameras.set(client.id, info);
         this.cameraIdToSocketId.set(cameraId, client.id);
+        this.resetChunkIdleTimer(cameraId);
         client.join(`camera:${cameraId}`);
         console.log(`[CCTV] camera online: ${info.name} → ${cameraId}`);
         this.server
@@ -125,6 +152,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     ) {
         if (data.mimeType) this.recordingsService.updateMimeType(data.cameraId, data.mimeType);
         this.recordingsService.appendChunk(data.cameraId, data.chunk);
+        this.resetChunkIdleTimer(data.cameraId);
 
         const buf = Buffer.isBuffer(data.chunk) ? data.chunk : Buffer.from(data.chunk as any);
         const mime = data.mimeType || 'video/webm;codecs=vp8';
@@ -152,14 +180,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const cameraId = cam.cameraId;
         const pending = this.disconnectTimers.get(cameraId);
         if (pending) { clearTimeout(pending); this.disconnectTimers.delete(cameraId); }
-        this.cameras.delete(client.id);
-        this.cameraIdToSocketId.delete(cameraId);
-        this.initChunks.delete(cameraId);
-        this.recentChunks.delete(cameraId);
-        this.server
-            .to(`campaign:${cam.campaignId}`)
-            .emit('camera:offline', { cameraId });
-        this.recordingsService.finalizeRecording(cameraId).catch(() => {});
+        this.finishCamera(cameraId, cam);
     }
 
     @SubscribeMessage('admin:join')
