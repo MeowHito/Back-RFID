@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Runner, RunnerDocument } from './runner.schema';
 import { CreateRunnerDto } from './dto/create-runner.dto';
+import { Event, EventDocument } from '../events/event.schema';
 
 export interface RunnerFilter {
     eventId?: string;
@@ -30,6 +31,7 @@ export interface PagingData {
 export class RunnersService {
     constructor(
         @InjectModel(Runner.name) private runnerModel: Model<RunnerDocument>,
+        @InjectModel(Event.name) private eventModel: Model<EventDocument>,
     ) { }
 
     // Get all runners without filter (for debugging/checking data)
@@ -462,44 +464,66 @@ export class RunnersService {
         }).lean().exec() as Promise<RunnerDocument | null>;
     }
 
+    private async resolveLookupEventIds(campaignOrEventId?: string): Promise<Types.ObjectId[]> {
+        if (!campaignOrEventId || !Types.ObjectId.isValid(campaignOrEventId)) return [];
+        const id = new Types.ObjectId(campaignOrEventId);
+        const eventIds = [id];
+        const events = await this.eventModel
+            .find({ $or: [{ campaignId: id }, { campaignId: campaignOrEventId }] })
+            .select('_id')
+            .lean()
+            .exec();
+        for (const event of events) {
+            const eventId = (event as any)._id;
+            if (Types.ObjectId.isValid(eventId)) eventIds.push(new Types.ObjectId(eventId));
+        }
+        const seen = new Set<string>();
+        return eventIds.filter(eventId => {
+            const key = eventId.toString();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
     /** Global lookup: find runner by BIB, chipCode, printingCode or rfidTag (case-insensitive).
      *  RFID scanners output the full tag (e.g. 24 hex chars) but the DB may store
      *  only the last 8 chars as chipCode. Handles both directions of partial matching.
-     *  When `eventId` is provided, results are scoped to that event only — used by
-     *  bib-check / scanning displays so they never surface runners from other events. */
-    async findByAnyCodeGlobal(code: string, eventId?: string): Promise<RunnerDocument | null> {
+     *  When campaign/event scope is provided, results are scoped to that campaign's events
+     *  so RaceTiger-synced runners stored under sub-events are also discoverable. */
+    async findByAnyCodeGlobal(code: string, campaignOrEventId?: string): Promise<RunnerDocument | null> {
         if (!code) return null;
-        const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const normalizedCode = code.trim();
+        if (!normalizedCode) return null;
+        const escaped = normalizedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const exactCI = new RegExp(`^${escaped}$`, 'i');
 
         const eventScope: Record<string, any> = {};
-        if (eventId) {
-            try {
-                eventScope.eventId = new Types.ObjectId(eventId);
-            } catch {
-                return null; // invalid eventId → no results, never leak across events
-            }
+        if (campaignOrEventId) {
+            const eventIds = await this.resolveLookupEventIds(campaignOrEventId);
+            if (!eventIds.length) return null;
+            eventScope.eventId = { $in: eventIds };
         }
 
         // 1. Try exact match first (BIB, full chipCode, printingCode, rfidTag)
         const exact = await this.runnerModel.findOne({
             ...eventScope,
             $or: [
-                { bib: code },
+                { bib: normalizedCode },
                 { chipCode: exactCI },
                 { printingCode: exactCI },
                 { rfidTag: exactCI },
-                { idNo: code },
+                { idNo: normalizedCode },
             ],
         }).lean().exec() as RunnerDocument | null;
         if (exact) return exact;
 
         // 2. Partial matching for hex codes (scanner ↔ DB partial match)
-        if (code.length >= 6 && /^[0-9A-Fa-f]+$/.test(code)) {
+        if (normalizedCode.length >= 6 && /^[0-9A-Fa-f]+$/.test(normalizedCode)) {
             // 2a. Extract last 8 chars from scanned code, match against shorter chipCode in DB
             //     e.g. scanned "026F86D3E49528760204FE69" → try chipCode = "0204FE69"
-            if (code.length > 8) {
-                const last8 = code.slice(-8);
+            if (normalizedCode.length > 8) {
+                const last8 = normalizedCode.slice(-8);
                 const last8Escaped = last8.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const last8CI = new RegExp(`^${last8Escaped}$`, 'i');
                 const byLast8 = await this.runnerModel.findOne({
