@@ -32,7 +32,7 @@ export class CctvGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private cameras = new Map<string, LiveCameraInfo>();
     private initChunks = new Map<string, { chunk: Buffer; mimeType: string }>();
     private recentChunks = new Map<string, { chunk: Buffer; mimeType: string }[]>();
-    private static readonly MAX_RECENT_CHUNKS = 5;
+    private static readonly MAX_RECENT_CHUNKS = 30;
 
     constructor(private readonly recordingsService: CctvRecordingsService) {}
 
