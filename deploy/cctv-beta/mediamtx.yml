@@ -1,0 +1,25 @@
+# MediaMTX config for CCTV Beta
+# Place at /opt/cctv-beta/mediamtx.yml on the EC2 ingest host.
+
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsDirectory: /recordings
+
+rtmpAddress: :1935
+srtAddress: :8890
+webrtcAddress: :8889
+
+pathDefaults:
+  record: yes
+  recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S
+  recordFormat: fmp4
+  recordSegmentDuration: 1h
+  runOnPublish: /hooks/on-publish.sh $MTX_PATH $MTX_SOURCE_TYPE
+  runOnUnpublish: /hooks/on-unpublish.sh $MTX_PATH
+  runOnReady: /hooks/on-ready.sh $MTX_PATH
+
+paths:
+  ~^live/.+$:

@@ -1,0 +1,33 @@
+version: '3.8'
+
+# Place at /opt/cctv-beta/docker-compose.yml on the EC2 ingest host.
+# Required sibling files: .env, mediamtx.yml, hooks/*.sh
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.9.0
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - /var/cctv/hls:/recordings
+      - ./hooks:/hooks:ro
+    env_file: .env
+    environment:
+      - MTX_INGEST_SECRET=${CCTV_BETA_INGEST_SECRET}
+      - BACKEND_URL=${BACKEND_URL}
+
+  s3-sync:
+    image: amazon/aws-cli:latest
+    restart: unless-stopped
+    volumes:
+      - /var/cctv/hls:/data:ro
+    env_file: .env
+    environment:
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET=${S3_BUCKET}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - "while true; do aws s3 sync /data s3://$$S3_BUCKET/hls --exclude '*.tmp' --storage-class STANDARD_IA; sleep 60; done"

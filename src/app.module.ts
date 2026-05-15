@@ -21,6 +21,7 @@ import { Checkpoint, CheckpointSchema } from './checkpoints/checkpoint.schema';
 import { User, UserSchema } from './users/user.schema';
 import { AdminLogsModule } from './admin-logs/admin-logs.module';
 import { CctvCamerasModule } from './cctv-cameras/cctv-cameras.module';
+import { CctvBetaModule } from './cctv-beta/cctv-beta.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { CctvCamerasModule } from './cctv-cameras/cctv-cameras.module';
     SyncModule,
     AdminLogsModule,
     CctvCamerasModule,
+    CctvBetaModule,
   ],
   controllers: [AppController],
   providers: [AppService, SeedService],
