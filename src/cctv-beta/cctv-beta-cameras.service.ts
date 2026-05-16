@@ -27,6 +27,7 @@ export class CctvBetaCamerasService {
         const play = this.playbackHost();
         return {
             ingestRtmpUrl: `rtmp://${ingest}:1935/live/${streamKey}`,
+            ingestRtmpServer: `rtmp://${ingest}:1935/live`,
             ingestSrtUrl: `srt://${ingest}:8890?streamid=publish:live/${streamKey}&pkt_size=1316`,
             hlsUrl: `https://${play}/hls/${streamKey}/index.m3u8`,
             llHlsUrl: `https://${play}/hls/${streamKey}/index.m3u8`, // MediaMTX LL-HLS uses same path

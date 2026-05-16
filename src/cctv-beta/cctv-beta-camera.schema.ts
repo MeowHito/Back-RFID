@@ -28,6 +28,10 @@ export class CctvBetaCamera {
     @Prop()
     ingestRtmpUrl: string;
 
+    // RTMP server-only URL (without stream key) — used by IRL Pro which takes Server + Key in separate fields
+    @Prop()
+    ingestRtmpServer: string;
+
     @Prop()
     ingestSrtUrl: string;
 
