@@ -8,6 +8,7 @@ import { CheckpointsModule } from '../checkpoints/checkpoints.module';
 import { TimingModule } from '../timing/timing.module';
 import { EventsModule } from '../events/events.module';
 import { CctvCamerasModule } from '../cctv-cameras/cctv-cameras.module';
+import { CctvBetaModule } from '../cctv-beta/cctv-beta.module';
 
 @Module({
     imports: [
@@ -19,6 +20,7 @@ import { CctvCamerasModule } from '../cctv-cameras/cctv-cameras.module';
         CheckpointsModule,
         TimingModule,
         CctvCamerasModule,
+        CctvBetaModule,
     ],
     controllers: [PublicApiController],
 })

@@ -12,6 +12,7 @@ import { TimingService } from '../timing/timing.service';
 import { EventsService } from '../events/events.service';
 import { CctvRecordingsService } from '../cctv-cameras/cctv-recordings.service';
 import { CctvSettingsService } from '../cctv-cameras/cctv-settings.service';
+import { CctvBetaRecordingsService } from '../cctv-beta/cctv-beta-recordings.service';
 import { CreateUserDto, LoginStationDto, UpdatePasswordDto } from '../users/dto/user.dto';
 
 interface NormalizedResponse {
@@ -34,6 +35,7 @@ export class PublicApiController {
         private readonly eventsService: EventsService,
         private readonly cctvRecordingsService: CctvRecordingsService,
         private readonly cctvSettingsService: CctvSettingsService,
+        private readonly cctvBetaRecordingsService: CctvBetaRecordingsService,
     ) { }
 
     private successResponse(data?: any): NormalizedResponse {
@@ -198,7 +200,50 @@ export class PublicApiController {
             throw new BadRequestException('Campaign not found for runner');
         }
 
-        const hits = await this.cctvRecordingsService.runnerLookup(runner.bib, campaignId);
+        // Look up BOTH classic browser-based CCTV recordings and Beta (Larix/IRL Pro)
+        // recordings. Both pipelines share the same matching logic (timing scan ↔
+        // checkpoint name + time window), so a runner who passes a single checkpoint
+        // covered by both systems will get two hits — UI then lets the user choose.
+        const [classicHits, betaHits] = await Promise.all([
+            this.cctvRecordingsService.runnerLookup(runner.bib, campaignId),
+            this.cctvBetaRecordingsService.runnerLookup(runner.bib, campaignId),
+        ]);
+
+        const annotatedClassic = classicHits.map((h: any) => ({ ...h, source: 'classic' }));
+        const annotatedBeta = betaHits.map((h: any) => ({ ...h, source: 'beta' }));
+
+        // Merge: one logical entry per timing scan (checkpoint+scanTime). Each entry
+        // carries an array of `recordings` so the UI can render a tab/toggle per source.
+        const merged = new Map<string, any>();
+        const keyOf = (h: any) => `${h.checkpoint}|${h.scanTime}`;
+
+        for (const h of [...annotatedClassic, ...annotatedBeta]) {
+            const k = keyOf(h);
+            const existing = merged.get(k);
+            if (existing) {
+                if (h.recording) {
+                    existing.recordings.push({ ...h.recording, source: h.source, seekSeconds: h.seekSeconds });
+                }
+            } else {
+                merged.set(k, {
+                    checkpoint: h.checkpoint,
+                    scanTime: h.scanTime,
+                    elapsedTime: h.elapsedTime,
+                    splitTime: h.splitTime,
+                    // Back-compat: keep the first recording flat too so existing UI code
+                    // that reads `hit.recording` doesn't break.
+                    recording: h.recording ? { ...h.recording, source: h.source } : null,
+                    seekSeconds: h.seekSeconds,
+                    recordings: h.recording
+                        ? [{ ...h.recording, source: h.source, seekSeconds: h.seekSeconds }]
+                        : [],
+                });
+            }
+        }
+
+        const hits = Array.from(merged.values()).sort(
+            (a, b) => new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime(),
+        );
         return { runner, campaignId, hits };
     }
 

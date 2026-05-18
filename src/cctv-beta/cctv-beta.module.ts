@@ -9,6 +9,8 @@ import { CctvBetaCamerasController } from './cctv-beta-cameras.controller';
 import { CctvBetaRecordingsController } from './cctv-beta-recordings.controller';
 import { CctvBetaIngestController } from './cctv-beta-ingest.controller';
 import { User, UserSchema } from '../users/user.schema';
+import { TimingRecord, TimingRecordSchema } from '../timing/timing-record.schema';
+import { Event, EventSchema } from '../events/event.schema';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 
 @Module({
@@ -18,6 +20,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
             { name: CctvBetaCamera.name, schema: CctvBetaCameraSchema },
             { name: CctvBetaRecording.name, schema: CctvBetaRecordingSchema },
             { name: User.name, schema: UserSchema },
+            { name: TimingRecord.name, schema: TimingRecordSchema },
+            { name: Event.name, schema: EventSchema },
         ]),
     ],
     controllers: [
