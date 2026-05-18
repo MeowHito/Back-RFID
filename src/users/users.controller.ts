@@ -123,10 +123,17 @@ export class UsersController {
 
     @Delete(':id')
     @AdminOnly()
-    delete(@Param('id') id: string, @Req() req: any) {
-        return this.usersService.delete(id, {
-            uuid: req.user.sub,
-            role: req.user.role,
-        });
+    delete(
+        @Param('id') id: string,
+        @Req() req: any,
+        @Body() body?: { confirmAdminEmail?: string; confirmAdminPassword?: string },
+    ) {
+        return this.usersService.delete(
+            id,
+            { uuid: req.user.sub, role: req.user.role },
+            body
+                ? { email: body.confirmAdminEmail, password: body.confirmAdminPassword }
+                : undefined,
+        );
     }
 }

@@ -315,7 +315,11 @@ export class UsersService {
         return user;
     }
 
-    async delete(id: string, requestor?: { uuid: string; role: string }): Promise<void> {
+    async delete(
+        id: string,
+        requestor?: { uuid: string; role: string },
+        secondaryConfirm?: { email?: string; password?: string },
+    ): Promise<void> {
         const existing = await this.userModel.findById(id).select('role uuid').exec();
         if (!existing) throw new NotFoundException('User not found');
 
@@ -324,6 +328,35 @@ export class UsersService {
         }
         if (requestor && existing.uuid === requestor.uuid) {
             throw new ForbiddenException('You cannot delete your own account');
+        }
+
+        // Deleting another admin requires a second admin to confirm with their
+        // own credentials. This prevents a single compromised admin account from
+        // wiping out other admins.
+        if (existing.role === 'admin') {
+            if (!secondaryConfirm?.email || !secondaryConfirm?.password) {
+                throw new ForbiddenException(
+                    'Deleting an admin requires confirmation by a second admin (email + password)',
+                );
+            }
+            const confirmer = await this.validatePassword(
+                secondaryConfirm.email,
+                secondaryConfirm.password,
+            );
+            if (!confirmer) {
+                throw new UnauthorizedException('Confirming admin credentials are invalid');
+            }
+            if (confirmer.role !== 'admin' && confirmer.role !== 'admin_master') {
+                throw new ForbiddenException('Confirming user must be an admin');
+            }
+            if (requestor && confirmer.uuid === requestor.uuid) {
+                throw new ForbiddenException(
+                    'Confirming admin must be a different person from the requester',
+                );
+            }
+            if (confirmer.uuid === existing.uuid) {
+                throw new ForbiddenException('An admin cannot confirm their own deletion');
+            }
         }
 
         await this.userModel.findByIdAndDelete(id).exec();
