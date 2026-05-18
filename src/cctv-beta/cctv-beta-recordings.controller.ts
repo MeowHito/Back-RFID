@@ -23,6 +23,16 @@ export class CctvBetaRecordingsController {
         return this.recordingsService.findAll({ campaignId, cameraId });
     }
 
+    @Get('storage')
+    storage(@Query('campaignId') campaignId?: string) {
+        return this.recordingsService.getStorageInfo(campaignId);
+    }
+
+    @Get('runner-lookup')
+    runnerLookup(@Query('bib') bib: string, @Query('campaignId') campaignId: string) {
+        return this.recordingsService.runnerLookup(bib, campaignId);
+    }
+
     @Get('runner-window')
     runnerWindow(
         @Query('campaignId') campaignId: string,

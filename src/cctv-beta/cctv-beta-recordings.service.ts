@@ -131,6 +131,18 @@ export class CctvBetaRecordingsService {
     }
 
     /**
+     * Storage summary for the /admin/cctv-recordings dashboard.
+     * Mirrors `CctvRecordingsService.getStorageInfo` so the page can sum the two.
+     */
+    async getStorageInfo(campaignId?: string): Promise<{ totalSize: number; count: number }> {
+        const q: any = { recordingStatus: { $in: ['recording', 'completed', 'archived'] } };
+        if (campaignId) q.campaignId = campaignId;
+        const recs = await this.recordingModel.find(q).select('fileSize recordingStatus').lean().exec();
+        const totalSize = recs.reduce((sum: number, r: any) => sum + (Number(r.fileSize) || 0), 0);
+        return { totalSize, count: recs.length };
+    }
+
+    /**
      * Match a runner's timing scans to Beta recordings at the same checkpoint.
      * Mirrors `CctvRecordingsService.runnerLookup` but reads cctvbetarecordings.
      * Returns one entry per timing scan, with the matching Beta recording (or null)
