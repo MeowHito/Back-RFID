@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException, ConflictException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { User, UserDocument } from './user.schema';
 import { CreateUserDto, UpdatePasswordDto } from './dto/user.dto';
 import { v4 as uuidv4 } from 'uuid';
 import * as bcrypt from 'bcrypt';
+import { getRolePermissions, roleNeedsCampaignScope } from './role-permissions';
 
 @Injectable()
 export class UsersService {
@@ -19,17 +20,45 @@ export class UsersService {
             throw new ConflictException('Email already exists');
         }
 
+        // admin_master can only be created via the database / seed script
+        if (createUserDto.role === 'admin_master') {
+            throw new ConflictException('admin_master cannot be created from the API');
+        }
+
         // Hash password
         const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
+
+        const role = createUserDto.role || 'user';
+        const allEventsAccess = role === 'admin' ? true : (createUserDto.allEventsAccess ?? false);
+        const allowedCampaigns = role === 'admin' ? [] : this.normalizeCampaignIds(createUserDto.allowedCampaigns);
+
+        // Role-based permissions are always derived server-side so a client cannot
+        // grant themselves extra rights.
+        const modulePermissions = getRolePermissions(role);
 
         const user = new this.userModel({
             ...createUserDto,
             uuid: uuidv4(),
             password: hashedPassword,
             username: createUserDto.username || createUserDto.email.split('@')[0],
+            role,
+            allEventsAccess,
+            allowedCampaigns,
+            modulePermissions,
         });
 
         return user.save();
+    }
+
+    private normalizeCampaignIds(ids?: string[]): Types.ObjectId[] {
+        if (!Array.isArray(ids)) return [];
+        const out: Types.ObjectId[] = [];
+        for (const id of ids) {
+            if (typeof id === 'string' && Types.ObjectId.isValid(id)) {
+                out.push(new Types.ObjectId(id));
+            }
+        }
+        return out;
     }
 
     async findAll(paging?: { page: number; limit: number }): Promise<{ data: UserDocument[]; total: number }> {
@@ -72,22 +101,68 @@ export class UsersService {
     }
 
     async update(id: string, updateData: Partial<CreateUserDto>): Promise<UserDocument> {
-        const user = await this.userModel.findByIdAndUpdate(id, updateData, { new: true }).select('-password').exec();
+        const existing = await this.userModel.findById(id).select('role').exec();
+        if (!existing) throw new NotFoundException('User not found');
+
+        // admin_master cannot be modified via this endpoint
+        if (existing.role === 'admin_master') {
+            throw new ForbiddenException('admin_master cannot be modified from the API');
+        }
+
+        const patch: any = { ...updateData };
+        // Never accept password through this endpoint
+        delete patch.password;
+
+        // If role is changing, re-apply role-based defaults so privileges stay aligned
+        if (patch.role && patch.role !== existing.role) {
+            if (patch.role === 'admin_master') {
+                throw new ForbiddenException('Cannot promote to admin_master');
+            }
+            patch.modulePermissions = getRolePermissions(patch.role);
+            if (patch.role === 'admin') {
+                patch.allEventsAccess = true;
+                patch.allowedCampaigns = [];
+            }
+        }
+
+        if (Array.isArray(patch.allowedCampaigns)) {
+            patch.allowedCampaigns = this.normalizeCampaignIds(patch.allowedCampaigns);
+        }
+
+        const user = await this.userModel.findByIdAndUpdate(id, patch, { new: true }).select('-password').exec();
         if (!user) throw new NotFoundException('User not found');
         return user;
     }
 
-    async updatePassword(data: UpdatePasswordDto): Promise<void> {
-        const user = await this.findByUuid(data.uuid || '');
+    async updatePassword(data: UpdatePasswordDto, requestor?: { uuid: string; role: string }): Promise<{ success: true }> {
+        const targetUuid = data.uuid || requestor?.uuid;
+        if (!targetUuid) throw new UnauthorizedException('Missing target user');
+
+        const user = await this.findByUuid(targetUuid);
         if (!user) throw new NotFoundException('User not found');
 
-        if (data.opw) {
+        const isSelf = requestor?.uuid === user.uuid;
+        const isAdmin = requestor?.role === 'admin' || requestor?.role === 'admin_master';
+
+        if (!requestor || (!isSelf && !isAdmin)) {
+            throw new ForbiddenException('Cannot change another user\'s password');
+        }
+
+        // Self-service password change requires the old password. Admins may reset
+        // anyone (except admin_master) without supplying it.
+        if (isSelf && !isAdmin) {
+            if (!data.opw) throw new UnauthorizedException('Old password is required');
             const isValid = await bcrypt.compare(data.opw, user.password);
             if (!isValid) throw new UnauthorizedException('Invalid old password');
         }
 
+        if (user.role === 'admin_master' && requestor.role !== 'admin_master' && !isSelf) {
+            throw new ForbiddenException('Cannot reset admin_master password');
+        }
+
         const hashedPassword = await bcrypt.hash(data.npw, 10);
         await this.userModel.findByIdAndUpdate(user._id, { password: hashedPassword }).exec();
+        return { success: true };
     }
 
     async updateRole(id: string, role: string, requestorRole?: string): Promise<UserDocument> {
@@ -104,7 +179,19 @@ export class UsersService {
             throw new ConflictException('Cannot modify admin_master role');
         }
 
-        const user = await this.userModel.findByIdAndUpdate(id, { role }, { new: true }).select('-password').exec();
+        const update: any = {
+            role,
+            modulePermissions: getRolePermissions(role),
+        };
+        if (role === 'admin') {
+            update.allEventsAccess = true;
+            update.allowedCampaigns = [];
+        } else if (role === 'user') {
+            update.allEventsAccess = false;
+            update.allowedCampaigns = [];
+        }
+
+        const user = await this.userModel.findByIdAndUpdate(id, update, { new: true }).select('-password').exec();
         if (!user) throw new NotFoundException('User not found');
         return user;
     }
@@ -203,17 +290,42 @@ export class UsersService {
             modulePermissions?: Record<string, { view: boolean; create: boolean; delete: boolean; export: boolean }>;
         },
     ): Promise<UserDocument> {
+        const existing = await this.userModel.findById(id).select('role').exec();
+        if (!existing) throw new NotFoundException('User not found');
+        if (existing.role === 'admin_master') {
+            throw new ForbiddenException('admin_master permissions cannot be modified');
+        }
+
         const updateData: any = {};
-        if (data.allEventsAccess !== undefined) updateData.allEventsAccess = data.allEventsAccess;
-        if (data.allowedCampaigns !== undefined) updateData.allowedCampaigns = data.allowedCampaigns;
-        if (data.modulePermissions !== undefined) updateData.modulePermissions = data.modulePermissions;
+
+        if (existing.role === 'admin') {
+            // Admins always have everything; ignore any restriction attempt.
+            updateData.allEventsAccess = true;
+            updateData.allowedCampaigns = [];
+            updateData.modulePermissions = getRolePermissions('admin');
+        } else {
+            // Force role-derived permissions; the client cannot pick custom rights.
+            updateData.modulePermissions = getRolePermissions(existing.role);
+            updateData.allEventsAccess = false;
+            updateData.allowedCampaigns = this.normalizeCampaignIds(data.allowedCampaigns);
+        }
+
         const user = await this.userModel.findByIdAndUpdate(id, updateData, { new: true }).select('-password').exec();
         if (!user) throw new NotFoundException('User not found');
         return user;
     }
 
-    async delete(id: string): Promise<void> {
-        const result = await this.userModel.findByIdAndDelete(id).exec();
-        if (!result) throw new NotFoundException('User not found');
+    async delete(id: string, requestor?: { uuid: string; role: string }): Promise<void> {
+        const existing = await this.userModel.findById(id).select('role uuid').exec();
+        if (!existing) throw new NotFoundException('User not found');
+
+        if (existing.role === 'admin_master') {
+            throw new ForbiddenException('admin_master cannot be deleted');
+        }
+        if (requestor && existing.uuid === requestor.uuid) {
+            throw new ForbiddenException('You cannot delete your own account');
+        }
+
+        await this.userModel.findByIdAndDelete(id).exec();
     }
 }
