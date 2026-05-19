@@ -30,6 +30,46 @@ export class CctvBetaRecordingsService {
      * stream ends, so `s3MasterManifestUrl` exists only after archival; live & freshly
      * finished segments only have `hlsManifestPath` on EC2.
      */
+    /**
+     * Default bitrates used to *estimate* live file size while a recording is in progress.
+     * The Beta pipeline stores files on EC2/S3 — the backend can't `stat` them — so we use
+     * `now - serverIngestStart` × bitrate as a rough estimate that updates every page refresh.
+     * Replaced by the real on-disk size in the on-unpublish webhook when streaming ends.
+     *
+     * Numbers reflect typical phone-camera output for each resolution at H.264 baseline:
+     *   720p  ≈ 2.5 Mbps
+     *   1080p ≈ 4   Mbps  (← default when resolution missing)
+     *   4K    ≈ 12  Mbps
+     */
+    private estimateBitrateKbps(resolution?: string): number {
+        switch (resolution) {
+            case '720p': return 2500;
+            case '4K': return 12000;
+            case '1080p':
+            default: return 4000;
+        }
+    }
+
+    /**
+     * For a doc whose status is `'recording'`, compute live `duration` (seconds since
+     * serverIngestStart) and an `fileSize` estimate. Doesn't persist — just enriches
+     * the returned object so the admin list shows growing numbers.
+     */
+    private enrichLiveRecording(doc: any): any {
+        if (doc?.recordingStatus !== 'recording' || !doc?.serverIngestStart) return doc;
+        const startMs = new Date(doc.serverIngestStart).getTime();
+        const liveSeconds = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+        doc.duration = liveSeconds;
+        // Only override fileSize if the DB value is 0/unset — preserve any value an
+        // external process (e.g. a future MediaMTX poll worker) may have set.
+        if (!doc.fileSize || doc.fileSize === 0) {
+            const kbps = this.estimateBitrateKbps((doc as any).resolution);
+            doc.fileSize = Math.floor((liveSeconds * kbps * 1000) / 8);
+            doc.fileSizeEstimated = true;
+        }
+        return doc;
+    }
+
     private pickPlaybackUrl(rec: any): { url: string; source: 's3' | 'ec2' } | null {
         if (rec?.s3MasterManifestUrl) return { url: rec.s3MasterManifestUrl, source: 's3' };
         if (rec?.hlsManifestPath) {
@@ -98,7 +138,16 @@ export class CctvBetaRecordingsService {
         const q: any = {};
         if (filter.campaignId) q.campaignId = filter.campaignId;
         if (filter.cameraId) q.cameraId = filter.cameraId;
-        return this.recordingModel.find(q).sort({ serverIngestStart: -1 }).limit(500).exec();
+        const recs = await this.recordingModel.find(q).sort({ serverIngestStart: -1 }).limit(500).exec();
+        // Live in-progress recordings (status='recording') have stale duration/fileSize in DB
+        // until the on-unpublish webhook fires. Enrich each one with a live duration and an
+        // estimated size so the admin list reflects what's happening right now.
+        // .toJSON() is invoked when Mongoose serializes for the HTTP response — by mutating
+        // the doc here we ensure the enrichment survives the response trip.
+        for (const rec of recs) {
+            this.enrichLiveRecording(rec);
+        }
+        return recs;
     }
 
     async findById(id: string): Promise<CctvBetaRecordingDocument> {
@@ -137,8 +186,21 @@ export class CctvBetaRecordingsService {
     async getStorageInfo(campaignId?: string): Promise<{ totalSize: number; count: number }> {
         const q: any = { recordingStatus: { $in: ['recording', 'completed', 'archived'] } };
         if (campaignId) q.campaignId = campaignId;
-        const recs = await this.recordingModel.find(q).select('fileSize recordingStatus').lean().exec();
-        const totalSize = recs.reduce((sum: number, r: any) => sum + (Number(r.fileSize) || 0), 0);
+        // Need `serverIngestStart` + `resolution` for live size estimates too
+        const recs = await this.recordingModel
+            .find(q)
+            .select('fileSize recordingStatus serverIngestStart resolution')
+            .lean()
+            .exec();
+        const totalSize = recs.reduce((sum: number, r: any) => {
+            // For in-progress recordings, contribute the estimated size instead of 0
+            if (r.recordingStatus === 'recording' && (!r.fileSize || r.fileSize === 0) && r.serverIngestStart) {
+                const liveSeconds = Math.max(0, Math.floor((Date.now() - new Date(r.serverIngestStart).getTime()) / 1000));
+                const kbps = this.estimateBitrateKbps(r.resolution);
+                return sum + Math.floor((liveSeconds * kbps * 1000) / 8);
+            }
+            return sum + (Number(r.fileSize) || 0);
+        }, 0);
         return { totalSize, count: recs.length };
     }
 
