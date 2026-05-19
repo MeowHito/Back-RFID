@@ -1,8 +1,10 @@
 import {
     Controller,
     Get,
+    Post,
     Delete,
     Param,
+    Body,
     Query,
     UseGuards,
 } from '@nestjs/common';
@@ -31,6 +33,18 @@ export class CctvBetaRecordingsController {
     @Get('runner-lookup')
     runnerLookup(@Query('bib') bib: string, @Query('campaignId') campaignId: string) {
         return this.recordingsService.runnerLookup(bib, campaignId);
+    }
+
+    @Get('by-time')
+    findByTime(@Query('campaignId') campaignId: string, @Query('at') at: string) {
+        return this.recordingsService.findByTime({ campaignId, at: new Date(at) });
+    }
+
+    @Post('bulk-delete')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
+    bulkDelete(@Body() body: { ids?: string[]; campaignId?: string }) {
+        return this.recordingsService.deleteMany(body);
     }
 
     @Get('runner-window')

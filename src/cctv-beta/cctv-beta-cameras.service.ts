@@ -101,4 +101,18 @@ export class CctvBetaCamerasService {
             { $set: { status: 'offline', lastUnpublishAt: new Date() } },
         ).exec();
     }
+
+    /**
+     * Camera stats for the /admin dashboard. Mirrors `CctvCamerasService.getStats`.
+     */
+    async getStats(campaignId?: string): Promise<{ total: number; online: number; offline: number; publishing: number }> {
+        const q: any = {};
+        if (campaignId) q.campaignId = campaignId;
+        const cams = await this.cameraModel.find(q).select('status').lean().exec();
+        const total = cams.length;
+        const publishing = cams.filter((c: any) => c.status === 'publishing').length;
+        const online = cams.filter((c: any) => c.status === 'online').length;
+        const offline = cams.filter((c: any) => c.status === 'offline').length;
+        return { total, online, offline, publishing };
+    }
 }

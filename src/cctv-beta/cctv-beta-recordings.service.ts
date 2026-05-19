@@ -143,6 +143,63 @@ export class CctvBetaRecordingsService {
     }
 
     /**
+     * Bulk delete by IDs or by campaign. Mirrors `CctvRecordingsService.deleteAll`.
+     * Note: only removes MongoDB metadata — the S3/HLS files themselves are pruned
+     * by lifecycle policies (or the s3-sync container if you wipe disk).
+     */
+    async deleteMany(opts: { ids?: string[]; campaignId?: string }): Promise<{ deleted: number }> {
+        const q: any = {};
+        if (opts.ids?.length) q._id = { $in: opts.ids };
+        else if (opts.campaignId) q.campaignId = opts.campaignId;
+        else throw new NotFoundException('Specify either ids or campaignId');
+        const res = await this.recordingModel.deleteMany(q).exec();
+        return { deleted: res.deletedCount || 0 };
+    }
+
+    /**
+     * Find recordings whose ingest window covers a given Thailand-local timestamp,
+     * plus the nearest recordings before/after if no covering recording exists.
+     * Mirrors the time-search feature on /admin/cctv-recordings.
+     */
+    async findByTime(opts: { campaignId: string; at: Date }): Promise<{
+        covering: any[];
+        nearestBefore: any | null;
+        nearestAfter: any | null;
+    }> {
+        const { campaignId, at } = opts;
+        const baseFilter: any = {
+            campaignId,
+            recordingStatus: { $in: ['recording', 'completed', 'archived'] },
+        };
+
+        // Recordings whose interval [serverIngestStart, serverIngestEnd] includes `at`
+        const covering = await this.recordingModel.find({
+            ...baseFilter,
+            serverIngestStart: { $lte: at },
+            $or: [
+                { serverIngestEnd: { $gte: at } },
+                { serverIngestEnd: null, recordingStatus: 'recording' },
+            ],
+        }).sort({ serverIngestStart: -1 }).lean().exec();
+
+        const [nearestBefore] = await this.recordingModel.find({
+            ...baseFilter,
+            serverIngestStart: { $lt: at },
+        }).sort({ serverIngestStart: -1 }).limit(1).lean().exec();
+
+        const [nearestAfter] = await this.recordingModel.find({
+            ...baseFilter,
+            serverIngestStart: { $gt: at },
+        }).sort({ serverIngestStart: 1 }).limit(1).lean().exec();
+
+        return {
+            covering,
+            nearestBefore: nearestBefore || null,
+            nearestAfter: nearestAfter || null,
+        };
+    }
+
+    /**
      * Match a runner's timing scans to Beta recordings at the same checkpoint.
      * Mirrors `CctvRecordingsService.runnerLookup` but reads cctvbetarecordings.
      * Returns one entry per timing scan, with the matching Beta recording (or null)

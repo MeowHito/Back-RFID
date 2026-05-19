@@ -27,6 +27,16 @@ export class CctvBetaCamerasController {
             : this.camerasService.findAll();
     }
 
+    @Get('stats')
+    stats(@Query('campaignId') campaignId?: string) {
+        return this.camerasService.getStats(campaignId);
+    }
+
+    @Get('stats/:campaignId')
+    statsByCampaign(@Param('campaignId') campaignId: string) {
+        return this.camerasService.getStats(campaignId);
+    }
+
     @Get(':id')
     findOne(@Param('id') id: string) {
         return this.camerasService.findById(id);
