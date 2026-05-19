@@ -1,13 +1,16 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
 import { Model, Types } from 'mongoose';
 import { CctvBetaRecording, CctvBetaRecordingDocument } from './cctv-beta-recording.schema';
+import { CctvBetaS3Service } from './cctv-beta-s3.service';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
 import { Event, EventDocument } from '../events/event.schema';
 
 @Injectable()
 export class CctvBetaRecordingsService {
+    private readonly logger = new Logger(CctvBetaRecordingsService.name);
+
     constructor(
         @InjectModel(CctvBetaRecording.name)
         private readonly recordingModel: Model<CctvBetaRecordingDocument>,
@@ -16,7 +19,34 @@ export class CctvBetaRecordingsService {
         @InjectModel(Event.name)
         private readonly eventModel: Model<EventDocument>,
         private readonly configService: ConfigService,
+        private readonly s3: CctvBetaS3Service,
     ) {}
+
+    /**
+     * Best-effort: delete every S3 object under the recording's prefix.
+     * Logs failures but doesn't throw — the DB delete must succeed even if S3 is down.
+     * No-op when AWS credentials aren't configured (the service silently skips).
+     */
+    private async deleteS3ForRecording(rec: { streamKey?: string; s3Key?: string }): Promise<void> {
+        if (!this.s3.isEnabled()) return;
+        // Prefer streamKey (matches the actual MediaMTX upload structure: hls/{streamKey}/...)
+        // Fall back to s3Key's directory if streamKey is missing on old records.
+        let prefix = '';
+        if (rec.streamKey) {
+            prefix = `hls/${rec.streamKey}/`;
+        } else if (rec.s3Key) {
+            prefix = rec.s3Key.replace(/\/[^/]*$/, '/'); // strip filename → keep folder
+        }
+        if (!prefix) return;
+        try {
+            const result = await this.s3.deletePrefix(prefix);
+            if (result.deleted > 0) {
+                this.logger.log(`S3 deleted ${result.deleted} object(s) under ${prefix}`);
+            }
+        } catch (err) {
+            this.logger.warn(`S3 delete failed for prefix ${prefix}: ${err}`);
+        }
+    }
 
     private normalizeCheckpointName(value?: string): string {
         return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -36,17 +66,22 @@ export class CctvBetaRecordingsService {
      * `now - serverIngestStart` × bitrate as a rough estimate that updates every page refresh.
      * Replaced by the real on-disk size in the on-unpublish webhook when streaming ends.
      *
-     * Numbers reflect typical phone-camera output for each resolution at H.264 baseline:
-     *   720p  ≈ 2.5 Mbps
-     *   1080p ≈ 4   Mbps  (← default when resolution missing)
-     *   4K    ≈ 12  Mbps
+     * Numbers calibrated against actual Larix/IRL Pro recordings seen in production
+     * (observed 6-13 Mbps for 1080p, depending on app settings + scene motion). H.264
+     * baseline at default encoder presets:
+     *   720p  ≈ 4   Mbps
+     *   1080p ≈ 8   Mbps  (← default when resolution missing — calibrated 2026-05)
+     *   4K    ≈ 20  Mbps
+     *
+     * Real bitrate varies ±50% based on motion + the phone's encoder settings;
+     * if you want tighter estimates, lock the bitrate in the Larix/IRL Pro app.
      */
     private estimateBitrateKbps(resolution?: string): number {
         switch (resolution) {
-            case '720p': return 2500;
-            case '4K': return 12000;
+            case '720p': return 4000;
+            case '4K': return 20000;
             case '1080p':
-            default: return 4000;
+            default: return 8000;
         }
     }
 
@@ -175,8 +210,13 @@ export class CctvBetaRecordingsService {
     }
 
     async remove(id: string): Promise<void> {
-        const res = await this.recordingModel.findByIdAndDelete(id).exec();
-        if (!res) throw new NotFoundException('Recording not found');
+        const doc = await this.recordingModel.findById(id).exec();
+        if (!doc) throw new NotFoundException('Recording not found');
+        // Delete S3 objects FIRST so a transient S3 outage doesn't leave orphan files
+        // when the DB row is already gone. If S3 delete fails we log but proceed —
+        // the lifecycle policy will catch the orphan later.
+        await this.deleteS3ForRecording(doc as any);
+        await this.recordingModel.findByIdAndDelete(id).exec();
     }
 
     /**
@@ -209,13 +249,27 @@ export class CctvBetaRecordingsService {
      * Note: only removes MongoDB metadata — the S3/HLS files themselves are pruned
      * by lifecycle policies (or the s3-sync container if you wipe disk).
      */
-    async deleteMany(opts: { ids?: string[]; campaignId?: string }): Promise<{ deleted: number }> {
+    async deleteMany(opts: { ids?: string[]; campaignId?: string }): Promise<{ deleted: number; s3Deleted: number }> {
         const q: any = {};
         if (opts.ids?.length) q._id = { $in: opts.ids };
         else if (opts.campaignId) q.campaignId = opts.campaignId;
         else throw new NotFoundException('Specify either ids or campaignId');
+
+        // 1. Collect streamKey/s3Key BEFORE deletion so we know what S3 prefixes to clean
+        const docs = await this.recordingModel.find(q).select('streamKey s3Key').lean().exec();
+
+        // 2. Delete S3 prefixes in parallel (best-effort — failures logged, never blocked)
+        let s3Deleted = 0;
+        if (this.s3.isEnabled() && docs.length > 0) {
+            const results = await Promise.allSettled(
+                docs.map((d: any) => this.deleteS3ForRecording(d).then(() => null)),
+            );
+            s3Deleted = results.filter((r) => r.status === 'fulfilled').length;
+        }
+
+        // 3. Remove DB rows
         const res = await this.recordingModel.deleteMany(q).exec();
-        return { deleted: res.deletedCount || 0 };
+        return { deleted: res.deletedCount || 0, s3Deleted };
     }
 
     /**

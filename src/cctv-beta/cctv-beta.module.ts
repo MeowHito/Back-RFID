@@ -5,6 +5,7 @@ import { CctvBetaCamera, CctvBetaCameraSchema } from './cctv-beta-camera.schema'
 import { CctvBetaRecording, CctvBetaRecordingSchema } from './cctv-beta-recording.schema';
 import { CctvBetaCamerasService } from './cctv-beta-cameras.service';
 import { CctvBetaRecordingsService } from './cctv-beta-recordings.service';
+import { CctvBetaS3Service } from './cctv-beta-s3.service';
 import { CctvBetaCamerasController } from './cctv-beta-cameras.controller';
 import { CctvBetaRecordingsController } from './cctv-beta-recordings.controller';
 import { CctvBetaIngestController } from './cctv-beta-ingest.controller';
@@ -29,7 +30,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
         CctvBetaRecordingsController,
         CctvBetaIngestController,
     ],
-    providers: [CctvBetaCamerasService, CctvBetaRecordingsService, PermissionsGuard],
-    exports: [CctvBetaCamerasService, CctvBetaRecordingsService],
+    providers: [CctvBetaCamerasService, CctvBetaRecordingsService, CctvBetaS3Service, PermissionsGuard],
+    exports: [CctvBetaCamerasService, CctvBetaRecordingsService, CctvBetaS3Service],
 })
 export class CctvBetaModule {}
