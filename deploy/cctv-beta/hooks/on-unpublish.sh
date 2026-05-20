@@ -19,15 +19,22 @@ REC_DIR="/recordings/$1"
 # Pick the freshest fmp4 recording file in the dir (ignores LL-HLS segments which
 # match a different name pattern: small numeric/uuid prefix). Recording filenames
 # look like "2026-05-20_07-13-33.mp4" — match that exact YYYY-MM-DD_HH-MM-SS shape.
+#
+# Portable to BusyBox sh (alpine) — DO NOT use `find -printf`, that's a GNU
+# extension and silently produces no output on BusyBox find, leaving S3_KEY empty.
+# `ls -1t` is in POSIX-ish territory and works in both BusyBox and GNU coreutils.
 S3_KEY=""
 SIZE=0
 if [ -d "$REC_DIR" ]; then
-  REC_FILE=$(find "$REC_DIR" -maxdepth 1 -type f -name '20*-*-*_*-*-*.mp4' -printf '%T@ %p\n' 2>/dev/null \
-    | sort -nr | head -n1 | awk '{print $2}')
+  # Enable nullglob-equivalent behavior so an empty match leaves REC_FILE blank
+  # instead of containing the literal pattern.
+  set +e
+  REC_FILE=$(ls -1t "$REC_DIR"/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]-[0-9][0-9].mp4 2>/dev/null | head -n1)
+  set -e
   if [ -n "$REC_FILE" ] && [ -f "$REC_FILE" ]; then
     BASENAME=$(basename "$REC_FILE")
     S3_KEY="hls/$1/$BASENAME"
-    SIZE=$(stat -c%s "$REC_FILE" 2>/dev/null || echo 0)
+    SIZE=$(stat -c%s "$REC_FILE" 2>/dev/null || wc -c < "$REC_FILE" 2>/dev/null || echo 0)
   fi
   # Fall back to total dir size if no individual recording file found
   if [ "$SIZE" = "0" ]; then
