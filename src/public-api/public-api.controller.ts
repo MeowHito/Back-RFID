@@ -2,7 +2,7 @@ import { Controller, Get, Post, Body, Query, Headers, Param, BadRequestException
 import type { Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { UsersService } from '../users/users.service';
 import { AuthService } from '../auth/auth.service';
 import { CampaignsService, PagingData } from '../campaigns/campaigns.service';
@@ -868,11 +868,10 @@ export class PublicApiController {
             // so the original/720p file is served. Force OFF for downloads regardless.
             const lq = lqParam === '1' && download !== '1';
 
-            // For all completed recordings, transcode to mp4 with a wall-clock timestamp
-            // burned into every frame. This guarantees the time is visible regardless of
-            // whether the client camera could overlay it (older iOS lacks captureStream).
-            // Output is cached so the cost is paid once per recording (or per trim variant).
-            // Live recordings are streamed raw — file is still being written.
+            // For completed recordings we transcode to mp4 with an optional wall-clock
+            // timestamp burned in. Output is cached so the cost is paid once per recording
+            // (or per trim variant). Live recordings are streamed raw — the file is still
+            // being written.
             if (!isLive) {
                 const baseName = fileName.replace(/\.[^.]+$/, '');
                 // Cache key has to differ per trim window AND per quality variant — otherwise a
@@ -899,29 +898,116 @@ export class PublicApiController {
                     }
                 }
 
-                // Build ffmpeg args: trim + burn real-time clock + convert to mp4.
-                // Timestamp is derived from recording.startTime so EVERY video shows the
-                // wall-clock time at which each frame was captured, regardless of whether
-                // the client camera was able to overlay it (older iOS lacks captureStream).
-                const startEpochSec = Math.floor(new Date(startTime).getTime() / 1000)
-                    + (hasTrim ? Math.floor(ss) : 0);
+                // -------------------- TRIMMED CLIPS --------------------
+                // Path the runner page hits (lq=1 + ss/t). We pipe ffmpeg output directly
+                // to the response as fragmented mp4 so the <video> tag starts playing within
+                // a second instead of waiting for the whole transcode. Meanwhile we tee the
+                // bytes to a `.partial` cache file; on successful ffmpeg exit we rename it
+                // into place so the next viewer gets a normal cached response.
+                if (hasTrim) {
+                    const partialPath = cachedPath + '.partial';
+                    try { if (fs.existsSync(partialPath)) fs.unlinkSync(partialPath); } catch {}
+
+                    // `-ss` BEFORE `-i` performs an input-side seek which is dramatically
+                    // faster (keyframe seek). It can be slightly less accurate, but for a
+                    // 15s window that drifts <1s, which the user won't notice.
+                    const ffmpegArgs: string[] = ['-y', '-ss', String(ss), '-i', filePath, '-t', String(t)];
+                    // Drawtext is intentionally omitted on the streaming path: it depends on
+                    // system fontconfig/freetype which is not guaranteed on every host, and
+                    // the camera apps already overlay their own timestamp. The download path
+                    // could still add it later if needed.
+                    if (lq) {
+                        ffmpegArgs.push('-vf', `scale=-2:'min(480,ih)'`);
+                    }
+                    ffmpegArgs.push(
+                        '-c:v', 'libx264',
+                        '-preset', 'ultrafast',
+                        '-crf', lq ? '30' : '28',
+                        '-c:a', 'aac',
+                        '-b:a', '96k',
+                        // Fragmented mp4 — empty_moov puts the moov atom at the start so the
+                        // browser doesn't need to seek to the end of the file to begin playback.
+                        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+                        '-f', 'mp4',
+                        'pipe:1',
+                    );
+
+                    const ff = spawn('ffmpeg', ffmpegArgs);
+                    const cacheStream = fs.createWriteStream(partialPath);
+                    let clientAborted = false;
+                    let spawnFailed = false;
+
+                    res.setHeader('Content-Type', 'video/mp4');
+                    res.setHeader('Content-Disposition', `${disposition}; filename="${mp4FileName}"`);
+                    res.setHeader('Cache-Control', 'no-store');
+                    res.setHeader('Accept-Ranges', 'none');
+
+                    ff.on('error', () => {
+                        // ffmpeg binary missing or unable to spawn. Surface a real 500 to the
+                        // client instead of falling through to the un-trimmed original (which
+                        // is what made the 15-second clip look like the full 6-minute file).
+                        spawnFailed = true;
+                        try { cacheStream.destroy(); } catch {}
+                        try { fs.unlinkSync(partialPath); } catch {}
+                        if (!res.headersSent) {
+                            res.status(500).json({ error: 'Video transcoder unavailable' });
+                        } else {
+                            try { res.end(); } catch {}
+                        }
+                    });
+
+                    ff.stdout.on('data', (chunk: Buffer) => {
+                        if (!clientAborted) res.write(chunk);
+                        if (!cacheStream.destroyed) cacheStream.write(chunk);
+                    });
+
+                    res.on('close', () => {
+                        // Client navigated away or aborted — kill ffmpeg so we don't keep
+                        // transcoding for nothing, and drop the partial cache.
+                        if (!res.writableEnded) {
+                            clientAborted = true;
+                            try { ff.kill('SIGKILL'); } catch {}
+                        }
+                    });
+
+                    ff.on('close', (code: number | null) => {
+                        try { cacheStream.end(); } catch {}
+                        const success = !spawnFailed && !clientAborted && code === 0;
+                        // Wait for the cache stream to flush before deciding what to do with
+                        // the partial file. We listen on `finish` so the rename can't race
+                        // with in-flight writes.
+                        cacheStream.on('finish', () => {
+                            if (success) {
+                                try { fs.renameSync(partialPath, cachedPath); } catch {}
+                            } else {
+                                try { fs.unlinkSync(partialPath); } catch {}
+                            }
+                        });
+                        if (!clientAborted) {
+                            if (!res.headersSent && !success) {
+                                res.status(500).json({ error: 'ffmpeg failed' });
+                            } else {
+                                try { res.end(); } catch {}
+                            }
+                        }
+                    });
+
+                    return;
+                }
+                // -------------------- /TRIMMED CLIPS --------------------
+
+                // No trim: full-file transcode to a cached faststart mp4 (legacy behavior).
+                // This path runs when the caller wants the whole recording — typically admin
+                // downloads, not the runner page (which always supplies ss/t).
+                const startEpochSec = Math.floor(new Date(startTime).getTime() / 1000);
                 const drawtextFilter = this.buildTimestampDrawtext(startEpochSec);
 
                 const runFfmpeg = (withDrawtext: boolean) => new Promise<void>((resolve, reject) => {
-                    const ffmpegArgs: string[] = ['-y'];
-                    if (hasTrim) {
-                        ffmpegArgs.push('-ss', String(ss), '-t', String(t));
-                    }
-                    ffmpegArgs.push('-i', filePath);
-                    // Build the -vf filter chain. Drawtext (timestamp overlay) and scale
-                    // (480p downscale) can both apply; chain them with commas. We use
-                    // `scale=-2:'min(480,ih)'` so we never upscale a source smaller than 480p.
+                    const ffmpegArgs: string[] = ['-y', '-i', filePath];
                     const filters: string[] = [];
                     if (withDrawtext) filters.push(drawtextFilter);
                     if (lq) filters.push(`scale=-2:'min(480,ih)'`);
-                    if (filters.length > 0) {
-                        ffmpegArgs.push('-vf', filters.join(','));
-                    }
+                    if (filters.length > 0) ffmpegArgs.push('-vf', filters.join(','));
                     ffmpegArgs.push(
                         '-c:v', 'libx264',
                         '-preset', 'ultrafast',
@@ -940,9 +1026,9 @@ export class PublicApiController {
                 try {
                     try {
                         await runFfmpeg(true);
-                    } catch (err) {
+                    } catch {
                         // drawtext can fail on systems missing fontconfig/freetype fonts.
-                        // Retry once without the overlay so download/playback still works.
+                        // Retry once without the overlay so playback still works.
                         try { if (fs.existsSync(cachedPath)) fs.unlinkSync(cachedPath); } catch {}
                         await runFfmpeg(false);
                     }
