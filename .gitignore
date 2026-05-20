@@ -25,6 +25,14 @@ yarn-error.log*
 .env
 .env.local
 .env*.local
+.env.bak.*
+
+# Runtime data — uploaded media should never be committed (binary, 100MB+ per file)
+uploads/
+*.mp4
+*.webm
+*.mov
+*.mkv
 
 # IDE
 .idea/

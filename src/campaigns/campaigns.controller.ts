@@ -6,6 +6,28 @@ import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { AdminOnly } from '../auth/decorators/permissions.decorator';
 
+// Fields holding base64 data URIs that bloat responses (100KB–1MB each).
+// Stripped by default on GET single/featured; opt back in with ?full=true.
+const HEAVY_CAMPAIGN_FIELDS = [
+    'pictureUrl',
+    'scanningBgImage',
+    'eslipCustomHtml',
+    'certBackgroundImage',
+    'chipBanner',
+    'chipBgUrl',
+] as const;
+
+function stripHeavyCampaignFields(campaign: any): any {
+    if (!campaign) return campaign;
+    const c = (campaign as any).toObject ? (campaign as any).toObject() : { ...campaign };
+    for (const f of HEAVY_CAMPAIGN_FIELDS) delete c[f];
+    return c;
+}
+
+function isFull(full?: string): boolean {
+    return full === 'true' || full === '1';
+}
+
 @Controller('campaigns')
 export class CampaignsController {
     constructor(private readonly campaignsService: CampaignsService) { }
@@ -36,8 +58,9 @@ export class CampaignsController {
     }
 
     @Get('featured')
-    getFeatured() {
-        return this.campaignsService.findFeatured();
+    async getFeatured(@Query('full') full?: string) {
+        const campaign = await this.campaignsService.findFeatured();
+        return isFull(full) ? campaign : stripHeavyCampaignFields(campaign);
     }
 
     @Put(':id/featured')
@@ -51,8 +74,9 @@ export class CampaignsController {
     }
 
     @Get(':id')
-    findOne(@Param('id') id: string) {
-        return this.campaignsService.findById(id);
+    async findOne(@Param('id') id: string, @Query('full') full?: string) {
+        const campaign = await this.campaignsService.findById(id);
+        return isFull(full) ? campaign : stripHeavyCampaignFields(campaign);
     }
 
     @Get('uuid/:uuid')

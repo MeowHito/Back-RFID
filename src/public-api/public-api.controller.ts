@@ -750,19 +750,30 @@ export class PublicApiController {
                 }
             } catch { /* rank computation failed, proceed without */ }
 
+            // Strip base64 image fields from event (bannerImage/coverImage/pictureUrl may be
+            // huge data URIs). Clients that need them should fetch the dedicated image endpoint.
+            const eventLite = event ? (() => {
+                const e: any = (event as any).toObject ? (event as any).toObject() : { ...event as any };
+                delete e.bannerImage;
+                delete e.coverImage;
+                delete e.pictureUrl;
+                return e;
+            })() : null;
+
             return this.successResponse({
                 runner: runnerObj,
                 timingRecords,
                 checkpointRanks: checkpointRanksObj,
                 checkpointMappings,
-                event,
+                event: eventLite,
                 campaign: campaign ? {
                     _id: campaign._id,
                     name: campaign.name,
                     slug: campaign.slug,
                     eventDate: campaign.eventDate,
                     location: campaign.location,
-                    pictureUrl: campaign.pictureUrl,
+                    // pictureUrl intentionally omitted — clients should fetch
+                    // /public-api/campaigns/:id/image to get the campaign cover.
                     categories: campaign.categories,
                     eslipTemplate: campaign.eslipTemplate || 'template1',
                     eslipTemplates: (campaign as any).eslipTemplates || [],

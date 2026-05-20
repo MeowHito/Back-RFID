@@ -27,8 +27,18 @@ export class EventsService {
         return event.save();
     }
 
+    // Heavy base64 fields stripped from list/multi queries (banner ~50-100KB each).
+    // findOne(id) still returns them for detail pages that need the image.
+    private static readonly EVENT_LIST_PROJECTION = '-bannerImage -coverImage -pictureUrl';
+
     async findAll(limit: number = 500): Promise<EventDocument[]> {
-        return this.eventModel.find().sort({ date: -1 }).limit(limit).lean().exec() as Promise<EventDocument[]>;
+        return this.eventModel
+            .find()
+            .select(EventsService.EVENT_LIST_PROJECTION)
+            .sort({ date: -1 })
+            .limit(limit)
+            .lean()
+            .exec() as Promise<EventDocument[]>;
     }
 
     async findOne(id: string): Promise<EventDocument | null> {
@@ -51,6 +61,7 @@ export class EventsService {
 
         return this.eventModel
             .find({ $or: campaignQuery })
+            .select(EventsService.EVENT_LIST_PROJECTION)
             .sort({ date: 1 })
             .lean()
             .exec() as Promise<EventDocument[]>;
@@ -67,7 +78,13 @@ export class EventsService {
         if (filter.category) {
             query.category = filter.category;
         }
-        return this.eventModel.find(query).sort({ date: -1 }).limit(500).lean().exec() as Promise<EventDocument[]>;
+        return this.eventModel
+            .find(query)
+            .select(EventsService.EVENT_LIST_PROJECTION)
+            .sort({ date: -1 })
+            .limit(500)
+            .lean()
+            .exec() as Promise<EventDocument[]>;
     }
 
     async update(id: string, updateEventDto: Partial<CreateEventDto>): Promise<EventDocument | null> {

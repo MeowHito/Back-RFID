@@ -1,32 +1,31 @@
-# แก้ปัญหา CCTV Beta Recordings เล่นไม่ได้ (S3 Access Denied)
+# CCTV Beta Recording playback — known incidents
 
-## สาเหตุ
-1. **S3 objects เป็น private** — เพราะ `aws s3 sync` upload โดยไม่ใส่ ACL
-2. **`s3Key` ใน DB เก็บเป็นโฟลเดอร์** (`hls/xxx/`) ไม่ใช่ไฟล์ manifest (`hls/xxx/index.m3u8`)
+## 2026-05: ไฟล์หายระหว่าง 2026-05-16 → 2026-05-20
 
-## แก้ในโค้ดแล้ว
-- `hooks/on-unpublish.sh` → `S3_KEY="hls/$STREAM_KEY/index.m3u8"`
-- `docker-compose.yml` → เพิ่ม `--acl public-read` ใน aws s3 sync
+### อาการ
+- หน้า `/runner/[id]` กดเปิดวิดีโอ Beta แล้วหมุนค้างหรือขึ้น "HLS Playback Failed"
+- recordings ใน DB status=`archived` แต่ S3 ไม่มีไฟล์
 
-## ต้องทำต่อบน EC2 / AWS Console
+### Root cause (สองชั้นซ้อน)
+1. **s3-sync upload fail** — `aws s3 sync ... --acl public-read` ใช้ไม่ได้กับ bucket ที่ตั้ง
+   **Bucket owner enforced** (default ใหม่ของ AWS ตั้งแต่ Apr 2023) → ทุก PutObject fail
+   ด้วย `AccessControlListNotSupported`. logs ของ container แสดง upload failed ต่อเนื่อง
+2. **cleanup ลบไฟล์ก่อน sync เสร็จ** — cleanup container ลบไฟล์อายุ > 10 นาทีโดย
+   ไม่ตรวจว่า upload สำเร็จไหม → ไฟล์ที่ค้างใน queue หายตลอดกาล
+3. **ingest hook ส่ง s3Key ผิด format** — `hooks/on-unpublish.sh` รุ่นแรกตั้ง
+   `S3_KEY="hls/$STREAM_KEY/index.m3u8"` แต่ MediaMTX ไม่ได้ archive LL-HLS manifest
+   ขึ้น S3 (มีแค่ fmp4 segments) ทำให้แม้ sync ปกติก็ยังหา playback ไม่เจอ
 
-### 1) Deploy script ใหม่ขึ้น EC2
-```bash
-# บน EC2
-cd /opt/cctv-beta
-git pull       # หรือ scp ไฟล์ใหม่ขึ้น
-docker compose up -d --force-recreate s3-sync
-```
+### ที่แก้ในรอบนี้
+- `docker-compose.yml` — ลบ `--acl public-read` ออกจาก s3-sync command
+- `.env.example` — `BETA_CLEANUP_AGE_MIN`: 10 → **1440 (24h)** เพื่อ grace period
+- `hooks/on-unpublish.sh` — หา fmp4 master file ใน `/recordings/{path}/` แล้วตั้ง
+  `S3_KEY="hls/<MTX_PATH>/<filename>.mp4"` ตรงกับ path ที่ s3-sync เขียนจริง
+- DB: recordings 9 ตัวที่ status=archived แต่ไม่มีไฟล์ → mark `error` พร้อม
+  `errorMessage` อธิบายสาเหตุ
 
-### 2) เปิด S3 Bucket ให้ public read (สำหรับ HLS เท่านั้น)
-
-**AWS Console → S3 → bucket `cctv-rfid`:**
-
-**A. Permissions → Block public access:** ปิด 2 อันนี้ (อีก 2 อันคงไว้ก็ได้)
-- ❌ Block public access to buckets and objects granted through new public bucket or access point policies
-- ❌ Block public and cross-account access to buckets and objects through any public bucket or access point policies
-
-**B. Permissions → Bucket policy:** วาง policy นี้
+### ที่ทำใน AWS Console (ครั้งเดียว เพื่อความถาวร)
+**Bucket policy** (เปิดอยู่แล้วใน production):
 ```json
 {
   "Version": "2012-10-17",
@@ -40,50 +39,20 @@ docker compose up -d --force-recreate s3-sync
 }
 ```
 
-**C. Permissions → CORS:** วาง config นี้ (ให้ browser fetch จาก domain ได้)
+**CORS** (สำหรับ browser HLS player):
 ```json
-[
-  {
-    "AllowedHeaders": ["*"],
-    "AllowedMethods": ["GET", "HEAD"],
-    "AllowedOrigins": [
-      "https://live.action.in.th",
-      "http://localhost:3000"
-    ],
-    "ExposeHeaders": ["ETag", "Content-Length", "Content-Type"],
-    "MaxAgeSeconds": 3000
-  }
-]
+[{
+  "AllowedHeaders": ["*"],
+  "AllowedMethods": ["GET", "HEAD"],
+  "AllowedOrigins": ["https://live.action.in.th", "http://localhost:3000"],
+  "ExposeHeaders": ["ETag", "Content-Length", "Content-Type"],
+  "MaxAgeSeconds": 3000
+}]
 ```
 
-### 3) Fix existing recordings (ปรับ s3Key ที่บันทึกผิดไว้)
-
-รันบน Mongo shell ของ local หรือ EC2:
-```js
-db.cctvbetarecordings.find({ s3Key: /\/$/ }).forEach(doc => {
-  const newKey = doc.s3Key + 'index.m3u8';
-  const newUrl = `https://${doc.s3Bucket}.s3.amazonaws.com/${newKey}`;
-  db.cctvbetarecordings.updateOne(
-    { _id: doc._id },
-    { $set: { s3Key: newKey, s3MasterManifestUrl: newUrl } }
-  );
-  print(`Fixed ${doc._id}`);
-});
-```
-
-### 4) Fix existing files in S3 (set public-read ย้อนหลัง)
-
-บน EC2 หรือเครื่องที่มี AWS CLI:
-```bash
-aws s3 cp s3://cctv-rfid/hls/ s3://cctv-rfid/hls/ \
-  --recursive --acl public-read --metadata-directive REPLACE
-```
-
-## ตรวจหลังแก้
-
-1. เปิด URL ตรงๆ ในเบราว์เซอร์:
-   `https://cctv-rfid.s3.amazonaws.com/hls/616e6d_fbc95ecdadf2dc2eb4bb566b/index.m3u8`
-   → ต้องเห็น text ของ HLS manifest (ขึ้นต้น `#EXTM3U`) ไม่ใช่ XML error
-
-2. กลับไปที่ `/admin/cctv-beta-recordings` → กด Play
-   → วิดีโอควรเล่นได้
+### ตรวจหลัง deploy ใหม่
+1. `docker logs --tail 30 cctv-beta-s3-sync-1` ไม่มี `upload failed`
+2. หลัง stream ใหม่: `aws s3 ls s3://cctv-rfid/hls/live/<streamKey>/` มี master `.mp4`
+3. DB ของ recording ใหม่: `s3Key` ลงท้าย `.mp4` ไม่ใช่ `.m3u8`
+4. เปิด URL `s3MasterManifestUrl` ตรงๆ — ต้องได้ HTTP 200 + binary mp4 stream
+5. หน้า `/runner/[id]` กดเปิดวิดีโอ → HlsPlayer detect `.mp4` แล้วเล่นเป็น progressive MP4

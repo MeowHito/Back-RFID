@@ -36,10 +36,11 @@ services:
     command:
       - -c
       # Sync every 15s so admin S3 playback sees fresh segments quickly.
-      # --acl public-read = HLS browser player needs to fetch .m3u8 + .ts directly.
-      # Without ACL, S3 objects are private and the player gets AccessDenied (XML error).
-      # Switch to bucket policy + signed URLs for stricter access control later.
-      - "while true; do aws s3 sync /data s3://$$S3_BUCKET/hls --exclude '*.tmp' --storage-class STANDARD_IA --acl public-read; sleep 15; done"
+      # Public read is granted via the bucket POLICY (s3:GetObject on hls/*) — NOT
+      # per-object ACLs. The bucket uses "Bucket owner enforced" object ownership,
+      # which DISABLES ACLs entirely; passing --acl public-read here makes every
+      # PutObject fail with AccessControlListNotSupported and stalls the whole sync.
+      - "while true; do aws s3 sync /data s3://$$S3_BUCKET/hls --exclude '*.tmp' --storage-class STANDARD_IA; sleep 15; done"
 
   # Reclaim EC2 disk space after segments are safely on S3.
   # Runs every 5 minutes; deletes any file in /var/cctv/hls whose mtime is older
