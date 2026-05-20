@@ -4,7 +4,14 @@ version: '3.8'
 # Required sibling files: .env, mediamtx.yml, hooks/*.sh
 services:
   mediamtx:
-    image: bluenviron/mediamtx:1.9.0
+    # Build from local Dockerfile — adds curl + openssl on top of the
+    # mediamtx:1.9.0-ffmpeg (alpine) image so /hooks/*.sh can sign + POST
+    # webhooks. The plain bluenviron/mediamtx:1.9.0 image is scratch-based
+    # and can't even run /bin/sh, hooks die with "no such file or directory".
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cctv-beta-mediamtx:local
     network_mode: host
     restart: unless-stopped
     volumes:
@@ -21,12 +28,12 @@ services:
     restart: unless-stopped
     volumes:
       - /var/cctv/hls:/data:ro
+    # env_file alone — do NOT add an `environment:` block that re-declares AWS_*
+    # keys with ${VAR} interpolation. If .env omits them (because the EC2 host
+    # uses an IAM instance role / IMDS), the interpolation produces an empty
+    # string which OVERRIDES the IMDS credentials chain inside the container,
+    # and `aws s3 sync` will fail with "Unable to locate credentials".
     env_file: .env
-    environment:
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - S3_BUCKET=${S3_BUCKET}
     entrypoint: /bin/sh
     command:
       - -c

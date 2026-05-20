@@ -39,7 +39,9 @@ export class CctvBetaS3Service {
     private readonly bucketName: string | null;
 
     constructor(private readonly config: ConfigService) {
-        const region = config.get<string>('AWS_REGION');
+        const region =
+            config.get<string>('AWS_REGION') ||
+            config.get<string>('AWS_DEFAULT_REGION');
         const accessKeyId = config.get<string>('AWS_ACCESS_KEY_ID');
         const secretAccessKey = config.get<string>('AWS_SECRET_ACCESS_KEY');
         this.bucketName =
@@ -47,17 +49,26 @@ export class CctvBetaS3Service {
             config.get<string>('S3_BUCKET') ||
             null;
 
-        if (region && accessKeyId && secretAccessKey && this.bucketName) {
-            this.client = new S3Client({
-                region,
-                credentials: { accessKeyId, secretAccessKey },
-            });
-            this.logger.log(`S3 delete enabled: bucket=${this.bucketName} region=${region}`);
+        if (region && this.bucketName) {
+            // If static keys are present use them; otherwise fall back to the default
+            // AWS credential provider chain (env → shared config → EC2 IAM instance
+            // role via IMDS → ECS task role). This lets the same code work on a dev
+            // laptop with explicit keys AND on EC2 with an attached IAM role.
+            const usingStaticKeys = !!(accessKeyId && secretAccessKey);
+            this.client = new S3Client(
+                usingStaticKeys
+                    ? { region, credentials: { accessKeyId: accessKeyId!, secretAccessKey: secretAccessKey! } }
+                    : { region },
+            );
+            this.logger.log(
+                `S3 delete enabled: bucket=${this.bucketName} region=${region} ` +
+                `creds=${usingStaticKeys ? 'static-env' : 'default-chain (IAM role / IMDS)'}`,
+            );
         } else {
             this.logger.warn(
-                'CCTV Beta S3 delete DISABLED — missing AWS_REGION / AWS_ACCESS_KEY_ID / ' +
-                'AWS_SECRET_ACCESS_KEY / CCTV_BETA_S3_BUCKET. Recordings deleted from the admin UI ' +
-                'will only remove DB rows; S3 objects will stay (configure a Lifecycle rule as backup).',
+                'CCTV Beta S3 delete DISABLED — missing AWS_REGION/AWS_DEFAULT_REGION or ' +
+                'CCTV_BETA_S3_BUCKET/S3_BUCKET. Recordings deleted from the admin UI will only ' +
+                'remove DB rows; S3 objects will stay (configure a Lifecycle rule as backup).',
             );
         }
     }
