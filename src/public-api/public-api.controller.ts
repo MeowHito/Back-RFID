@@ -840,25 +840,6 @@ export class PublicApiController {
                 } catch { /* if settings unavailable, fall through to allow (back-compat) */ }
             }
 
-            // Beta recordings live on MediaMTX/S3, not on the backend filesystem.
-            // The frontend should consume `recording.playbackUrl` directly via HLS, but if
-            // it falls through to this endpoint we redirect to the HLS manifest so the
-            // <video> tag still ends up playing the right thing (Safari can play HLS natively).
-            if (matchedRecording.source === 'beta') {
-                const url = matchedRecording.playbackUrl;
-                if (!url) {
-                    return res.status(404).json({ error: 'Beta recording has no playback URL yet' });
-                }
-                return res.redirect(302, url);
-            }
-
-            const isLive = String(matchedRecording?.recordingStatus || '') === 'recording';
-
-            const { filePath, mimeType, fileName, startTime } = await this.cctvRecordingsService.getFilePath(recordingId);
-            if (!fs.existsSync(filePath)) {
-                return res.status(404).json({ error: 'File not found' });
-            }
-
             // Parse trim parameters
             const ss = Number(ssParam);
             const t = Number(tParam);
@@ -867,6 +848,59 @@ export class PublicApiController {
             // to 480p (and skip the upscale for already-smaller sources). Downloads omit lq
             // so the original/720p file is served. Force OFF for downloads regardless.
             const lq = lqParam === '1' && download !== '1';
+            const disposition = download === '1' ? 'attachment' : 'inline';
+
+            // Beta recordings (MediaMTX → EC2/S3, no entry in cctvRecordingsService).
+            // Per /runner/[id] requirement, we still trim them to clipBufferSeconds — the
+            // source we feed into ffmpeg is either the on-disk fmp4 (recording in progress)
+            // or the archived S3 URL (https mp4 / HLS — ffmpeg handles both).
+            if (matchedRecording.source === 'beta') {
+                if (!hasTrim) {
+                    // Legacy/back-compat: callers without ss/t just want the raw playback URL.
+                    const url = matchedRecording.playbackUrl;
+                    if (!url) {
+                        return res.status(404).json({ error: 'Beta recording has no playback URL yet' });
+                    }
+                    return res.redirect(302, url);
+                }
+                const betaDoc = await this.cctvBetaRecordingsService.findById(recordingId).catch(() => null);
+                let inputSource: string | null = null;
+                if (betaDoc?.recordingStatus === 'recording') {
+                    inputSource = this.cctvBetaRecordingsService.resolveLiveFilePath({
+                        streamKey: betaDoc.streamKey,
+                        serverIngestStart: betaDoc.serverIngestStart,
+                    });
+                } else {
+                    inputSource = matchedRecording.playbackUrl || (betaDoc as any)?.s3MasterManifestUrl || null;
+                }
+                if (!inputSource) {
+                    return res.status(404).json({ error: 'Beta recording source not available' });
+                }
+                const cacheDir = this.cctvBetaRecordingsService.betaCacheDir;
+                try { if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
+                const qualitySuffix = lq ? '_q480' : '';
+                const cachedPath = path.join(cacheDir, `${recordingId}_ss${ss}_t${t}${qualitySuffix}.mp4`);
+                const mp4FileName = `${recordingId}.mp4`;
+                if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size > 0) {
+                    return this.serveFileWithRange(res, cachedPath, fs.statSync(cachedPath).size, 'video/mp4', mp4FileName, disposition, rangeHeader);
+                }
+                return this.streamTrimmedClip(res, {
+                    inputSource,
+                    ss,
+                    t,
+                    lq,
+                    disposition,
+                    mp4FileName,
+                    cachedPath,
+                });
+            }
+
+            const isLive = String(matchedRecording?.recordingStatus || '') === 'recording';
+
+            const { filePath, mimeType, fileName, startTime } = await this.cctvRecordingsService.getFilePath(recordingId);
+            if (!fs.existsSync(filePath)) {
+                return res.status(404).json({ error: 'File not found' });
+            }
 
             // For completed recordings we transcode to mp4 with an optional wall-clock
             // timestamp burned in. Output is cached so the cost is paid once per recording
@@ -883,7 +917,6 @@ export class PublicApiController {
                 const cacheDir = path.dirname(filePath);
                 const cachedPath = path.join(cacheDir, cacheKey);
                 const mp4FileName = `${baseName}.mp4`;
-                const disposition = download === '1' ? 'attachment' : 'inline';
 
                 const serveCachedMp4 = (cachedFile: string) => {
                     const mp4Stat = fs.statSync(cachedFile);
@@ -898,103 +931,19 @@ export class PublicApiController {
                     }
                 }
 
-                // -------------------- TRIMMED CLIPS --------------------
-                // Path the runner page hits (lq=1 + ss/t). We pipe ffmpeg output directly
-                // to the response as fragmented mp4 so the <video> tag starts playing within
-                // a second instead of waiting for the whole transcode. Meanwhile we tee the
-                // bytes to a `.partial` cache file; on successful ffmpeg exit we rename it
-                // into place so the next viewer gets a normal cached response.
+                // Trimmed clips: stream ffmpeg output as fragmented mp4 so playback starts
+                // within ~1s (no waiting for the full transcode). Shared with the beta path.
                 if (hasTrim) {
-                    const partialPath = cachedPath + '.partial';
-                    try { if (fs.existsSync(partialPath)) fs.unlinkSync(partialPath); } catch {}
-
-                    // `-ss` BEFORE `-i` performs an input-side seek which is dramatically
-                    // faster (keyframe seek). It can be slightly less accurate, but for a
-                    // 15s window that drifts <1s, which the user won't notice.
-                    const ffmpegArgs: string[] = ['-y', '-ss', String(ss), '-i', filePath, '-t', String(t)];
-                    // Drawtext is intentionally omitted on the streaming path: it depends on
-                    // system fontconfig/freetype which is not guaranteed on every host, and
-                    // the camera apps already overlay their own timestamp. The download path
-                    // could still add it later if needed.
-                    if (lq) {
-                        ffmpegArgs.push('-vf', `scale=-2:'min(480,ih)'`);
-                    }
-                    ffmpegArgs.push(
-                        '-c:v', 'libx264',
-                        '-preset', 'ultrafast',
-                        '-crf', lq ? '30' : '28',
-                        '-c:a', 'aac',
-                        '-b:a', '96k',
-                        // Fragmented mp4 — empty_moov puts the moov atom at the start so the
-                        // browser doesn't need to seek to the end of the file to begin playback.
-                        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
-                        '-f', 'mp4',
-                        'pipe:1',
-                    );
-
-                    const ff = spawn('ffmpeg', ffmpegArgs);
-                    const cacheStream = fs.createWriteStream(partialPath);
-                    let clientAborted = false;
-                    let spawnFailed = false;
-
-                    res.setHeader('Content-Type', 'video/mp4');
-                    res.setHeader('Content-Disposition', `${disposition}; filename="${mp4FileName}"`);
-                    res.setHeader('Cache-Control', 'no-store');
-                    res.setHeader('Accept-Ranges', 'none');
-
-                    ff.on('error', () => {
-                        // ffmpeg binary missing or unable to spawn. Surface a real 500 to the
-                        // client instead of falling through to the un-trimmed original (which
-                        // is what made the 15-second clip look like the full 6-minute file).
-                        spawnFailed = true;
-                        try { cacheStream.destroy(); } catch {}
-                        try { fs.unlinkSync(partialPath); } catch {}
-                        if (!res.headersSent) {
-                            res.status(500).json({ error: 'Video transcoder unavailable' });
-                        } else {
-                            try { res.end(); } catch {}
-                        }
+                    return this.streamTrimmedClip(res, {
+                        inputSource: filePath,
+                        ss,
+                        t,
+                        lq,
+                        disposition,
+                        mp4FileName,
+                        cachedPath,
                     });
-
-                    ff.stdout.on('data', (chunk: Buffer) => {
-                        if (!clientAborted) res.write(chunk);
-                        if (!cacheStream.destroyed) cacheStream.write(chunk);
-                    });
-
-                    res.on('close', () => {
-                        // Client navigated away or aborted — kill ffmpeg so we don't keep
-                        // transcoding for nothing, and drop the partial cache.
-                        if (!res.writableEnded) {
-                            clientAborted = true;
-                            try { ff.kill('SIGKILL'); } catch {}
-                        }
-                    });
-
-                    ff.on('close', (code: number | null) => {
-                        try { cacheStream.end(); } catch {}
-                        const success = !spawnFailed && !clientAborted && code === 0;
-                        // Wait for the cache stream to flush before deciding what to do with
-                        // the partial file. We listen on `finish` so the rename can't race
-                        // with in-flight writes.
-                        cacheStream.on('finish', () => {
-                            if (success) {
-                                try { fs.renameSync(partialPath, cachedPath); } catch {}
-                            } else {
-                                try { fs.unlinkSync(partialPath); } catch {}
-                            }
-                        });
-                        if (!clientAborted) {
-                            if (!res.headersSent && !success) {
-                                res.status(500).json({ error: 'ffmpeg failed' });
-                            } else {
-                                try { res.end(); } catch {}
-                            }
-                        }
-                    });
-
-                    return;
                 }
-                // -------------------- /TRIMMED CLIPS --------------------
 
                 // No trim: full-file transcode to a cached faststart mp4 (legacy behavior).
                 // This path runs when the caller wants the whole recording — typically admin
@@ -1046,7 +995,6 @@ export class PublicApiController {
             // so the browser does not bail when the file size mismatches. No Range support
             // because the file keeps growing.
             if (isLive) {
-                const disposition = download === '1' ? 'attachment' : 'inline';
                 res.setHeader('Content-Type', mimeType || 'video/webm');
                 res.setHeader('Content-Disposition', `${disposition}; filename="${fileName}"`);
                 res.setHeader('Cache-Control', 'no-store');
@@ -1057,11 +1005,119 @@ export class PublicApiController {
             // Completed recording: serve original file with proper Range support so browsers
             // (especially Safari/iOS) can seek and start playback reliably.
             const stat = fs.statSync(filePath);
-            const disposition = download === '1' ? 'attachment' : 'inline';
             return this.serveFileWithRange(res, filePath, stat.size, mimeType || 'video/webm', fileName, disposition, rangeHeader);
         } catch (error: any) {
             return res.status(500).json({ error: error?.message || 'Internal server error' });
         }
+    }
+
+    /**
+     * Stream a trimmed clip via ffmpeg as fragmented mp4 so the browser starts playback
+     * within ~1s instead of waiting for the entire transcode. Shared between classic
+     * CCTV (local file input) and beta (local fmp4 OR remote https mp4/HLS input).
+     *
+     * Bytes are teed to a `.partial` cache file; on a clean ffmpeg exit the file is
+     * renamed into place so subsequent viewers get a normal cached response instead of
+     * paying the transcode cost again.
+     *
+     * Important behavior: when ffmpeg can't run (binary missing, source unreadable)
+     * we return HTTP 500. We do NOT fall back to serving the un-trimmed source —
+     * that's what caused the 15-second setting to look like the full 6-min file.
+     */
+    private streamTrimmedClip(
+        res: Response,
+        opts: {
+            inputSource: string;
+            ss: number;
+            t: number;
+            lq: boolean;
+            disposition: 'inline' | 'attachment';
+            mp4FileName: string;
+            cachedPath: string;
+        },
+    ) {
+        const { inputSource, ss, t, lq, disposition, mp4FileName, cachedPath } = opts;
+        const partialPath = cachedPath + '.partial';
+        try { if (fs.existsSync(partialPath)) fs.unlinkSync(partialPath); } catch {}
+        try {
+            const dir = path.dirname(cachedPath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        } catch {}
+
+        // `-ss` BEFORE `-i` performs an input-side seek (keyframe seek) which is
+        // dramatically faster than output-side. For 15-30s clips the <1s drift
+        // is not noticeable. Works for both local files and remote HTTP/HLS URLs.
+        const ffmpegArgs: string[] = ['-y', '-ss', String(ss), '-i', inputSource, '-t', String(t)];
+        // Drawtext is intentionally omitted on this streaming path: it depends on
+        // fontconfig/freetype which is not guaranteed on every host (and was the
+        // root cause of clips falling back to the full-length source on EC2).
+        if (lq) {
+            ffmpegArgs.push('-vf', `scale=-2:'min(480,ih)'`);
+        }
+        ffmpegArgs.push(
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', lq ? '30' : '28',
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            // Fragmented mp4 + empty_moov puts the moov atom at the start so the
+            // browser doesn't need to seek to the end of the file before playback.
+            '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+            '-f', 'mp4',
+            'pipe:1',
+        );
+
+        const ff = spawn('ffmpeg', ffmpegArgs);
+        const cacheStream = fs.createWriteStream(partialPath);
+        let clientAborted = false;
+        let spawnFailed = false;
+
+        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Disposition', `${disposition}; filename="${mp4FileName}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Accept-Ranges', 'none');
+
+        ff.on('error', () => {
+            spawnFailed = true;
+            try { cacheStream.destroy(); } catch {}
+            try { fs.unlinkSync(partialPath); } catch {}
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Video transcoder unavailable' });
+            } else {
+                try { res.end(); } catch {}
+            }
+        });
+
+        ff.stdout.on('data', (chunk: Buffer) => {
+            if (!clientAborted) res.write(chunk);
+            if (!cacheStream.destroyed) cacheStream.write(chunk);
+        });
+
+        res.on('close', () => {
+            if (!res.writableEnded) {
+                clientAborted = true;
+                try { ff.kill('SIGKILL'); } catch {}
+            }
+        });
+
+        ff.on('close', (code: number | null) => {
+            try { cacheStream.end(); } catch {}
+            const success = !spawnFailed && !clientAborted && code === 0;
+            cacheStream.on('finish', () => {
+                if (success) {
+                    try { fs.renameSync(partialPath, cachedPath); } catch {}
+                } else {
+                    try { fs.unlinkSync(partialPath); } catch {}
+                }
+            });
+            if (!clientAborted) {
+                if (!res.headersSent && !success) {
+                    res.status(500).json({ error: 'ffmpeg failed' });
+                } else {
+                    try { res.end(); } catch {}
+                }
+            }
+        });
     }
 
     /** Build an ffmpeg drawtext filter that renders a wall-clock timestamp top-right.

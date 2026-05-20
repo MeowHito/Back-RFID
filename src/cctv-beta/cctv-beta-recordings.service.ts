@@ -2,10 +2,16 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
 import { Model, Types } from 'mongoose';
+import * as fs from 'fs';
+import * as path from 'path';
 import { CctvBetaRecording, CctvBetaRecordingDocument } from './cctv-beta-recording.schema';
 import { CctvBetaS3Service } from './cctv-beta-s3.service';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
 import { Event, EventDocument } from '../events/event.schema';
+
+// Where MediaMTX writes its on-disk fmp4 recordings (mirrors the constant in the
+// controller). Override via env if your deployment uses a different path.
+const BETA_RECORDINGS_DIR = process.env.CCTV_BETA_RECORDINGS_DIR || '/var/cctv/hls';
 
 @Injectable()
 export class CctvBetaRecordingsService {
@@ -260,6 +266,44 @@ export class CctvBetaRecordingsService {
         const r = await this.recordingModel.findById(id).exec();
         if (!r) throw new NotFoundException('Recording not found');
         return r;
+    }
+
+    /**
+     * Resolve the on-disk fmp4 path for an in-progress beta recording.
+     *
+     * MediaMTX writes files named after their start timestamp; the on-publish webhook
+     * records `serverIngestStart` to the same second, but real-world clock rounding
+     * can drift by up to a second, so we fall back to the closest .mp4 in the same
+     * directory if the exact name is missing. Returns null when no file is found
+     * (live recording hasn't started writing, or the directory is missing).
+     */
+    resolveLiveFilePath(rec: { streamKey?: string; serverIngestStart?: Date }): string | null {
+        if (!rec?.streamKey || !rec?.serverIngestStart) return null;
+        const start = new Date(rec.serverIngestStart);
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const fname = `${start.getUTCFullYear()}-${pad(start.getUTCMonth() + 1)}-${pad(start.getUTCDate())}_${pad(start.getUTCHours())}-${pad(start.getUTCMinutes())}-${pad(start.getUTCSeconds())}.mp4`;
+        const recDir = path.join(BETA_RECORDINGS_DIR, 'live', rec.streamKey);
+        const exact = path.join(recDir, fname);
+        if (fs.existsSync(exact)) return exact;
+        try {
+            const files = fs.readdirSync(recDir).filter(f => f.endsWith('.mp4'));
+            const targetSec = Math.floor(start.getTime() / 1000);
+            let best: { name: string; diff: number } | null = null;
+            for (const f of files) {
+                const m = f.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.mp4$/);
+                if (!m) continue;
+                const fileDate = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+                const diff = Math.abs(Math.floor(fileDate / 1000) - targetSec);
+                if (!best || diff < best.diff) best = { name: f, diff };
+            }
+            if (best && best.diff <= 5) return path.join(recDir, best.name);
+        } catch { /* dir may not exist yet */ }
+        return null;
+    }
+
+    /** Directory used to cache transcoded beta clips on the EC2 host. */
+    get betaCacheDir(): string {
+        return path.join(BETA_RECORDINGS_DIR, '_cache');
     }
 
     async findForRunnerWindow(params: {
