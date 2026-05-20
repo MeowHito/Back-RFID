@@ -445,13 +445,32 @@ export class CctvBetaRecordingsService {
                 this.normalizeCheckpointName(candidate?.checkpointName) === normalizedCheckpoint,
             ) || null;
 
-            const playback = recording ? this.pickPlaybackUrl(recording) : null;
-            const startTime = recording ? new Date((recording as any).serverIngestStart) : null;
-            const endTime = recording
-                ? ((recording as any).serverIngestEnd ? new Date((recording as any).serverIngestEnd) : new Date())
+            // Merged sessions split into multiple `segments[]` (Larix reconnect storms,
+            // MediaMTX recordSegmentDuration rollover). Each segment is its own .mp4 file
+            // covering [startedAt, endedAt]; the top-level s3Key only points at the LATEST
+            // segment, which is wrong for any scan that landed in an earlier one.
+            // Resolve the correct segment for THIS scanTime so the player opens the file
+            // that actually contains the moment.
+            const segment = recording ? this.pickSegmentForScan(recording, scanTime) : null;
+            const playback = recording
+                ? (segment
+                    ? { url: segment.s3MasterManifestUrl, source: 's3' as const }
+                    : this.pickPlaybackUrl(recording))
                 : null;
-            const seekSeconds = startTime
-                ? Math.max(0, Math.floor((scanTime.getTime() - startTime.getTime()) / 1000))
+
+            // Anchor the seek to whichever timeline the chosen file actually starts on.
+            // - segment present → segment.startedAt
+            // - no segments (single-file recording) → serverIngestStart of the session
+            const fileStart = segment
+                ? new Date(segment.startedAt)
+                : recording ? new Date((recording as any).serverIngestStart) : null;
+            const fileEnd = segment
+                ? new Date(segment.endedAt || segment.startedAt)
+                : recording
+                    ? ((recording as any).serverIngestEnd ? new Date((recording as any).serverIngestEnd) : new Date())
+                    : null;
+            const seekSeconds = fileStart
+                ? Math.max(0, Math.floor((scanTime.getTime() - fileStart.getTime()) / 1000))
                 : 0;
 
             results.push({
@@ -464,10 +483,12 @@ export class CctvBetaRecordingsService {
                     cameraId: String((recording as any).cameraId || ''),
                     cameraName: (recording as any).cameraName,
                     checkpointName: (recording as any).checkpointName,
-                    startTime,
-                    endTime,
-                    duration: (recording as any).duration || 0,
-                    fileSize: (recording as any).fileSize || 0,
+                    startTime: fileStart,
+                    endTime: fileEnd,
+                    // Duration of the FILE the player will actually load — not the
+                    // whole session — so clip-end clamping in the frontend works.
+                    duration: segment?.duration || (recording as any).duration || 0,
+                    fileSize: segment?.fileSize || (recording as any).fileSize || 0,
                     recordingStatus: (recording as any).recordingStatus,
                     protocol: (recording as any).protocol,
                     playbackUrl: playback?.url || null,
@@ -477,5 +498,23 @@ export class CctvBetaRecordingsService {
             });
         }
         return results;
+    }
+
+    /**
+     * For multi-segment merged recordings, find the segment whose [startedAt, endedAt]
+     * window contains scanTime. Returns null when the recording has no segments (single
+     * .mp4 covers the whole session) or when no segment matches.
+     */
+    private pickSegmentForScan(recording: any, scanTime: Date): any | null {
+        const segments = Array.isArray(recording?.segments) ? recording.segments : [];
+        if (!segments.length) return null;
+        const t = scanTime.getTime();
+        const match = segments.find((s: any) => {
+            if (!s?.startedAt || !s?.s3MasterManifestUrl) return false;
+            const start = new Date(s.startedAt).getTime();
+            const end = s.endedAt ? new Date(s.endedAt).getTime() : Date.now();
+            return t >= start && t <= end;
+        });
+        return match || null;
     }
 }
