@@ -17,6 +17,13 @@ export class CctvSettingsController {
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @AdminOnly()
     update(@Body() body: Record<string, unknown>) {
-        return this.service.update(body as any);
+        const patch: Record<string, unknown> = { ...body };
+        // Pre-scan buffer is restricted to a fixed set so the UI button list stays canonical.
+        if (patch.clipPreBufferSeconds !== undefined) {
+            const allowed = [5, 10, 15, 20];
+            const n = Math.floor(Number(patch.clipPreBufferSeconds));
+            patch.clipPreBufferSeconds = allowed.includes(n) ? n : 5;
+        }
+        return this.service.update(patch as any);
     }
 }
