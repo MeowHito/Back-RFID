@@ -19,6 +19,14 @@ export class CctvRecording {
     @Prop({ required: true }) filePath: string;
     @Prop({ default: 'video/webm' }) mimeType: string;
     @Prop({ default: 'completed', enum: ['recording', 'completed', 'error'] }) recordingStatus: string;
+
+    /** Optional S3 mirror — populated after the background transcode finishes and the
+     *  resulting mp4 is uploaded. Local file (`filePath`) is deleted once the upload is
+     *  confirmed, so the streaming endpoint must redirect to S3 when present.
+     *  Lets Classic CCTV ride the same EC2-disk-cleanup path as CCTV Beta. */
+    @Prop() s3Bucket: string;
+    @Prop() s3Key: string;
+    @Prop() s3MasterManifestUrl: string;
 }
 
 export const CctvRecordingSchema = SchemaFactory.createForClass(CctvRecording);

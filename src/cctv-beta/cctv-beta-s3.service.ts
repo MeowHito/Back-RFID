@@ -4,8 +4,11 @@ import {
     S3Client,
     ListObjectsV2Command,
     DeleteObjectsCommand,
+    PutObjectCommand,
+    DeleteObjectCommand,
     type ObjectIdentifier,
 } from '@aws-sdk/client-s3';
+import * as fs from 'fs';
 
 /**
  * Direct S3 operations for the CCTV Beta pipeline.
@@ -76,6 +79,48 @@ export class CctvBetaS3Service {
     /** True when AWS credentials + bucket are configured. */
     isEnabled(): boolean {
         return !!this.client && !!this.bucketName;
+    }
+
+    /** The configured bucket — null when S3 isn't enabled. */
+    getBucket(): string | null {
+        return this.bucketName;
+    }
+
+    /**
+     * Upload a local file to S3 at `key`. Returns the resulting bucket+key+https URL,
+     * or `null` when S3 isn't configured (caller should keep using the local file in that
+     * case). Errors propagate to the caller — they're best handled with try/catch so a
+     * single S3 outage doesn't take the recording offline.
+     */
+    async uploadFile(
+        localPath: string,
+        key: string,
+        contentType: string,
+    ): Promise<{ bucket: string; key: string; url: string } | null> {
+        if (!this.client || !this.bucketName) return null;
+        const stat = fs.statSync(localPath);
+        await this.client.send(
+            new PutObjectCommand({
+                Bucket: this.bucketName,
+                Key: key,
+                Body: fs.createReadStream(localPath),
+                ContentType: contentType,
+                ContentLength: stat.size,
+            }),
+        );
+        return {
+            bucket: this.bucketName,
+            key,
+            url: `https://${this.bucketName}.s3.amazonaws.com/${key}`,
+        };
+    }
+
+    /** Delete a single object by key. No-op when S3 isn't configured. */
+    async deleteKey(key: string): Promise<void> {
+        if (!this.client || !this.bucketName || !key) return;
+        await this.client.send(
+            new DeleteObjectCommand({ Bucket: this.bucketName, Key: key }),
+        );
     }
 
     /**

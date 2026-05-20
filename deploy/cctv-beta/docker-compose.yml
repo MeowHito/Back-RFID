@@ -1,5 +1,3 @@
-version: '3.8'
-
 # Place at /opt/cctv-beta/docker-compose.yml on the EC2 ingest host.
 # Required sibling files: .env, mediamtx.yml, hooks/*.sh
 services:

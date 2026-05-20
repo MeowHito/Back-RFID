@@ -121,6 +121,17 @@ export class CctvBetaRecordingsService {
         return null;
     }
 
+    /**
+     * Seconds after `serverIngestEnd` during which a new on-publish for the same
+     * streamKey will RESUME the existing recording row instead of creating a new one.
+     * Defaults to 30s — long enough to bridge most Larix/IRL Pro reconnects without
+     * accidentally merging genuinely separate recording sessions.
+     */
+    private get mergeWindowSec(): number {
+        const v = parseInt(this.configService.get<string>('CCTV_BETA_MERGE_WINDOW_SEC') || '', 10);
+        return Number.isFinite(v) && v > 0 ? v : 30;
+    }
+
     async startRecording(payload: {
         cameraId: string;
         cameraName: string;
@@ -131,10 +142,46 @@ export class CctvBetaRecordingsService {
         hlsManifestPath?: string;
         encoderFirstFrameTime?: Date;
     }): Promise<CctvBetaRecordingDocument> {
+        // Merge window: if the *latest* recording for this streamKey ended (or stalled
+        // without an end) within mergeWindowSec, resume it instead of creating a new doc.
+        // This collapses Larix reconnect storms (5-10 rapid disconnects) into a single
+        // session row in the admin UI.
+        const cutoff = new Date(Date.now() - this.mergeWindowSec * 1000);
+        const latest = await this.recordingModel
+            .findOne({ streamKey: payload.streamKey })
+            .sort({ serverIngestStart: -1 })
+            .exec();
+
+        const recentEnoughToMerge = latest
+            && (
+                // Stale "recording" with no end webhook fired (zombie row)
+                latest.recordingStatus === 'recording'
+                // Or a clean completion within the merge window
+                || (latest.serverIngestEnd && latest.serverIngestEnd >= cutoff)
+            );
+
+        if (recentEnoughToMerge) {
+            this.logger.log(
+                `Resuming recording ${(latest as any)._id} (streamKey=${payload.streamKey}) ` +
+                `— last ended ${latest.serverIngestEnd?.toISOString() || 'never'}, ` +
+                `within ${this.mergeWindowSec}s merge window`,
+            );
+            // Reset the active recording back to 'recording' state. Keep prior s3Key
+            // (so the admin UI can still play the previous segment if the new one fails
+            // to finalize), but clear `serverIngestEnd` so the live duration estimate
+            // resumes from the original serverIngestStart.
+            latest.recordingStatus = 'recording';
+            latest.serverIngestEnd = undefined as any;
+            if (payload.hlsManifestPath) latest.hlsManifestPath = payload.hlsManifestPath;
+            if (payload.encoderFirstFrameTime) latest.encoderFirstFrameTime = payload.encoderFirstFrameTime;
+            return latest.save();
+        }
+
         const doc = new this.recordingModel({
             ...payload,
             serverIngestStart: new Date(),
             recordingStatus: 'recording',
+            segments: [],
         });
         return doc.save();
     }
@@ -152,13 +199,37 @@ export class CctvBetaRecordingsService {
         if (!active) return null;
 
         const end = new Date();
+        // Segment start = previous segment's end (or serverIngestStart for the first one).
+        // This way duration of each segment is well-defined, and the total session duration
+        // still equals (end - serverIngestStart).
+        const prevSegments = Array.isArray(active.segments) ? active.segments : [];
+        const lastSegmentEnd = prevSegments.length
+            ? new Date(prevSegments[prevSegments.length - 1].endedAt || active.serverIngestStart)
+            : active.serverIngestStart;
+
+        const segment = {
+            s3Bucket: payload.s3Bucket,
+            s3Key: payload.s3Key,
+            s3MasterManifestUrl: payload.s3MasterManifestUrl,
+            startedAt: lastSegmentEnd,
+            endedAt: end,
+            fileSize: payload.fileSize || 0,
+            duration: Math.floor((end.getTime() - lastSegmentEnd.getTime()) / 1000),
+        };
+        active.segments = [...prevSegments, segment];
+
         active.serverIngestEnd = end;
+        // Session duration = total elapsed since FIRST publish, not just this segment.
         active.duration = Math.floor((end.getTime() - active.serverIngestStart.getTime()) / 1000);
-        if (payload.fileSize != null) active.fileSize = payload.fileSize;
+        // Total fileSize across all segments (preserve real bytes even when segments roll).
+        const totalSize = active.segments.reduce((sum, s) => sum + (Number(s.fileSize) || 0), 0);
+        active.fileSize = totalSize || (payload.fileSize ?? active.fileSize);
+        // Top-level s3Key/url ALWAYS point at the latest segment so default playback
+        // opens the most-recent file (where the runner most likely finished).
         if (payload.s3Bucket) active.s3Bucket = payload.s3Bucket;
         if (payload.s3Key) active.s3Key = payload.s3Key;
         if (payload.s3MasterManifestUrl) active.s3MasterManifestUrl = payload.s3MasterManifestUrl;
-        active.recordingStatus = payload.s3Key ? 'archived' : 'completed';
+        active.recordingStatus = (payload.s3Key || active.s3Key) ? 'archived' : 'completed';
         return active.save();
     }
 

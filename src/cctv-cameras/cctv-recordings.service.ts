@@ -7,6 +7,7 @@ import { CctvRecording, CctvRecordingDocument } from './cctv-recording.schema';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
 import { Event, EventDocument } from '../events/event.schema';
 import { LiveCameraInfo } from './cctv.gateway';
+import { CctvBetaS3Service } from '../cctv-beta/cctv-beta-s3.service';
 
 const RECORDINGS_DIR = path.join(process.cwd(), 'uploads', 'recordings');
 
@@ -30,8 +31,97 @@ export class CctvRecordingsService {
         private timingModel: Model<TimingRecordDocument>,
         @InjectModel(Event.name)
         private eventModel: Model<EventDocument>,
+        private readonly s3: CctvBetaS3Service,
     ) {
         fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+    }
+
+    /** Build the S3 key for a Classic recording. Folder layout mirrors the Beta pipeline
+     *  (`cctv-classic/{campaignId or 'unsorted'}/{filename}`) so a Lifecycle rule can
+     *  cover both pipelines with a single prefix. */
+    private buildS3Key(rec: { campaignId?: string; fileName: string }, basename: string, ext: string): string {
+        const camp = rec.campaignId && rec.campaignId.trim() ? rec.campaignId : 'unsorted';
+        return `cctv-classic/${camp}/${basename}.${ext}`;
+    }
+
+    /**
+     * Walk every completed recording that still has a local file but no s3Key, and
+     * archive it. Transcodes webm → mp4 on the fly if no .mp4 sibling exists yet.
+     * Triggered manually from /admin/cctv-recordings ("Archive to S3 + free disk" button).
+     * Returns counts so the UI can show progress.
+     */
+    async archiveAllPending(): Promise<{ uploaded: number; skipped: number; errors: number }> {
+        if (!this.s3.isEnabled()) {
+            return { uploaded: 0, skipped: 0, errors: 0 };
+        }
+        const recs = await this.recordingModel
+            .find({ recordingStatus: 'completed', s3Key: { $in: [null, ''] as any } })
+            .exec();
+        let uploaded = 0;
+        let skipped = 0;
+        let errors = 0;
+        for (const rec of recs) {
+            try {
+                const beforeS3Key = rec.s3Key;
+                await this.archiveToS3(String(rec._id));
+                const updated = await this.recordingModel.findById(rec._id).exec();
+                if (updated?.s3Key && updated.s3Key !== beforeS3Key) uploaded++;
+                else skipped++;
+            } catch (err) {
+                this.logger.warn(`archiveAllPending: failed for ${rec._id}: ${err}`);
+                errors++;
+            }
+        }
+        this.logger.log(`archiveAllPending complete: uploaded=${uploaded} skipped=${skipped} errors=${errors}`);
+        return { uploaded, skipped, errors };
+    }
+
+    /**
+     * Best-effort: upload the local file to S3 then delete the on-disk copies.
+     * Called by the controller's background transcode after ffmpeg produces the mp4.
+     * Safe to call when S3 isn't configured (no-op, leaves files local).
+     *
+     * Preserves DB row even if upload fails — playback then keeps using local file.
+     */
+    async archiveToS3(recordingId: string): Promise<void> {
+        if (!this.s3.isEnabled()) return;
+        const rec = await this.recordingModel.findById(recordingId).exec();
+        if (!rec || rec.recordingStatus === 'recording') return;
+        if (rec.s3Key) return; // already uploaded
+
+        // Prefer the transcoded mp4 (browser-friendly + faststart) over the source webm.
+        const baseName = rec.fileName.replace(/\.[^.]+$/, '');
+        const cacheDir = path.dirname(rec.filePath);
+        const mp4Path = path.join(cacheDir, `${baseName}.mp4`);
+        const webmPath = rec.filePath;
+
+        const hasMp4 = fs.existsSync(mp4Path) && fs.statSync(mp4Path).size > 0;
+        const hasWebm = fs.existsSync(webmPath) && fs.statSync(webmPath).size > 0;
+        if (!hasMp4 && !hasWebm) return;
+
+        const sourcePath = hasMp4 ? mp4Path : webmPath;
+        const ext = hasMp4 ? 'mp4' : 'webm';
+        const contentType = hasMp4 ? 'video/mp4' : 'video/webm';
+        const s3Key = this.buildS3Key(rec, baseName, ext);
+
+        try {
+            const result = await this.s3.uploadFile(sourcePath, s3Key, contentType);
+            if (!result) return;
+            await this.recordingModel.findByIdAndUpdate(rec._id, {
+                s3Bucket: result.bucket,
+                s3Key: result.key,
+                s3MasterManifestUrl: result.url,
+                mimeType: contentType,
+                fileSize: fs.statSync(sourcePath).size,
+            }).exec();
+            // Local cleanup AFTER DB is updated — otherwise a crash mid-upload leaves the
+            // DB pointing at a file that no longer exists.
+            try { if (hasMp4) fs.unlinkSync(mp4Path); } catch { /* ignore */ }
+            try { if (hasWebm) fs.unlinkSync(webmPath); } catch { /* ignore */ }
+            this.logger.log(`Classic recording archived to S3: ${result.url}`);
+        } catch (err) {
+            this.logger.warn(`S3 upload failed for ${rec.fileName}: ${err} — keeping local file`);
+        }
     }
 
     private normalizeCheckpointName(value?: string): string {
@@ -168,25 +258,51 @@ export class CctvRecordingsService {
         return recs;
     }
 
-    async getStorageInfo(campaignId?: string): Promise<{ totalSize: number; count: number; dirPath: string }> {
+    /**
+     * Total bytes still resident on EC2 disk. S3-archived rows contribute 0 here
+     * (they no longer occupy local space) so the /admin/cctv-recordings storage gauge
+     * reflects the actual disk pressure on the server.
+     */
+    async getStorageInfo(campaignId?: string): Promise<{ totalSize: number; count: number; dirPath: string; s3Count: number; s3Size: number }> {
         const filter: any = { recordingStatus: { $in: ['completed', 'recording'] } };
         if (campaignId) filter.campaignId = campaignId;
         const recs = await this.recordingModel.find(filter).exec();
         let totalSize = 0;
+        let s3Count = 0;
+        let s3Size = 0;
         for (const r of recs) {
+            if (r.s3Key) {
+                // Local file has been deleted post-upload — no disk footprint.
+                s3Count++;
+                s3Size += r.fileSize || 0;
+                continue;
+            }
             if (r.recordingStatus === 'recording') {
                 try { totalSize += fs.statSync(r.filePath).size; } catch { /* ignore */ }
             } else {
                 totalSize += r.fileSize || 0;
             }
         }
-        return { totalSize, count: recs.length, dirPath: RECORDINGS_DIR };
+        return { totalSize, count: recs.length, dirPath: RECORDINGS_DIR, s3Count, s3Size };
     }
 
     async deleteOne(id: string): Promise<void> {
         const rec = await this.recordingModel.findById(id).exec();
         if (!rec) throw new NotFoundException('Recording not found');
+        // Delete on-disk file (if still present)
         try { fs.unlinkSync(rec.filePath); } catch { /* file already gone */ }
+        // Delete cached mp4 transcode (if any)
+        try {
+            const baseName = rec.fileName.replace(/\.[^.]+$/, '');
+            const mp4Path = path.join(path.dirname(rec.filePath), `${baseName}.mp4`);
+            if (fs.existsSync(mp4Path)) fs.unlinkSync(mp4Path);
+        } catch { /* ignore */ }
+        // Delete S3 object if archived
+        if (rec.s3Key) {
+            try { await this.s3.deleteKey(rec.s3Key); } catch (err) {
+                this.logger.warn(`S3 delete failed for ${rec.s3Key}: ${err}`);
+            }
+        }
         await this.recordingModel.findByIdAndDelete(id).exec();
     }
 
@@ -195,6 +311,14 @@ export class CctvRecordingsService {
         let deleted = 0;
         for (const rec of recs) {
             try { fs.unlinkSync(rec.filePath); } catch { /* ignore */ }
+            try {
+                const baseName = rec.fileName.replace(/\.[^.]+$/, '');
+                const mp4Path = path.join(path.dirname(rec.filePath), `${baseName}.mp4`);
+                if (fs.existsSync(mp4Path)) fs.unlinkSync(mp4Path);
+            } catch { /* ignore */ }
+            if (rec.s3Key) {
+                try { await this.s3.deleteKey(rec.s3Key); } catch { /* ignore */ }
+            }
             deleted++;
         }
         await this.recordingModel.deleteMany({}).exec();
@@ -337,7 +461,7 @@ export class CctvRecordingsService {
         return results;
     }
 
-    getFilePath(id: string): Promise<{ filePath: string; mimeType: string; fileName: string; duration: number; startTime: Date; endTime?: Date; recordingStatus: string }> {
+    getFilePath(id: string): Promise<{ filePath: string; mimeType: string; fileName: string; duration: number; startTime: Date; endTime?: Date; recordingStatus: string; s3Url?: string }> {
         return this.recordingModel.findById(id).exec().then(rec => {
             if (!rec) throw new NotFoundException('Recording not found');
             return {
@@ -348,6 +472,8 @@ export class CctvRecordingsService {
                 startTime: rec.startTime,
                 endTime: rec.endTime,
                 recordingStatus: rec.recordingStatus,
+                // Caller can redirect to this URL when the local file is gone (post-archive).
+                s3Url: rec.s3MasterManifestUrl || undefined,
             };
         });
     }

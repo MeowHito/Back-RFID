@@ -21,7 +21,7 @@ export class CctvRecordingsController {
 
     constructor(private readonly service: CctvRecordingsService) {}
 
-    private startBackgroundTranscode(srcPath: string, dstPath: string) {
+    private startBackgroundTranscode(srcPath: string, dstPath: string, recordingId?: string) {
         if (CctvRecordingsController.transcodingNow.has(dstPath)) return;
         if (!fs.existsSync(srcPath)) return;
         CctvRecordingsController.transcodingNow.add(dstPath);
@@ -39,6 +39,13 @@ export class CctvRecordingsController {
             CctvRecordingsController.transcodingNow.delete(dstPath);
             if (err) {
                 try { if (fs.existsSync(dstPath)) fs.unlinkSync(dstPath); } catch {}
+                return;
+            }
+            // Transcode succeeded — kick off the S3 archive in the background so the next
+            // play hits S3 directly and the EC2 disk frees up. archiveToS3 is a no-op
+            // when AWS credentials aren't configured (e.g. local dev), so this is safe.
+            if (recordingId) {
+                this.service.archiveToS3(recordingId).catch(() => { /* logged by service */ });
             }
         });
     }
@@ -65,12 +72,20 @@ export class CctvRecordingsController {
         @Req() req: Request,
         @Res() res: Response,
     ) {
-        const { filePath, mimeType, fileName, duration, recordingStatus } = await this.service.getFilePath(id);
-        if (!fs.existsSync(filePath)) {
+        const { filePath, mimeType, fileName, duration, recordingStatus, s3Url } = await this.service.getFilePath(id);
+        const localExists = fs.existsSync(filePath);
+        const isLive = recordingStatus === 'recording';
+
+        // S3-archived: local file is gone, redirect the browser straight to S3.
+        // Browsers transparently follow this for <video src=...> with HTTP Range,
+        // which is exactly what we want — playback runs off S3 + saves backend bandwidth.
+        if (!localExists && s3Url) {
+            return res.redirect(302, s3Url);
+        }
+        if (!localExists) {
             return res.status(404).json({ error: 'File not found' });
         }
         const range = req.headers.range;
-        const isLive = recordingStatus === 'recording';
 
         if (!isLive) {
             const baseName = fileName.replace(/\.[^.]+$/, '');
@@ -88,8 +103,9 @@ export class CctvRecordingsController {
             // webm immediately. Blocking the response on ffmpeg for a 12h file
             // takes far longer than any browser will wait — this trades a
             // first-play "no seek index" cost for an instant response, and
-            // the next play picks up the cached MP4.
-            this.startBackgroundTranscode(filePath, cachedPath);
+            // the next play picks up the cached MP4. Once transcode finishes the
+            // service then uploads to S3 and deletes the local copies.
+            this.startBackgroundTranscode(filePath, cachedPath, id);
         }
 
         const stat = fs.statSync(filePath);
@@ -183,6 +199,14 @@ export class CctvRecordingsController {
         durationSeconds?: number;
     }) {
         return this.service.saveClip(body);
+    }
+
+    @Post('archive-all')
+    @HttpCode(200)
+    archiveAll() {
+        // Upload every completed recording that's still on EC2 disk to S3, then delete
+        // the local files. Called from the admin storage page to free EC2 disk space.
+        return this.service.archiveAllPending();
     }
 
     @Delete('all')
