@@ -220,9 +220,20 @@ export class PublicApiController {
         for (const h of [...annotatedClassic, ...annotatedBeta]) {
             const k = keyOf(h);
             const existing = merged.get(k);
+            const recWithSource = h.recording
+                ? { ...h.recording, source: h.source, seekSeconds: h.seekSeconds }
+                : null;
             if (existing) {
-                if (h.recording) {
-                    existing.recordings.push({ ...h.recording, source: h.source, seekSeconds: h.seekSeconds });
+                if (recWithSource) {
+                    existing.recordings.push(recWithSource);
+                    // Promote the flat `recording` to the first non-null hit we see.
+                    // Without this, a runner whose checkpoint is only covered by Beta would
+                    // get `recording: null` (classic hit came first with no match) and the
+                    // UI would render "no video" even though the Beta hit has one.
+                    if (!existing.recording) {
+                        existing.recording = recWithSource;
+                        existing.seekSeconds = h.seekSeconds;
+                    }
                 }
             } else {
                 merged.set(k, {
@@ -232,11 +243,9 @@ export class PublicApiController {
                     splitTime: h.splitTime,
                     // Back-compat: keep the first recording flat too so existing UI code
                     // that reads `hit.recording` doesn't break.
-                    recording: h.recording ? { ...h.recording, source: h.source } : null,
+                    recording: recWithSource,
                     seekSeconds: h.seekSeconds,
-                    recordings: h.recording
-                        ? [{ ...h.recording, source: h.source, seekSeconds: h.seekSeconds }]
-                        : [],
+                    recordings: recWithSource ? [recWithSource] : [],
                 });
             }
         }
@@ -824,8 +833,21 @@ export class PublicApiController {
     ) {
         try {
             const { hits } = await this.getRunnerCctvContext(runnerId);
-            const matched = hits.find((hit: any) => String(hit?.recording?._id || '') === recordingId);
-            if (!matched?.recording) {
+            // Search both the flat `recording` (back-compat) and `recordings[]` (multi-source).
+            // The merge logic exposes only the first non-null recording in `recording`, but the
+            // requested id may belong to a second source for the same scan.
+            let matchedRecording: any = null;
+            for (const hit of hits) {
+                if (hit?.recording && String(hit.recording._id) === recordingId) {
+                    matchedRecording = hit.recording;
+                    break;
+                }
+                if (Array.isArray(hit?.recordings)) {
+                    const r = hit.recordings.find((x: any) => String(x?._id || '') === recordingId);
+                    if (r) { matchedRecording = r; break; }
+                }
+            }
+            if (!matchedRecording) {
                 return res.status(404).json({ error: 'Recording not found for runner' });
             }
 
@@ -840,7 +862,19 @@ export class PublicApiController {
                 } catch { /* if settings unavailable, fall through to allow (back-compat) */ }
             }
 
-            const isLive = String(matched.recording?.recordingStatus || '') === 'recording';
+            // Beta recordings live on MediaMTX/S3, not on the backend filesystem.
+            // The frontend should consume `recording.playbackUrl` directly via HLS, but if
+            // it falls through to this endpoint we redirect to the HLS manifest so the
+            // <video> tag still ends up playing the right thing (Safari can play HLS natively).
+            if (matchedRecording.source === 'beta') {
+                const url = matchedRecording.playbackUrl;
+                if (!url) {
+                    return res.status(404).json({ error: 'Beta recording has no playback URL yet' });
+                }
+                return res.redirect(302, url);
+            }
+
+            const isLive = String(matchedRecording?.recordingStatus || '') === 'recording';
 
             const { filePath, mimeType, fileName, startTime } = await this.cctvRecordingsService.getFilePath(recordingId);
             if (!fs.existsSync(filePath)) {
