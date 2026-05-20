@@ -30,7 +30,29 @@ services:
     entrypoint: /bin/sh
     command:
       - -c
+      # Sync every 15s so admin S3 playback sees fresh segments quickly.
       # --acl public-read = HLS browser player needs to fetch .m3u8 + .ts directly.
       # Without ACL, S3 objects are private and the player gets AccessDenied (XML error).
       # Switch to bucket policy + signed URLs for stricter access control later.
-      - "while true; do aws s3 sync /data s3://$$S3_BUCKET/hls --exclude '*.tmp' --storage-class STANDARD_IA --acl public-read; sleep 60; done"
+      - "while true; do aws s3 sync /data s3://$$S3_BUCKET/hls --exclude '*.tmp' --storage-class STANDARD_IA --acl public-read; sleep 15; done"
+
+  # Reclaim EC2 disk space after segments are safely on S3.
+  # Runs every 5 minutes; deletes any file in /var/cctv/hls whose mtime is older
+  # than 10 minutes. Live segments are still being written (mtime keeps updating)
+  # so they won't be touched. fmp4 recordings rotate every 1h (recordSegmentDuration)
+  # so a finalised .mp4 stops getting writes and becomes eligible after 10min — by
+  # which point s3-sync has pushed it (it runs every 15s).
+  # Tweak BETA_CLEANUP_AGE_MIN in .env if you want a longer safety window.
+  cleanup:
+    image: alpine:3.20
+    restart: unless-stopped
+    volumes:
+      - /var/cctv/hls:/data
+    env_file: .env
+    environment:
+      - AGE_MIN=${BETA_CLEANUP_AGE_MIN:-10}
+      - INTERVAL_SEC=${BETA_CLEANUP_INTERVAL_SEC:-300}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - "while true; do echo \"[cleanup] purging files older than $$AGE_MIN min\"; find /data -type f -mmin +$$AGE_MIN -print -delete 2>/dev/null | wc -l | xargs -I{} echo \"[cleanup] deleted {} files\"; find /data -type d -empty -not -path /data -delete 2>/dev/null; sleep $$INTERVAL_SEC; done"

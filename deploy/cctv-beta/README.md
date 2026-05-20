@@ -3,12 +3,28 @@
 Ready-to-deploy files for the EC2 ingest host. Pair with `backend/docs/DEPLOY-CCTV-BETA.md` for the full step-by-step.
 
 ## Files
-- `docker-compose.yml` — MediaMTX + S3 sync sidecar
+- `docker-compose.yml` — MediaMTX + S3 sync sidecar + disk cleanup sidecar
 - `mediamtx.yml` — MediaMTX config (LL-HLS, RTMP, SRT, hooks)
 - `hooks/on-publish.sh` — HMAC-signed webhook on stream start
 - `hooks/on-unpublish.sh` — webhook on stream end (with file size + S3 key)
 - `hooks/on-ready.sh` — no-op placeholder (required so MediaMTX doesn't error)
 - `.env.example` — copy to `.env` and fill values
+
+## Storage flow
+
+```
+camera ──► MediaMTX ──► /var/cctv/hls (EC2 disk, hot)
+                              │
+                              ├──► s3-sync  (every 15s)  ──► s3://$S3_BUCKET/hls (durable)
+                              └──► cleanup  (every 5min) ──► deletes files mtime > 10min
+```
+
+- **Live playback** uses EC2 LL-HLS directly (`:8888`) — `recordingStatus === 'recording'` rows in admin/runner UI point here for ~1s latency.
+- **Archived playback** uses the S3 master manifest written into `s3MasterManifestUrl` on `on-unpublish`.
+- **Cleanup** never touches files still being written (mtime keeps updating). After a 1h fmp4 segment closes it's eligible for deletion 10 min later — by which time s3-sync has pushed it (it runs every 15s).
+- Tweak via `.env`:
+  - `BETA_CLEANUP_AGE_MIN=10` — minutes before deletion (raise for a wider safety window)
+  - `BETA_CLEANUP_INTERVAL_SEC=300` — how often the cleanup loop runs
 
 ## Quick deploy (on EC2)
 
