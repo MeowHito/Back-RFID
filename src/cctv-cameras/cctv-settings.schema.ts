@@ -15,10 +15,6 @@ export class CctvSettings {
     /** When false, viewers (followers / public) see the recording but cannot download it.
      *  Admins always see the download button regardless. Applies to BOTH classic CCTV and CCTV Beta. */
     @Prop({ default: true }) allowDownload: boolean;
-
-    /** When true, render a live Thailand-time clock overlay on the top-left of CCTV
-     *  playback (mimicking a physical security camera). Applies to BOTH classic and Beta. */
-    @Prop({ default: true }) showTimestampOverlay: boolean;
 }
 
 export const CctvSettingsSchema = SchemaFactory.createForClass(CctvSettings);
