@@ -805,6 +805,7 @@ export class PublicApiController {
         @Query('download') download: string,
         @Query('ss') ssParam: string,
         @Query('t') tParam: string,
+        @Query('lq') lqParam: string,
         @Headers('range') rangeHeader: string,
         @Res() res: Response,
     ) {
@@ -862,6 +863,10 @@ export class PublicApiController {
             const ss = Number(ssParam);
             const t = Number(tParam);
             const hasTrim = Number.isFinite(ss) && ss >= 0 && Number.isFinite(t) && t > 0;
+            // Low-quality flag: in-page viewing on /runner/[id] passes lq=1 so we transcode
+            // to 480p (and skip the upscale for already-smaller sources). Downloads omit lq
+            // so the original/720p file is served. Force OFF for downloads regardless.
+            const lq = lqParam === '1' && download !== '1';
 
             // For all completed recordings, transcode to mp4 with a wall-clock timestamp
             // burned into every frame. This guarantees the time is visible regardless of
@@ -870,7 +875,12 @@ export class PublicApiController {
             // Live recordings are streamed raw — file is still being written.
             if (!isLive) {
                 const baseName = fileName.replace(/\.[^.]+$/, '');
-                const cacheKey = hasTrim ? `${baseName}_ss${ss}_t${t}.mp4` : `${baseName}.mp4`;
+                // Cache key has to differ per trim window AND per quality variant — otherwise a
+                // 480p preview would clobber the 720p file (or vice-versa).
+                const qualitySuffix = lq ? '_q480' : '';
+                const cacheKey = hasTrim
+                    ? `${baseName}_ss${ss}_t${t}${qualitySuffix}.mp4`
+                    : `${baseName}${qualitySuffix}.mp4`;
                 const cacheDir = path.dirname(filePath);
                 const cachedPath = path.join(cacheDir, cacheKey);
                 const mp4FileName = `${baseName}.mp4`;
@@ -903,13 +913,19 @@ export class PublicApiController {
                         ffmpegArgs.push('-ss', String(ss), '-t', String(t));
                     }
                     ffmpegArgs.push('-i', filePath);
-                    if (withDrawtext) {
-                        ffmpegArgs.push('-vf', drawtextFilter);
+                    // Build the -vf filter chain. Drawtext (timestamp overlay) and scale
+                    // (480p downscale) can both apply; chain them with commas. We use
+                    // `scale=-2:'min(480,ih)'` so we never upscale a source smaller than 480p.
+                    const filters: string[] = [];
+                    if (withDrawtext) filters.push(drawtextFilter);
+                    if (lq) filters.push(`scale=-2:'min(480,ih)'`);
+                    if (filters.length > 0) {
+                        ffmpegArgs.push('-vf', filters.join(','));
                     }
                     ffmpegArgs.push(
                         '-c:v', 'libx264',
                         '-preset', 'ultrafast',
-                        '-crf', '28',
+                        '-crf', lq ? '30' : '28',
                         '-c:a', 'aac',
                         '-b:a', '96k',
                         '-movflags', '+faststart',
