@@ -200,59 +200,25 @@ export class PublicApiController {
             throw new BadRequestException('Campaign not found for runner');
         }
 
-        // Look up BOTH classic browser-based CCTV recordings and Beta (Larix/IRL Pro)
-        // recordings. Both pipelines share the same matching logic (timing scan ↔
-        // checkpoint name + time window), so a runner who passes a single checkpoint
-        // covered by both systems will get two hits — UI then lets the user choose.
-        const [classicHits, betaHits] = await Promise.all([
-            this.cctvRecordingsService.runnerLookup(runner.bib, campaignId),
-            this.cctvBetaRecordingsService.runnerLookup(runner.bib, campaignId),
-        ]);
-
-        const annotatedClassic = classicHits.map((h: any) => ({ ...h, source: 'classic' }));
-        const annotatedBeta = betaHits.map((h: any) => ({ ...h, source: 'beta' }));
-
-        // Merge: one logical entry per timing scan (checkpoint+scanTime). Each entry
-        // carries an array of `recordings` so the UI can render a tab/toggle per source.
-        const merged = new Map<string, any>();
-        const keyOf = (h: any) => `${h.checkpoint}|${h.scanTime}`;
-
-        for (const h of [...annotatedClassic, ...annotatedBeta]) {
-            const k = keyOf(h);
-            const existing = merged.get(k);
+        // Runner profile (/runner/:id) surfaces ONLY the Beta pipeline (Larix / IRL Pro
+        // → MediaMTX → S3 HLS). The legacy browser-based classic CCTV is intentionally
+        // excluded here — admin tools still expose it via /cctv-recordings, but the
+        // public-facing runner page is beta-only by product decision.
+        const betaHits = await this.cctvBetaRecordingsService.runnerLookup(runner.bib, campaignId);
+        const hits = betaHits.map((h: any) => {
             const recWithSource = h.recording
-                ? { ...h.recording, source: h.source, seekSeconds: h.seekSeconds }
+                ? { ...h.recording, source: 'beta', seekSeconds: h.seekSeconds }
                 : null;
-            if (existing) {
-                if (recWithSource) {
-                    existing.recordings.push(recWithSource);
-                    // Promote the flat `recording` to the first non-null hit we see.
-                    // Without this, a runner whose checkpoint is only covered by Beta would
-                    // get `recording: null` (classic hit came first with no match) and the
-                    // UI would render "no video" even though the Beta hit has one.
-                    if (!existing.recording) {
-                        existing.recording = recWithSource;
-                        existing.seekSeconds = h.seekSeconds;
-                    }
-                }
-            } else {
-                merged.set(k, {
-                    checkpoint: h.checkpoint,
-                    scanTime: h.scanTime,
-                    elapsedTime: h.elapsedTime,
-                    splitTime: h.splitTime,
-                    // Back-compat: keep the first recording flat too so existing UI code
-                    // that reads `hit.recording` doesn't break.
-                    recording: recWithSource,
-                    seekSeconds: h.seekSeconds,
-                    recordings: recWithSource ? [recWithSource] : [],
-                });
-            }
-        }
-
-        const hits = Array.from(merged.values()).sort(
-            (a, b) => new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime(),
-        );
+            return {
+                checkpoint: h.checkpoint,
+                scanTime: h.scanTime,
+                elapsedTime: h.elapsedTime,
+                splitTime: h.splitTime,
+                recording: recWithSource,
+                seekSeconds: h.seekSeconds,
+                recordings: recWithSource ? [recWithSource] : [],
+            };
+        }).sort((a: any, b: any) => new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime());
         return { runner, campaignId, hits };
     }
 
