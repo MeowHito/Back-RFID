@@ -878,8 +878,9 @@ export class PublicApiController {
                 }
                 const cacheDir = this.cctvBetaRecordingsService.betaCacheDir;
                 try { if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
-                const qualitySuffix = lq ? '_q480' : '';
-                const cachedPath = path.join(cacheDir, `${recordingId}_ss${ss}_t${t}${qualitySuffix}.mp4`);
+                // View and download share the cache: both are now stream-copy mp4 of the
+                // same byte window, so there's no point splitting by quality flag.
+                const cachedPath = path.join(cacheDir, `${recordingId}_ss${ss}_t${t}.mp4`);
                 const mp4FileName = `${recordingId}.mp4`;
                 if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size > 0) {
                     return this.serveFileWithRange(res, cachedPath, fs.statSync(cachedPath).size, 'video/mp4', mp4FileName, disposition, rangeHeader);
@@ -888,7 +889,6 @@ export class PublicApiController {
                     inputSource,
                     ss,
                     t,
-                    lq,
                     disposition,
                     mp4FileName,
                     cachedPath,
@@ -908,12 +908,11 @@ export class PublicApiController {
             // being written.
             if (!isLive) {
                 const baseName = fileName.replace(/\.[^.]+$/, '');
-                // Cache key has to differ per trim window AND per quality variant — otherwise a
-                // 480p preview would clobber the 720p file (or vice-versa).
-                const qualitySuffix = lq ? '_q480' : '';
+                // Cache key differs per trim window. View and download share the same cache
+                // since both go through stream-copy and produce identical bytes.
                 const cacheKey = hasTrim
-                    ? `${baseName}_ss${ss}_t${t}${qualitySuffix}.mp4`
-                    : `${baseName}${qualitySuffix}.mp4`;
+                    ? `${baseName}_ss${ss}_t${t}.mp4`
+                    : `${baseName}.mp4`;
                 const cacheDir = path.dirname(filePath);
                 const cachedPath = path.join(cacheDir, cacheKey);
                 const mp4FileName = `${baseName}.mp4`;
@@ -938,7 +937,6 @@ export class PublicApiController {
                         inputSource: filePath,
                         ss,
                         t,
-                        lq,
                         disposition,
                         mp4FileName,
                         cachedPath,
@@ -1023,6 +1021,12 @@ export class PublicApiController {
      * Important behavior: when ffmpeg can't run (binary missing, source unreadable)
      * we return HTTP 500. We do NOT fall back to serving the un-trimmed source —
      * that's what caused the 15-second setting to look like the full 6-min file.
+     *
+     * Performance: we use `-c copy` (stream copy / remux) instead of re-encoding with
+     * libx264 + scale. Trim becomes a near-instant byte-range remux (~0.3-1s cold start
+     * vs ~5-15s for a re-encode of the same window) at the cost of giving up the 480p
+     * downscale — the user explicitly prioritized "เปิดให้เร็ว" over "ลดคุณภาพ", and
+     * a 15s 720p clip is well under 5 MB anyway.
      */
     private streamTrimmedClip(
         res: Response,
@@ -1030,13 +1034,12 @@ export class PublicApiController {
             inputSource: string;
             ss: number;
             t: number;
-            lq: boolean;
             disposition: 'inline' | 'attachment';
             mp4FileName: string;
             cachedPath: string;
         },
     ) {
-        const { inputSource, ss, t, lq, disposition, mp4FileName, cachedPath } = opts;
+        const { inputSource, ss, t, disposition, mp4FileName, cachedPath } = opts;
         const partialPath = cachedPath + '.partial';
         try { if (fs.existsSync(partialPath)) fs.unlinkSync(partialPath); } catch {}
         try {
@@ -1047,25 +1050,26 @@ export class PublicApiController {
         // `-ss` BEFORE `-i` performs an input-side seek (keyframe seek) which is
         // dramatically faster than output-side. For 15-30s clips the <1s drift
         // is not noticeable. Works for both local files and remote HTTP/HLS URLs.
-        const ffmpegArgs: string[] = ['-y', '-ss', String(ss), '-i', inputSource, '-t', String(t)];
-        // Drawtext is intentionally omitted on this streaming path: it depends on
-        // fontconfig/freetype which is not guaranteed on every host (and was the
-        // root cause of clips falling back to the full-length source on EC2).
-        if (lq) {
-            ffmpegArgs.push('-vf', `scale=-2:'min(480,ih)'`);
-        }
-        ffmpegArgs.push(
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-crf', lq ? '30' : '28',
-            '-c:a', 'aac',
-            '-b:a', '96k',
+        //
+        // `-c copy` skips decoding/re-encoding entirely — ffmpeg just remuxes the
+        // existing H.264/AAC streams into a new mp4 container. This is the fastest
+        // possible trim and lets us open the clip in under a second.
+        // `+genpts` regenerates presentation timestamps so the output starts cleanly
+        // from 0 even when the seek lands mid-stream.
+        const ffmpegArgs: string[] = [
+            '-y',
+            '-fflags', '+genpts',
+            '-ss', String(ss),
+            '-i', inputSource,
+            '-t', String(t),
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
             // Fragmented mp4 + empty_moov puts the moov atom at the start so the
             // browser doesn't need to seek to the end of the file before playback.
             '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
             '-f', 'mp4',
             'pipe:1',
-        );
+        ];
 
         const ff = spawn('ffmpeg', ffmpegArgs);
         const cacheStream = fs.createWriteStream(partialPath);
