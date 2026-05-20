@@ -3,6 +3,8 @@ import type { Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, spawn } from 'child_process';
+import * as http from 'http';
+import * as https from 'https';
 import { UsersService } from '../users/users.service';
 import { AuthService } from '../auth/auth.service';
 import { CampaignsService, PagingData } from '../campaigns/campaigns.service';
@@ -885,6 +887,16 @@ export class PublicApiController {
                 if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size > 0) {
                     return this.serveFileWithRange(res, cachedPath, fs.statSync(cachedPath).size, 'video/mp4', mp4FileName, disposition, rangeHeader);
                 }
+                // Pull the S3 mp4 to local disk once so every subsequent trim of THIS
+                // recording (any window) is a fast local stream-copy instead of paying
+                // an HTTPS round-trip + remote moov/sidx parse for each request.
+                // Skipped automatically for local-disk sources (in-progress) and HLS m3u8.
+                const sourceCachePath = path.join(cacheDir, `_src_${recordingId}.mp4`);
+                try {
+                    inputSource = await this.ensureLocalSource(inputSource, sourceCachePath);
+                } catch {
+                    // Fall through with the remote URL if the prefetch failed.
+                }
                 return this.streamTrimmedClip(res, {
                     inputSource,
                     ss,
@@ -1010,6 +1022,57 @@ export class PublicApiController {
     }
 
     /**
+     * Download a remote (https) source to a local path once, so subsequent trim
+     * requests for the same recording read from local disk instead of paying the
+     * S3 HTTPS round-trip every time.
+     *
+     * Returns the local path. If the source is already a local path (`/...`) we
+     * just return it. For HLS manifests (.m3u8) we skip caching — would need to
+     * fetch every segment which defeats the purpose for a single trim.
+     *
+     * Important: this is the cold-start bottleneck on Beta clips. Once the source
+     * is on disk, every viewer of every trim window opens in <1 second.
+     */
+    private async ensureLocalSource(remoteOrLocal: string, localCachePath: string): Promise<string> {
+        if (!/^https?:\/\//i.test(remoteOrLocal)) return remoteOrLocal;
+        if (/\.m3u8(\?|$)/i.test(remoteOrLocal)) return remoteOrLocal;
+        if (fs.existsSync(localCachePath) && fs.statSync(localCachePath).size > 0) {
+            return localCachePath;
+        }
+        try {
+            const dir = path.dirname(localCachePath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        } catch {}
+
+        const tmpPath = localCachePath + '.dl';
+        try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+        await new Promise<void>((resolve, reject) => {
+            const client = remoteOrLocal.startsWith('https') ? https : http;
+            const req = client.get(remoteOrLocal, (res) => {
+                // Follow one redirect (S3 presigned-> direct often does this).
+                if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    res.resume();
+                    this.ensureLocalSource(res.headers.location, localCachePath).then(() => resolve()).catch(reject);
+                    return;
+                }
+                if (!res.statusCode || res.statusCode >= 400) {
+                    res.resume();
+                    return reject(new Error(`HTTP ${res.statusCode} for ${remoteOrLocal}`));
+                }
+                const out = fs.createWriteStream(tmpPath);
+                res.pipe(out);
+                out.on('finish', () => out.close(() => resolve()));
+                out.on('error', reject);
+                res.on('error', reject);
+            });
+            req.on('error', reject);
+            req.setTimeout(60_000, () => { req.destroy(new Error('download timeout')); });
+        });
+        try { fs.renameSync(tmpPath, localCachePath); } catch {}
+        return localCachePath;
+    }
+
+    /**
      * Stream a trimmed clip via ffmpeg as fragmented mp4 so the browser starts playback
      * within ~1s instead of waiting for the entire transcode. Shared between classic
      * CCTV (local file input) and beta (local fmp4 OR remote https mp4/HLS input).
@@ -1047,6 +1110,7 @@ export class PublicApiController {
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         } catch {}
 
+        const isRemote = /^https?:\/\//i.test(inputSource);
         // `-ss` BEFORE `-i` performs an input-side seek (keyframe seek) which is
         // dramatically faster than output-side. For 15-30s clips the <1s drift
         // is not noticeable. Works for both local files and remote HTTP/HLS URLs.
@@ -1054,11 +1118,24 @@ export class PublicApiController {
         // `-c copy` skips decoding/re-encoding entirely — ffmpeg just remuxes the
         // existing H.264/AAC streams into a new mp4 container. This is the fastest
         // possible trim and lets us open the clip in under a second.
-        // `+genpts` regenerates presentation timestamps so the output starts cleanly
-        // from 0 even when the seek lands mid-stream.
+        // `+genpts +fastseek` regenerates presentation timestamps cleanly from 0
+        // and tells ffmpeg to skip the heavy probing pass before seeking.
+        // `-probesize 32K -analyzeduration 100000` caps the input-analysis budget
+        // — the recordings are vanilla H.264/AAC mp4 so probing is unnecessary.
         const ffmpegArgs: string[] = [
             '-y',
-            '-fflags', '+genpts',
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-fflags', '+genpts+fastseek+nobuffer',
+            '-probesize', '32K',
+            '-analyzeduration', '100000',
+        ];
+        if (isRemote) {
+            // Let ffmpeg do parallel range fetches against S3 and reuse the same TCP
+            // connection across them — both shave hundreds of ms off the cold start.
+            ffmpegArgs.push('-multiple_requests', '1', '-seekable', '1');
+        }
+        ffmpegArgs.push(
             '-ss', String(ss),
             '-i', inputSource,
             '-t', String(t),
@@ -1069,7 +1146,7 @@ export class PublicApiController {
             '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
             '-f', 'mp4',
             'pipe:1',
-        ];
+        );
 
         const ff = spawn('ffmpeg', ffmpegArgs);
         const cacheStream = fs.createWriteStream(partialPath);
@@ -1080,6 +1157,14 @@ export class PublicApiController {
         res.setHeader('Content-Disposition', `${disposition}; filename="${mp4FileName}"`);
         res.setHeader('Cache-Control', 'no-store');
         res.setHeader('Accept-Ranges', 'none');
+        // Tell nginx/CloudFront not to buffer the chunked response — without this,
+        // upstream proxies wait until they have a "useful" chunk size before
+        // forwarding, which can delay first frame by several seconds.
+        res.setHeader('X-Accel-Buffering', 'no');
+        // Push headers + a TCP packet out immediately so the browser starts the
+        // video pipeline (codec init, etc.) without waiting for ffmpeg's first chunk.
+        try { res.flushHeaders(); } catch {}
+        try { (res as any).socket?.setNoDelay?.(true); } catch {}
 
         ff.on('error', () => {
             spawnFailed = true;
