@@ -9,7 +9,8 @@ import { Server, Socket } from 'socket.io';
 
 @WebSocketGateway({
     cors: {
-        origin: '*',
+        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
+        credentials: true,
     },
 })
 export class TimingGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -17,6 +18,9 @@ export class TimingGateway implements OnGatewayConnection, OnGatewayDisconnect {
     server: Server;
 
     private connectedClients = new Map<string, Set<string>>();
+    // Batch buffer: collect runner updates per eventId, flush every 200ms
+    private batchBuffer = new Map<string, any[]>();
+    private batchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
     handleConnection(client: Socket) {
         console.log(`Client connected: ${client.id}`);
@@ -52,7 +56,22 @@ export class TimingGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     broadcastRunnerUpdate(eventId: string, runner: any) {
-        this.server.to(`event:${eventId}`).emit('runnerUpdate', runner);
+        if (!this.batchBuffer.has(eventId)) {
+            this.batchBuffer.set(eventId, []);
+        }
+        this.batchBuffer.get(eventId)!.push(runner);
+
+        if (!this.batchTimers.has(eventId)) {
+            const timer = setTimeout(() => {
+                const batch = this.batchBuffer.get(eventId) || [];
+                this.batchBuffer.delete(eventId);
+                this.batchTimers.delete(eventId);
+                if (batch.length > 0) {
+                    this.server.to(`event:${eventId}`).emit('runnerBatchUpdate', batch);
+                }
+            }, 200);
+            this.batchTimers.set(eventId, timer);
+        }
     }
 
     broadcastNewScan(eventId: string, scan: any) {

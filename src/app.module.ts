@@ -32,6 +32,8 @@ import { CctvBetaModule } from './cctv-beta/cctv-beta.module';
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         uri: configService.get<string>('MONGODB_URI') || 'mongodb://localhost:27017/rfid-timing',
+        maxPoolSize: 100,
+        minPoolSize: 10,
       }),
       inject: [ConfigService],
     }),

@@ -157,6 +157,8 @@ export class TimingService {
     private allRunnersCache = new Map<string, { data: any[]; expiry: number }>();
     private static readonly CACHE_TTL_MS = 5000;
     private static readonly RUNNERS_CACHE_TTL_MS = 10000;
+    // Debounce timers for updateRankings — prevents race condition when many runners finish simultaneously
+    private rankingDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
     constructor(
         @InjectModel(TimingRecord.name) private timingModel: Model<TimingRecordDocument>,
@@ -238,16 +240,26 @@ export class TimingService {
 
         await this.runnersService.update(runner._id.toString(), updateData);
 
-        // Update rankings if finished
+        // Update rankings if finished — debounced to consolidate concurrent finish scans
         if (isFinish) {
-            await this.runnersService.updateRankings(scanData.eventId, runner.category);
+            this.scheduleRankingUpdate(scanData.eventId, runner.category);
         }
 
-        // Broadcast update via WebSocket
-        const updatedRunner = await this.runnersService.findOne(runner._id.toString());
-        this.timingGateway.broadcastRunnerUpdate(scanData.eventId, updatedRunner);
+        // Broadcast update via WebSocket — use known data to avoid extra DB round-trip
+        this.timingGateway.broadcastRunnerUpdate(scanData.eventId, { ...(runner as any), ...updateData });
 
         return record;
+    }
+
+    private scheduleRankingUpdate(eventId: string, category: string): void {
+        const key = `${eventId}:${category}`;
+        const existing = this.rankingDebounceTimers.get(key);
+        if (existing) clearTimeout(existing);
+        const timer = setTimeout(async () => {
+            this.rankingDebounceTimers.delete(key);
+            await this.runnersService.updateRankings(eventId, category).catch(console.error);
+        }, 500);
+        this.rankingDebounceTimers.set(key, timer);
     }
 
     async getRunnerRecords(eventId: string, runnerId: string): Promise<TimingRecordDocument[]> {
