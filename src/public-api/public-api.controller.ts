@@ -868,10 +868,7 @@ export class PublicApiController {
                 const betaDoc = await this.cctvBetaRecordingsService.findById(recordingId).catch(() => null);
                 let inputSource: string | null = null;
                 if (betaDoc?.recordingStatus === 'recording') {
-                    // With 2-min segmentation, the live directory may hold multiple .mp4 files
-                    // (the in-flight segment, occasionally an unfinalized previous one before
-                    // the wrapper script picks it up). Pass the matched file start so we open
-                    // the segment that actually contains the scan moment.
+                    // Try local .mp4 file first (fmp4/2-min segment mode).
                     const atTime = (matchedRecording as any)?.startTime
                         ? new Date((matchedRecording as any).startTime)
                         : betaDoc.serverIngestStart;
@@ -880,6 +877,11 @@ export class PublicApiController {
                         serverIngestStart: betaDoc.serverIngestStart,
                         atTime,
                     });
+                    // MPEGTS mode: no local .mp4 file — fall back to S3 HLS manifest
+                    // (set by on-publish hook within ~30s of stream start).
+                    if (!inputSource) {
+                        inputSource = matchedRecording.playbackUrl || (betaDoc as any)?.s3MasterManifestUrl || null;
+                    }
                 } else {
                     inputSource = matchedRecording.playbackUrl || (betaDoc as any)?.s3MasterManifestUrl || null;
                 }
@@ -888,22 +890,47 @@ export class PublicApiController {
                 }
                 const cacheDir = this.cctvBetaRecordingsService.betaCacheDir;
                 try { if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
-                // View and download share the cache: both are now stream-copy mp4 of the
-                // same byte window, so there's no point splitting by quality flag.
                 const cachedPath = path.join(cacheDir, `${recordingId}_ss${ss}_t${t}.mp4`);
                 const mp4FileName = `${recordingId}.mp4`;
                 if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size > 0) {
                     return this.serveFileWithRange(res, cachedPath, fs.statSync(cachedPath).size, 'video/mp4', mp4FileName, disposition, rangeHeader);
                 }
-                // Pull the S3 mp4 to local disk once so every subsequent trim of THIS
-                // recording (any window) is a fast local stream-copy instead of paying
-                // an HTTPS round-trip + remote moov/sidx parse for each request.
-                // Skipped automatically for local-disk sources (in-progress) and HLS m3u8.
-                const sourceCachePath = path.join(cacheDir, `_src_${recordingId}.mp4`);
-                try {
-                    inputSource = await this.ensureLocalSource(inputSource, sourceCachePath);
-                } catch {
-                    // Fall through with the remote URL if the prefetch failed.
+                // Prefer local file over S3 download for instant playback:
+                //   1. Already resolved to local path (in-progress recording via resolveLiveFilePath)
+                //   2. Segment still on EC2 disk (cleanup window is 10 min) — derive path from s3Key
+                //   3. Source-cache (previously downloaded whole file for this recording)
+                //   4. S3 direct stream (remote URL, no pre-download for segments ≤ 500 MB)
+                if (inputSource && /^https?:\/\//i.test(inputSource) && !/\.m3u8(\?|$)/i.test(inputSource)) {
+                    // Try to find the segment file still on local EC2 disk using s3Key.
+                    // s3Key format: "hls/live/{streamKey}/YYYY-MM-DD_HH-MM-SS.mp4"
+                    const s3Key: string | undefined = (matchedRecording as any)?.s3Key
+                        || (betaDoc as any)?.s3Key;
+                    if (s3Key) {
+                        const localFromS3Key = path.join('/var/cctv/hls', s3Key.replace(/^hls\//, ''));
+                        if (fs.existsSync(localFromS3Key)) {
+                            inputSource = localFromS3Key;
+                        }
+                    }
+                    // If still remote: for large files (> 500 MB) pre-download to cache so
+                    // subsequent viewers are instant. For segments (≤ 500 MB) stream direct
+                    // from S3 — ~15-30s first viewer vs the 2+ min required for a 1.5 GB file.
+                    if (inputSource && /^https?:\/\//i.test(inputSource)) {
+                        try {
+                            const src = inputSource;
+                            const remoteSize = await new Promise<number>((resolve) => {
+                                const mod = src.startsWith('https') ? require('https') : require('http');
+                                const req = mod.request(src, { method: 'HEAD' }, (r: any) => {
+                                    resolve(parseInt(r.headers['content-length'] || '0', 10) || 0);
+                                });
+                                req.on('error', () => resolve(0));
+                                req.end();
+                            });
+                            if (remoteSize > 500 * 1024 * 1024) {
+                                const sourceCachePath = path.join(cacheDir, `_src_${recordingId}.mp4`);
+                                try { inputSource = await this.ensureLocalSource(inputSource, sourceCachePath); } catch { /* stream direct */ }
+                            }
+                        } catch { /* stream direct on HEAD failure */ }
+                    }
                 }
                 return this.streamTrimmedClip(res, {
                     inputSource,

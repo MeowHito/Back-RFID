@@ -110,6 +110,31 @@ export class CctvBetaIngestController {
         return { ok: true, recordingId: rec?._id };
     }
 
+    @Post('on-segment-complete')
+    @HttpCode(200)
+    async onSegmentComplete(
+        @Body() body: {
+            path?: string;
+            segmentFile?: string;
+            s3Bucket?: string;
+            s3Key?: string;
+            s3MasterManifestUrl?: string;
+            fileSize?: number;
+        },
+        @Headers('x-ingest-signature') signature?: string,
+    ) {
+        this.verifySignature(JSON.stringify(body), signature);
+        const streamKey = this.extractStreamKey(body.path);
+        await this.recordingsService.addSegment(streamKey, {
+            segmentFile: body.segmentFile,
+            s3Bucket: body.s3Bucket,
+            s3Key: body.s3Key,
+            s3MasterManifestUrl: body.s3MasterManifestUrl,
+            fileSize: body.fileSize,
+        });
+        return { ok: true };
+    }
+
     @Post('on-error')
     @HttpCode(200)
     async onError(

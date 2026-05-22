@@ -273,6 +273,61 @@ export class CctvBetaRecordingsService {
         return active.save();
     }
 
+    /**
+     * Called by the on-segment-complete webhook every 2 minutes as MediaMTX
+     * rotates recording files. Adds the completed segment to segments[] so
+     * runnerLookup can resolve the exact 2-min S3 file for any scan time —
+     * even while the overall session is still recording.
+     *
+     * Deduplicates by s3Key so re-fires (e.g. MediaMTX retry) are idempotent.
+     */
+    async addSegment(streamKey: string, payload: {
+        segmentFile?: string;
+        s3Bucket?: string;
+        s3Key?: string;
+        s3MasterManifestUrl?: string;
+        fileSize?: number;
+    }): Promise<void> {
+        const active = await this.recordingModel
+            .findOne({ streamKey, recordingStatus: 'recording' })
+            .sort({ serverIngestStart: -1 })
+            .exec();
+        if (!active) return;
+
+        const prevSegments = Array.isArray(active.segments) ? active.segments : [];
+
+        // Deduplicate — hook can fire more than once for the same segment.
+        if (payload.s3Key && prevSegments.some((s: any) => s.s3Key === payload.s3Key)) return;
+
+        // Parse segment start time from filename (YYYY-MM-DD_HH-MM-SS.mp4).
+        // Fall back to the end of the previous segment for timing continuity.
+        const lastEnd = prevSegments.length
+            ? new Date(prevSegments[prevSegments.length - 1].endedAt || active.serverIngestStart)
+            : active.serverIngestStart;
+
+        let segmentStart: Date = lastEnd;
+        if (payload.segmentFile) {
+            const m = payload.segmentFile.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.mp4$/);
+            if (m) {
+                // MediaMTX timestamps are UTC inside the Docker container (default TZ=UTC).
+                segmentStart = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+            }
+        }
+        const segmentEnd = new Date(); // approximate — real end time when hook fired
+
+        const segment = {
+            s3Bucket: payload.s3Bucket,
+            s3Key: payload.s3Key,
+            s3MasterManifestUrl: payload.s3MasterManifestUrl,
+            startedAt: segmentStart,
+            endedAt: segmentEnd,
+            fileSize: payload.fileSize || 0,
+            duration: Math.floor((segmentEnd.getTime() - segmentStart.getTime()) / 1000),
+        };
+        active.segments = [...prevSegments, segment];
+        await active.save();
+    }
+
     async markError(streamKey: string, errorMessage: string): Promise<void> {
         await this.recordingModel.updateMany(
             { streamKey, recordingStatus: 'recording' },
