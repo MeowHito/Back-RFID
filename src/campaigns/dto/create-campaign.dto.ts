@@ -180,6 +180,13 @@ export class CreateCampaignDto {
     eslipVisibleFields?: string[];
 
     @IsOptional()
+    @IsString()
+    eslipMode?: string;
+
+    @IsOptional()
+    eslipV2Layout?: any;
+
+    @IsOptional()
     excludeOverallFromAgeGroup?: number;
 
     @IsOptional()

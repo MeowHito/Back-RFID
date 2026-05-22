@@ -12,6 +12,7 @@ const HEAVY_CAMPAIGN_FIELDS = [
     'pictureUrl',
     'scanningBgImage',
     'eslipCustomHtml',
+    'eslipV2Layout',
     'certBackgroundImage',
     'chipBanner',
     'chipBgUrl',

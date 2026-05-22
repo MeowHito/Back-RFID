@@ -187,6 +187,14 @@ export class Campaign {
     @Prop({ type: [String], default: [] })
     eslipVisibleFields: string[];
 
+    /** E-Slip version mode: 'v1' = original templates, 'v2' = custom Canva-like layout */
+    @Prop({ default: 'v1' })
+    eslipMode: string;
+
+    /** Canva-like E-Slip 2 layout — JSON object with canvas size, background, and element array */
+    @Prop({ type: Object })
+    eslipV2Layout: any;
+
     /** Exclude top N overall winners from age group rankings on Result-Winners page.
      *  0 = no exclusion, 3 = exclude top 3, 5 = exclude top 5 */
     @Prop({ default: 0 })

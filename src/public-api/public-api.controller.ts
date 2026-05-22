@@ -780,6 +780,8 @@ export class PublicApiController {
                     eslipTemplate: campaign.eslipTemplate || 'template1',
                     eslipTemplates: (campaign as any).eslipTemplates || [],
                     eslipVisibleFields: (campaign as any).eslipVisibleFields || [],
+                    eslipMode: (campaign as any).eslipMode || 'v1',
+                    eslipV2Layout: (campaign as any).eslipV2Layout || null,
                     displayMode: (campaign as any).displayMode || 'marathon',
                     isApproveCertificate: campaign.isApproveCertificate ?? false,
                     certLayout: (campaign as any).certLayout || null,
