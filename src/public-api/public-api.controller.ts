@@ -771,6 +771,8 @@ export class PublicApiController {
                 campaign: campaign ? {
                     _id: campaign._id,
                     name: campaign.name,
+                    nameTh: (campaign as any).nameTh || null,
+                    nameEn: (campaign as any).nameEn || null,
                     slug: campaign.slug,
                     eventDate: campaign.eventDate,
                     location: campaign.location,
@@ -785,6 +787,7 @@ export class PublicApiController {
                     displayMode: (campaign as any).displayMode || 'marathon',
                     isApproveCertificate: campaign.isApproveCertificate ?? false,
                     certLayout: (campaign as any).certLayout || null,
+                    certBackgroundImage: (campaign as any).certBackgroundImage || null,
                 } : null,
             });
         } catch (error) {
