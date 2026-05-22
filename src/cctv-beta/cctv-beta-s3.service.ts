@@ -124,6 +124,54 @@ export class CctvBetaS3Service {
     }
 
     /**
+     * List all object keys under `prefix`. Returns full keys (including prefix).
+     * Uses pagination to handle more than 1000 objects.
+     */
+    async listKeys(prefix: string): Promise<string[]> {
+        if (!this.client || !this.bucketName || !prefix) return [];
+        const keys: string[] = [];
+        let ContinuationToken: string | undefined;
+        do {
+            const list = await this.client.send(
+                new ListObjectsV2Command({
+                    Bucket: this.bucketName,
+                    Prefix: prefix,
+                    ContinuationToken,
+                }),
+            );
+            for (const obj of list.Contents || []) {
+                if (obj.Key) keys.push(obj.Key);
+            }
+            ContinuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
+        } while (ContinuationToken);
+        return keys;
+    }
+
+    /**
+     * Upload a string/buffer directly as an S3 object (e.g. HLS manifest text).
+     * No-op when S3 isn't configured.
+     */
+    async uploadContent(
+        key: string,
+        content: string,
+        contentType: string,
+        cacheControl?: string,
+    ): Promise<void> {
+        if (!this.client || !this.bucketName) return;
+        const body = Buffer.from(content, 'utf8');
+        await this.client.send(
+            new PutObjectCommand({
+                Bucket: this.bucketName,
+                Key: key,
+                Body: body,
+                ContentType: contentType,
+                ContentLength: body.byteLength,
+                ...(cacheControl ? { CacheControl: cacheControl } : {}),
+            }),
+        );
+    }
+
+    /**
      * Delete every object under `prefix` (e.g. `hls/{streamKey}/`).
      * Uses ListObjectsV2 + DeleteObjects in pages of 1000 (S3 API limit).
      * Returns the number of objects actually deleted.

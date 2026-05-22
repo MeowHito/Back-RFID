@@ -58,6 +58,19 @@ export class CctvBetaRecordingsController {
         return this.recordingsService.deleteMany(body);
     }
 
+    /**
+     * Force-upload all pending .ts segments to S3 immediately without waiting
+     * for the s3-sync sidecar's 30-second timer. Rebuilds the HLS manifest from
+     * the S3 listing and updates DB records for streams that have ended.
+     * Called by the "ย้ายไปS3 ทันที" button in /admin/cctv-recordings.
+     */
+    @Post('force-sync')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
+    forceSync() {
+        return this.recordingsService.forceSync();
+    }
+
     @Get('runner-window')
     runnerWindow(
         @Query('campaignId') campaignId: string,

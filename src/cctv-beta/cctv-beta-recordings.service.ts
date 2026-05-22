@@ -428,8 +428,13 @@ export class CctvBetaRecordingsService {
     }
 
     /**
-     * Storage summary for the /admin/cctv-recordings dashboard.
-     * Mirrors `CctvRecordingsService.getStorageInfo` so the page can sum the two.
+     * Storage summary for the /admin/cctv-recordings dashboard — EC2 disk usage only.
+     *
+     * Only bytes actually resident on EC2 disk count:
+     *   • 'archived' → all .ts segments are on S3 and pruned by s3-sync → 0
+     *   • 'recording' → only the current in-flight segment is on disk; completed
+     *     segments have already been uploaded to S3 and pruned
+     *   • 'completed' → recording ended but not yet archived (rare) → fileSize
      */
     async getStorageInfo(campaignId?: string): Promise<{ totalSize: number; count: number }> {
         const q: any = { recordingStatus: { $in: ['recording', 'completed', 'archived'] } };
@@ -440,24 +445,117 @@ export class CctvBetaRecordingsService {
             .lean()
             .exec();
         const totalSize = recs.reduce((sum: number, r: any) => {
-            const segments = Array.isArray(r.segments) ? r.segments : [];
-            const archivedSize = segments.reduce((acc: number, s: any) => acc + (Number(s.fileSize) || 0), 0);
+            // 'archived' = all .ts files are on S3, local copies pruned → zero EC2 footprint
+            if (r.recordingStatus === 'archived') return sum;
+
             if (r.recordingStatus === 'recording' && r.serverIngestStart) {
-                // Active recording: archived segments are persisted bytes; add an estimate
-                // for the in-flight current segment (time since last segment end → now).
+                // Only the current in-flight segment occupies EC2 disk.
+                // Completed 2-min chunks are already uploaded to S3 and pruned by s3-sync.
+                const segments = Array.isArray(r.segments) ? r.segments : [];
                 const lastEnd = segments.length ? segments[segments.length - 1]?.endedAt : null;
                 const inflightStartMs = lastEnd
                     ? new Date(lastEnd).getTime()
                     : new Date(r.serverIngestStart).getTime();
                 const inflightSec = Math.max(0, Math.floor((Date.now() - inflightStartMs) / 1000));
                 const kbps = this.estimateBitrateKbps(r.resolution);
-                return sum + archivedSize + Math.floor((inflightSec * kbps * 1000) / 8);
+                return sum + Math.floor((inflightSec * kbps * 1000) / 8);
             }
-            // Finalised row: prefer segment bytes; fall back to top-level for legacy rows
-            // that pre-date segmentation.
-            return sum + (archivedSize || Number(r.fileSize) || 0);
+
+            // 'completed' — recording ended but not yet archived; may still be on disk
+            return sum + (Number(r.fileSize) || 0);
         }, 0);
         return { totalSize, count: recs.length };
+    }
+
+    /**
+     * Force-upload all pending .ts segments in /var/cctv/hls/live/* to S3 immediately,
+     * rebuild the HLS manifest from the S3 listing, and prune local files.
+     * Mirrors what the s3-sync sidecar does on its 30-second timer, but on demand.
+     * Called by POST /cctv-beta/recordings/force-sync from the admin UI.
+     */
+    async forceSync(): Promise<{ uploaded: number; skipped: number; errors: number }> {
+        if (!this.s3.isEnabled()) {
+            this.logger.warn('forceSync: S3 not configured — skipping');
+            return { uploaded: 0, skipped: 0, errors: 0 };
+        }
+
+        const liveDir = path.join(BETA_RECORDINGS_DIR, 'live');
+        let uploaded = 0, skipped = 0, errors = 0;
+
+        let streamKeys: string[];
+        try {
+            streamKeys = fs.readdirSync(liveDir).filter(d => {
+                try { return fs.statSync(path.join(liveDir, d)).isDirectory(); } catch { return false; }
+            });
+        } catch {
+            this.logger.warn(`forceSync: cannot read ${liveDir} — no recordings to sync`);
+            return { uploaded: 0, skipped: 0, errors: 0 };
+        }
+
+        for (const streamKey of streamKeys) {
+            const streamDir = path.join(liveDir, streamKey);
+            let dirFiles: string[];
+            try { dirFiles = fs.readdirSync(streamDir); } catch { continue; }
+
+            const tsFiles = dirFiles.filter(f => f.endsWith('.ts')).sort();
+            const isEnded = dirFiles.includes('.ended');
+
+            // Upload each .ts segment. Skip files modified in the last 8s — they may
+            // still be open by MediaMTX (the current in-progress 6s segment).
+            for (const file of tsFiles) {
+                const localPath = path.join(streamDir, file);
+                try {
+                    const stat = fs.statSync(localPath);
+                    if ((Date.now() - stat.mtimeMs) < 8000) { skipped++; continue; }
+                    await this.s3.uploadFile(localPath, `hls/live/${streamKey}/${file}`, 'video/mp2t');
+                    try { fs.unlinkSync(localPath); } catch { /* s3-sync will prune it */ }
+                    uploaded++;
+                } catch { errors++; }
+            }
+
+            // Rebuild the HLS manifest from what is now on S3 and push it.
+            try {
+                const allKeys = await this.s3.listKeys(`hls/live/${streamKey}/`);
+                const tsSegments = allKeys
+                    .filter(k => k.endsWith('.ts'))
+                    .map(k => k.split('/').pop()!)
+                    .sort();
+
+                if (tsSegments.length > 0) {
+                    const lines = [
+                        '#EXTM3U', '#EXT-X-VERSION:3',
+                        '#EXT-X-TARGETDURATION:7', '#EXT-X-MEDIA-SEQUENCE:0',
+                    ];
+                    for (const seg of tsSegments) { lines.push('#EXTINF:6.000,', seg); }
+                    if (isEnded) lines.push('#EXT-X-ENDLIST');
+
+                    const manifestKey = `hls/live/${streamKey}/index.m3u8`;
+                    await this.s3.uploadContent(
+                        manifestKey,
+                        lines.join('\n') + '\n',
+                        'application/vnd.apple.mpegurl',
+                        'public, max-age=2',
+                    );
+
+                    const bucket = this.s3.getBucket()!;
+                    const manifestUrl = `https://${bucket}.s3.amazonaws.com/${manifestKey}`;
+                    const update: any = { s3MasterManifestUrl: manifestUrl, s3Key: manifestKey };
+                    if (isEnded) update.recordingStatus = 'archived';
+
+                    await this.recordingModel.findOneAndUpdate(
+                        { streamKey, recordingStatus: { $in: ['recording', 'completed'] } },
+                        { $set: update },
+                        { sort: { serverIngestStart: -1 } },
+                    ).exec();
+                }
+            } catch (err) {
+                this.logger.warn(`forceSync: manifest rebuild failed for ${streamKey}: ${err}`);
+                errors++;
+            }
+        }
+
+        this.logger.log(`forceSync complete: uploaded=${uploaded} skipped=${skipped} errors=${errors}`);
+        return { uploaded, skipped, errors };
     }
 
     /**
