@@ -208,4 +208,12 @@ export class CreateCampaignDto {
     @IsOptional()
     @IsString()
     scanningTemplate?: string;
+
+    @IsOptional()
+    @IsString()
+    scanningBgImage?: string;
+
+    @IsOptional()
+    @IsString()
+    scanningBgImagePortrait?: string;
 }

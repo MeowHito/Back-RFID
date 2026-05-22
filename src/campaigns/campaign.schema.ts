@@ -208,9 +208,13 @@ export class Campaign {
     @Prop({ default: 'athletic' })
     scanningTemplate: string;
 
-    /** Background image for scanning page (base64 or URL) */
+    /** Background image for scanning page (base64 or URL) — landscape */
     @Prop()
     scanningBgImage: string;
+
+    /** Background image for scanning page (base64 or URL) — portrait */
+    @Prop()
+    scanningBgImagePortrait: string;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);
