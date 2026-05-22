@@ -212,6 +212,10 @@ export class Campaign {
     @Prop({ type: Object })
     certLayout: any;
 
+    /** Certificate paper size: 'a4-landscape' | 'a4-portrait' | 'hd-landscape' | 'hd-portrait' */
+    @Prop({ default: 'a4-landscape' })
+    certPaperSize: string;
+
     /** Scanning page display template: 'athletic' */
     @Prop({ default: 'athletic' })
     scanningTemplate: string;
