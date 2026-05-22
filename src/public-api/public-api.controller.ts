@@ -903,8 +903,7 @@ export class PublicApiController {
                 // Prefer local file over S3 download for instant playback:
                 //   1. Already resolved to local path (in-progress recording via resolveLiveFilePath)
                 //   2. Segment still on EC2 disk (cleanup window is 10 min) — derive path from s3Key
-                //   3. Source-cache (previously downloaded whole file for this recording)
-                //   4. S3 direct stream (remote URL, no pre-download for segments ≤ 500 MB)
+                //   3. S3 direct stream — ffmpeg uses HTTP byte-range seeks so no pre-download needed
                 if (inputSource && /^https?:\/\//i.test(inputSource) && !/\.m3u8(\?|$)/i.test(inputSource)) {
                     // Try to find the segment file still on local EC2 disk using s3Key.
                     // s3Key format: "hls/live/{streamKey}/YYYY-MM-DD_HH-MM-SS.mp4"
@@ -916,26 +915,9 @@ export class PublicApiController {
                             inputSource = localFromS3Key;
                         }
                     }
-                    // If still remote: for large files (> 500 MB) pre-download to cache so
-                    // subsequent viewers are instant. For segments (≤ 500 MB) stream direct
-                    // from S3 — ~15-30s first viewer vs the 2+ min required for a 1.5 GB file.
-                    if (inputSource && /^https?:\/\//i.test(inputSource)) {
-                        try {
-                            const src = inputSource;
-                            const remoteSize = await new Promise<number>((resolve) => {
-                                const mod = src.startsWith('https') ? require('https') : require('http');
-                                const req = mod.request(src, { method: 'HEAD' }, (r: any) => {
-                                    resolve(parseInt(r.headers['content-length'] || '0', 10) || 0);
-                                });
-                                req.on('error', () => resolve(0));
-                                req.end();
-                            });
-                            if (remoteSize > 500 * 1024 * 1024) {
-                                const sourceCachePath = path.join(cacheDir, `_src_${recordingId}.mp4`);
-                                try { inputSource = await this.ensureLocalSource(inputSource, sourceCachePath); } catch { /* stream direct */ }
-                            }
-                        } catch { /* stream direct on HEAD failure */ }
-                    }
+                    // Remote MP4: ffmpeg uses -multiple_requests + -seekable to byte-range seek
+                    // directly into S3 without downloading the whole file first. This starts
+                    // playback in <1s regardless of source file size.
                 }
                 return this.streamTrimmedClip(res, {
                     inputSource,
