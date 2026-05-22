@@ -2,50 +2,40 @@
 # Called by MediaMTX runOnUnpublish hook.
 # Args: $1 = MTX_PATH (e.g. "live/616e6d_abc...")
 #
-# IMPORTANT — picking the right s3Key:
-#   The LL-HLS rolling manifest (index.m3u8 + small *.mp4 segments) only retains
-#   ~hlsSegmentCount seconds at any moment, so AFTER unpublish s3://.../index.m3u8
-#   references segments that no longer exist on disk and the player spins forever.
-#
-#   The full-clip recording is the FRAGMENTED MP4 written by mediamtx into
-#   /recordings/{path}/{YYYY-MM-DD_HH-MM-SS}.mp4 — that's the file we want to
-#   point the admin/runner UI at. We pick the most-recently-modified .mp4 in
-#   the path's recording directory (there may be multiple if the segment
-#   rotated mid-stream).
+# Behavior:
+#   1. Drop a /recordings/$path/.ended marker file. The s3-sync sidecar's
+#      manifest builder picks this up on its next pass and appends
+#      #EXT-X-ENDLIST to the S3 index.m3u8 — that tells players the stream
+#      is finished so they stop polling for new segments.
+#   2. Sum total bytes shipped to S3 for this streamKey (approximate — we
+#      sum the local on-disk segments that haven't been pruned yet) so the
+#      backend can update the row's fileSize. Once all segments are pruned
+#      this becomes 0, but by then the recording is well-archived.
+#   3. POST signed on-unpublish webhook to backend so it flips the row to
+#      'archived'. The s3 fields were already set by on-publish so we don't
+#      need to repeat them here.
 set -e
+
 STREAM_KEY=$(printf '%s' "$1" | awk -F'/' '{print $NF}')
 REC_DIR="/recordings/$1"
 
-# Pick the freshest fmp4 recording file in the dir (ignores LL-HLS segments which
-# match a different name pattern: small numeric/uuid prefix). Recording filenames
-# look like "2026-05-20_07-13-33.mp4" — match that exact YYYY-MM-DD_HH-MM-SS shape.
-#
-# Portable to BusyBox sh (alpine) — DO NOT use `find -printf`, that's a GNU
-# extension and silently produces no output on BusyBox find, leaving S3_KEY empty.
-# `ls -1t` is in POSIX-ish territory and works in both BusyBox and GNU coreutils.
-S3_KEY=""
-SIZE=0
+# (1) marker file — the manifest builder loop reads this every 30 s
 if [ -d "$REC_DIR" ]; then
-  # Enable nullglob-equivalent behavior so an empty match leaves REC_FILE blank
-  # instead of containing the literal pattern.
-  set +e
-  REC_FILE=$(ls -1t "$REC_DIR"/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]-[0-9][0-9].mp4 2>/dev/null | head -n1)
-  set -e
-  if [ -n "$REC_FILE" ] && [ -f "$REC_FILE" ]; then
-    BASENAME=$(basename "$REC_FILE")
-    S3_KEY="hls/$1/$BASENAME"
-    SIZE=$(stat -c%s "$REC_FILE" 2>/dev/null || wc -c < "$REC_FILE" 2>/dev/null || echo 0)
-  fi
-  # Fall back to total dir size if no individual recording file found
-  if [ "$SIZE" = "0" ]; then
-    SIZE=$(du -sb "$REC_DIR" 2>/dev/null | awk '{print $1}' || echo 0)
-  fi
+  : > "$REC_DIR/.ended"
 fi
 
-# If we still don't have a recording file (shouldn't happen for normal publishes),
-# leave s3Key empty so the backend falls back to the EC2 LL-HLS manifest instead.
-PAYLOAD=$(printf '{"path":"%s","fileSize":%s,"s3Bucket":"%s","s3Key":"%s"}' \
-  "$1" "$SIZE" "$S3_BUCKET" "$S3_KEY")
+# (2) best-effort size — sum of .ts segments still on local disk (a lower
+# bound on the true total, since s3-sync may have already pruned older ones).
+SIZE=0
+if [ -d "$REC_DIR" ]; then
+  SIZE=$(find "$REC_DIR" -type f -name '*.ts' -exec stat -c%s {} \; 2>/dev/null \
+    | awk 'BEGIN{s=0}{s+=$1}END{print s}')
+  [ -z "$SIZE" ] && SIZE=0
+fi
+
+# (3) POST signed webhook — backend handles the s3Bucket/s3Key already set
+# in on-publish, so we just send size + path here.
+PAYLOAD=$(printf '{"path":"%s","fileSize":%s}' "$1" "$SIZE")
 SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$MTX_INGEST_SECRET" -hex | awk '{print $2}')
 curl -fsS -X POST "$BACKEND_URL/cctv-beta/ingest/on-unpublish" \
   -H "Content-Type: application/json" \

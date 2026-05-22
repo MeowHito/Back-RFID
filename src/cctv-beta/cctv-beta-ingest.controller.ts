@@ -50,7 +50,19 @@ export class CctvBetaIngestController {
     @Post('on-publish')
     @HttpCode(200)
     async onPublish(
-        @Body() body: { path?: string; sourceType?: string; query?: string; rawBody?: string },
+        @Body() body: {
+            path?: string;
+            sourceType?: string;
+            query?: string;
+            rawBody?: string;
+            // The MPEGTS/s3-sync pipeline predicts the S3 manifest URL at publish
+            // time and sends it here so the DB row has a playable URL from second 1
+            // (instead of waiting for on-unpublish to set it). Empty strings = the
+            // hook didn't have S3 configured yet — fall back to EC2 LL-HLS.
+            s3Bucket?: string;
+            s3Key?: string;
+            s3MasterManifestUrl?: string;
+        },
         @Headers('x-ingest-signature') signature?: string,
     ) {
         this.verifySignature(JSON.stringify(body), signature);
@@ -70,6 +82,9 @@ export class CctvBetaIngestController {
                 streamKey,
                 protocol: (body.sourceType?.includes('srt') ? 'srt' : 'rtmp') as 'srt' | 'rtmp',
                 hlsManifestPath: `/hls/${streamKey}/index.m3u8`,
+                s3Bucket: body.s3Bucket || undefined,
+                s3Key: body.s3Key || undefined,
+                s3MasterManifestUrl: body.s3MasterManifestUrl || undefined,
             });
         }
         return { ok: true, accepted: true };

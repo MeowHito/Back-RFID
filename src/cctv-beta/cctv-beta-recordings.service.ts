@@ -100,30 +100,53 @@ export class CctvBetaRecordingsService {
         if (doc?.recordingStatus !== 'recording' || !doc?.serverIngestStart) return doc;
         const startMs = new Date(doc.serverIngestStart).getTime();
         const liveSeconds = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
-        doc.duration = liveSeconds;
-        // Only override fileSize if the DB value is 0/unset — preserve any value an
-        // external process (e.g. a future MediaMTX poll worker) may have set.
-        if (!doc.fileSize || doc.fileSize === 0) {
+
+        const segments = Array.isArray(doc.segments) ? doc.segments : [];
+        if (segments.length > 0) {
+            // Segmented mode (2-min uploads): segments[] holds real bytes for archived chunks;
+            // estimate only the current in-flight segment (now - last endedAt) so the admin
+            // list reflects growing size without doubling counting.
+            const lastEnd = segments[segments.length - 1]?.endedAt;
+            const inflightStartMs = lastEnd ? new Date(lastEnd).getTime() : startMs;
+            const inflightSec = Math.max(0, Math.floor((Date.now() - inflightStartMs) / 1000));
             const kbps = this.estimateBitrateKbps((doc as any).resolution);
-            doc.fileSize = Math.floor((liveSeconds * kbps * 1000) / 8);
+            const archivedSize = segments.reduce((sum: number, s: any) => sum + (Number(s.fileSize) || 0), 0);
+            doc.fileSize = archivedSize + Math.floor((inflightSec * kbps * 1000) / 8);
+            doc.duration = liveSeconds;
             doc.fileSizeEstimated = true;
+        } else {
+            // Legacy single-file recording — no segments yet (e.g. wrapper not running, or
+            // the first 2 minutes haven't elapsed). Whole-session estimate.
+            doc.duration = liveSeconds;
+            if (!doc.fileSize || doc.fileSize === 0) {
+                const kbps = this.estimateBitrateKbps((doc as any).resolution);
+                doc.fileSize = Math.floor((liveSeconds * kbps * 1000) / 8);
+                doc.fileSizeEstimated = true;
+            }
         }
         return doc;
     }
 
+    private resolveEc2HlsUrl(rec: any): string | null {
+        if (!rec?.hlsManifestPath) return null;
+        const playbackHost = this.configService.get<string>('CCTV_BETA_PLAYBACK_HOST');
+        if (!playbackHost) return rec.hlsManifestPath;
+        const cleanHost = playbackHost.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        const cleanPath = rec.hlsManifestPath.startsWith('/')
+            ? rec.hlsManifestPath
+            : `/${rec.hlsManifestPath}`;
+        return `https://${cleanHost}${cleanPath}`;
+    }
+
     private pickPlaybackUrl(rec: any): { url: string; source: 's3' | 'ec2' } | null {
+        // S3-first for ALL cases — the MPEGTS / s3-sync architecture publishes the
+        // index.m3u8 to S3 within ~30 s of stream start (Cache-Control: max-age=2),
+        // so live viewers get the same URL as archived viewers and benefit from S3's
+        // global edge cache. The EC2 LL-HLS muxer remains as a fallback for the brief
+        // window before the first sync pass lands, or when S3 isn't configured.
         if (rec?.s3MasterManifestUrl) return { url: rec.s3MasterManifestUrl, source: 's3' };
-        if (rec?.hlsManifestPath) {
-            // hlsManifestPath is stored as a relative path like "/hls/{streamKey}/index.m3u8".
-            // Prepend the playback host (MediaMTX HLS server) so the URL is usable by the browser.
-            const playbackHost = this.configService.get<string>('CCTV_BETA_PLAYBACK_HOST');
-            if (!playbackHost) return { url: rec.hlsManifestPath, source: 'ec2' };
-            const cleanHost = playbackHost.replace(/^https?:\/\//, '').replace(/\/$/, '');
-            const cleanPath = rec.hlsManifestPath.startsWith('/')
-                ? rec.hlsManifestPath
-                : `/${rec.hlsManifestPath}`;
-            return { url: `https://${cleanHost}${cleanPath}`, source: 'ec2' };
-        }
+        const ec2 = this.resolveEc2HlsUrl(rec);
+        if (ec2) return { url: ec2, source: 'ec2' };
         return null;
     }
 
@@ -147,6 +170,12 @@ export class CctvBetaRecordingsService {
         protocol: 'rtmp' | 'srt';
         hlsManifestPath?: string;
         encoderFirstFrameTime?: Date;
+        // Predicted S3 manifest URL — set by the on-publish hook in the MPEGTS/s3-sync
+        // architecture so the row carries a playable URL immediately. When unset the
+        // older fmp4-on-unpublish behavior applies.
+        s3Bucket?: string;
+        s3Key?: string;
+        s3MasterManifestUrl?: string;
     }): Promise<CctvBetaRecordingDocument> {
         // Merge window: if the *latest* recording for this streamKey ended (or stalled
         // without an end) within mergeWindowSec, resume it instead of creating a new doc.
@@ -180,6 +209,11 @@ export class CctvBetaRecordingsService {
             latest.serverIngestEnd = undefined as any;
             if (payload.hlsManifestPath) latest.hlsManifestPath = payload.hlsManifestPath;
             if (payload.encoderFirstFrameTime) latest.encoderFirstFrameTime = payload.encoderFirstFrameTime;
+            // Re-apply predicted S3 URL — the bucket/key shape is the same per streamKey,
+            // but a previous session might have lacked them (mid-deploy resume).
+            if (payload.s3Bucket) latest.s3Bucket = payload.s3Bucket;
+            if (payload.s3Key) latest.s3Key = payload.s3Key;
+            if (payload.s3MasterManifestUrl) latest.s3MasterManifestUrl = payload.s3MasterManifestUrl;
             return latest.save();
         }
 
@@ -277,26 +311,30 @@ export class CctvBetaRecordingsService {
      * directory if the exact name is missing. Returns null when no file is found
      * (live recording hasn't started writing, or the directory is missing).
      */
-    resolveLiveFilePath(rec: { streamKey?: string; serverIngestStart?: Date }): string | null {
+    resolveLiveFilePath(rec: { streamKey?: string; serverIngestStart?: Date; atTime?: Date }): string | null {
         if (!rec?.streamKey || !rec?.serverIngestStart) return null;
-        const start = new Date(rec.serverIngestStart);
-        const pad = (n: number) => String(n).padStart(2, '0');
-        const fname = `${start.getUTCFullYear()}-${pad(start.getUTCMonth() + 1)}-${pad(start.getUTCDate())}_${pad(start.getUTCHours())}-${pad(start.getUTCMinutes())}-${pad(start.getUTCSeconds())}.mp4`;
+        // With 2-min segmentation enabled, the directory contains many .mp4 files (one per
+        // segment that hasn't been uploaded + deleted yet — typically just the in-flight one).
+        // Pick the file whose START timestamp is the most recent one that is ≤ `atTime`
+        // (default: serverIngestStart for back-compat when no scan time is supplied).
+        const target = rec.atTime ? new Date(rec.atTime) : new Date(rec.serverIngestStart);
+        const targetSec = Math.floor(target.getTime() / 1000);
         const recDir = path.join(BETA_RECORDINGS_DIR, 'live', rec.streamKey);
-        const exact = path.join(recDir, fname);
-        if (fs.existsSync(exact)) return exact;
         try {
             const files = fs.readdirSync(recDir).filter(f => f.endsWith('.mp4'));
-            const targetSec = Math.floor(start.getTime() / 1000);
-            let best: { name: string; diff: number } | null = null;
+            let best: { path: string; startSec: number } | null = null;
             for (const f of files) {
                 const m = f.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.mp4$/);
                 if (!m) continue;
-                const fileDate = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
-                const diff = Math.abs(Math.floor(fileDate / 1000) - targetSec);
-                if (!best || diff < best.diff) best = { name: f, diff };
+                const fileSec = Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000);
+                // Allow 5s of clock rounding when atTime equals serverIngestStart (the very
+                // first segment may be named a second or two later than the publish webhook).
+                if (fileSec > targetSec + 5) continue;
+                if (!best || fileSec > best.startSec) {
+                    best = { path: path.join(recDir, f), startSec: fileSec };
+                }
             }
-            if (best && best.diff <= 5) return path.join(recDir, best.name);
+            if (best) return best.path;
         } catch { /* dir may not exist yet */ }
         return null;
     }
@@ -341,20 +379,28 @@ export class CctvBetaRecordingsService {
     async getStorageInfo(campaignId?: string): Promise<{ totalSize: number; count: number }> {
         const q: any = { recordingStatus: { $in: ['recording', 'completed', 'archived'] } };
         if (campaignId) q.campaignId = campaignId;
-        // Need `serverIngestStart` + `resolution` for live size estimates too
         const recs = await this.recordingModel
             .find(q)
-            .select('fileSize recordingStatus serverIngestStart resolution')
+            .select('fileSize recordingStatus serverIngestStart resolution segments')
             .lean()
             .exec();
         const totalSize = recs.reduce((sum: number, r: any) => {
-            // For in-progress recordings, contribute the estimated size instead of 0
-            if (r.recordingStatus === 'recording' && (!r.fileSize || r.fileSize === 0) && r.serverIngestStart) {
-                const liveSeconds = Math.max(0, Math.floor((Date.now() - new Date(r.serverIngestStart).getTime()) / 1000));
+            const segments = Array.isArray(r.segments) ? r.segments : [];
+            const archivedSize = segments.reduce((acc: number, s: any) => acc + (Number(s.fileSize) || 0), 0);
+            if (r.recordingStatus === 'recording' && r.serverIngestStart) {
+                // Active recording: archived segments are persisted bytes; add an estimate
+                // for the in-flight current segment (time since last segment end → now).
+                const lastEnd = segments.length ? segments[segments.length - 1]?.endedAt : null;
+                const inflightStartMs = lastEnd
+                    ? new Date(lastEnd).getTime()
+                    : new Date(r.serverIngestStart).getTime();
+                const inflightSec = Math.max(0, Math.floor((Date.now() - inflightStartMs) / 1000));
                 const kbps = this.estimateBitrateKbps(r.resolution);
-                return sum + Math.floor((liveSeconds * kbps * 1000) / 8);
+                return sum + archivedSize + Math.floor((inflightSec * kbps * 1000) / 8);
             }
-            return sum + (Number(r.fileSize) || 0);
+            // Finalised row: prefer segment bytes; fall back to top-level for legacy rows
+            // that pre-date segmentation.
+            return sum + (archivedSize || Number(r.fileSize) || 0);
         }, 0);
         return { totalSize, count: recs.length };
     }
@@ -490,32 +536,51 @@ export class CctvBetaRecordingsService {
             ) || null;
 
             // Merged sessions split into multiple `segments[]` (Larix reconnect storms,
-            // MediaMTX recordSegmentDuration rollover). Each segment is its own .mp4 file
-            // covering [startedAt, endedAt]; the top-level s3Key only points at the LATEST
-            // segment, which is wrong for any scan that landed in an earlier one.
-            // Resolve the correct segment for THIS scanTime so the player opens the file
-            // that actually contains the moment.
+            // MediaMTX recordSegmentDuration rollover — every 2 min in production). Each
+            // segment is its own .mp4 file on S3 covering [startedAt, endedAt]. Resolve
+            // the segment matching THIS scanTime so playback opens the correct file.
+            //
+            // Three cases:
+            //  (a) segment matches            → S3 mp4, seek = scan - segment.startedAt
+            //  (b) recording active, no match → scan is in the in-flight 2-min window
+            //                                    (segment not uploaded yet). Use EC2 live
+            //                                    HLS, seek = 0 (live edge — runner can
+            //                                    rewatch precisely within ~2 min once the
+            //                                    segment finalizes + uploads).
+            //  (c) no segments at all         → legacy single-file recording, fall back
+            //                                    to top-level s3MasterManifestUrl, seek
+            //                                    from serverIngestStart.
             const segment = recording ? this.pickSegmentForScan(recording, scanTime) : null;
-            const playback = recording
-                ? (segment
-                    ? { url: segment.s3MasterManifestUrl, source: 's3' as const }
-                    : this.pickPlaybackUrl(recording))
-                : null;
+            const hasSegments = recording && Array.isArray((recording as any).segments) && (recording as any).segments.length > 0;
+            const inLiveWindow = !!recording && !segment && hasSegments && (recording as any).recordingStatus === 'recording';
 
-            // Anchor the seek to whichever timeline the chosen file actually starts on.
-            // - segment present → segment.startedAt
-            // - no segments (single-file recording) → serverIngestStart of the session
-            const fileStart = segment
-                ? new Date(segment.startedAt)
-                : recording ? new Date((recording as any).serverIngestStart) : null;
-            const fileEnd = segment
-                ? new Date(segment.endedAt || segment.startedAt)
-                : recording
-                    ? ((recording as any).serverIngestEnd ? new Date((recording as any).serverIngestEnd) : new Date())
-                    : null;
-            const seekSeconds = fileStart
-                ? Math.max(0, Math.floor((scanTime.getTime() - fileStart.getTime()) / 1000))
-                : 0;
+            let playback: { url: string; source: 's3' | 'ec2' } | null = null;
+            let fileStart: Date | null = null;
+            let fileEnd: Date | null = null;
+            let seekSeconds = 0;
+
+            if (segment) {
+                playback = { url: segment.s3MasterManifestUrl, source: 's3' };
+                fileStart = new Date(segment.startedAt);
+                fileEnd = new Date(segment.endedAt || segment.startedAt);
+                seekSeconds = Math.max(0, Math.floor((scanTime.getTime() - fileStart.getTime()) / 1000));
+            } else if (inLiveWindow) {
+                // Scan landed in the currently-recording 2-min segment — play live HLS.
+                const ec2 = this.resolveEc2HlsUrl(recording);
+                if (ec2) {
+                    playback = { url: ec2, source: 'ec2' };
+                    fileStart = scanTime; // live edge
+                    fileEnd = new Date();
+                    seekSeconds = 0;
+                }
+            } else if (recording) {
+                playback = this.pickPlaybackUrl(recording);
+                fileStart = new Date((recording as any).serverIngestStart);
+                fileEnd = (recording as any).serverIngestEnd
+                    ? new Date((recording as any).serverIngestEnd)
+                    : new Date();
+                seekSeconds = Math.max(0, Math.floor((scanTime.getTime() - fileStart.getTime()) / 1000));
+            }
 
             results.push({
                 checkpoint,

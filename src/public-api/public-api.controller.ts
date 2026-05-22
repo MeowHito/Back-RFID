@@ -868,9 +868,17 @@ export class PublicApiController {
                 const betaDoc = await this.cctvBetaRecordingsService.findById(recordingId).catch(() => null);
                 let inputSource: string | null = null;
                 if (betaDoc?.recordingStatus === 'recording') {
+                    // With 2-min segmentation, the live directory may hold multiple .mp4 files
+                    // (the in-flight segment, occasionally an unfinalized previous one before
+                    // the wrapper script picks it up). Pass the matched file start so we open
+                    // the segment that actually contains the scan moment.
+                    const atTime = (matchedRecording as any)?.startTime
+                        ? new Date((matchedRecording as any).startTime)
+                        : betaDoc.serverIngestStart;
                     inputSource = this.cctvBetaRecordingsService.resolveLiveFilePath({
                         streamKey: betaDoc.streamKey,
                         serverIngestStart: betaDoc.serverIngestStart,
+                        atTime,
                     });
                 } else {
                     inputSource = matchedRecording.playbackUrl || (betaDoc as any)?.s3MasterManifestUrl || null;

@@ -1,6 +1,27 @@
-# MediaMTX config for CCTV Beta
+# MediaMTX config for CCTV Beta — MPEGTS 6s persistent-segment architecture
 # Place at /opt/cctv-beta/mediamtx.yml on the EC2 ingest host.
+#
+# Storage model (verified 2026-05):
+#   Larix/IRL Pro ──► MediaMTX (record: mpegts, 6s segments → persistent .ts files)
+#                              ↓
+#                        s3-sync sidecar (every 30s):
+#                          1. upload new .ts to S3 (Cache-Control 1y, immutable)
+#                          2. ls S3 → build index.m3u8 from REAL contents
+#                          3. upload manifest (Cache-Control 2s)
+#                          4. prune local .ts older than 3 min
+#                              ↓
+#                  Player loads manifest + segments from S3 — instant seek
+#
+# Why MPEGTS instead of fmp4?
+#   - .ts segments are self-contained (no moov/sidx dependency) so a partial
+#     upload still produces playable HLS — segments missed by S3 are simply
+#     skipped from the next manifest pass instead of corrupting the timeline.
+#   - hls.js + Safari treat .ts segments identically once listed in a manifest.
+#   - 6 s is the HLS standard target duration; players don't need any tuning.
 
+# LL-HLS muxer (only used by /admin/cctv-beta-live as a fallback if the S3
+# manifest hasn't been generated yet — typically the first 30 s after publish).
+# Once s3-sync has published the manifest, all clients read from S3.
 hlsAddress: :8888
 hlsVariant: lowLatency
 hlsSegmentCount: 7
@@ -14,9 +35,15 @@ webrtcAddress: :8889
 
 pathDefaults:
   record: yes
+  # Output: /recordings/live/<streamKey>/<YYYY-MM-DD_HH-MM-SS>.ts
+  # Each segment is exactly 6 s. The s3-sync sidecar mounts /var/cctv/hls
+  # (host) → /data (sidecar) and rsyncs the same tree to S3 under hls/.
   recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S
-  recordFormat: fmp4
-  recordSegmentDuration: 1h
+  recordFormat: mpegts
+  recordSegmentDuration: 6s
+  # No deletion here — s3-sync container handles it after successful upload,
+  # so we don't risk losing a segment that hasn't shipped yet.
+  recordDeleteAfter: 0s
   runOnPublish: /hooks/on-publish.sh $MTX_PATH $MTX_SOURCE_TYPE
   runOnUnpublish: /hooks/on-unpublish.sh $MTX_PATH
   runOnReady: /hooks/on-ready.sh $MTX_PATH

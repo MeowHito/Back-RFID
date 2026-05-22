@@ -21,44 +21,102 @@ services:
       - MTX_INGEST_SECRET=${CCTV_BETA_INGEST_SECRET}
       - BACKEND_URL=${BACKEND_URL}
 
+  # ─── s3-sync ─────────────────────────────────────────────────────────────
+  # Runs the 4-step loop every 30s for every active streamKey directory:
+  #   1. UPLOAD new .ts segments → S3 (Cache-Control 1y, immutable — segments
+  #      never change once written).
+  #   2. LIST S3 to build index.m3u8 from REAL bucket contents, so any segment
+  #      that failed to upload simply gets skipped instead of producing a
+  #      manifest entry that 404s the player. Appends #EXT-X-ENDLIST if the
+  #      on-unpublish hook has dropped a .ended marker.
+  #   3. UPLOAD the freshly built manifest (Cache-Control 2s — short enough
+  #      that live viewers see new segments quickly, long enough that S3 isn't
+  #      hammered for every player tick).
+  #   4. PRUNE local .ts files whose mtime is > 3 min old. By that point the
+  #      segment is on S3, included in the manifest, and EC2 just needs to
+  #      hold the current + a small safety window worth of segments.
+  #
+  # AWS creds: env_file alone — do NOT re-declare AWS_* under `environment:`
+  # with ${VAR} interpolation. If .env omits them (because the EC2 host uses
+  # an IAM instance role / IMDS), the interpolation produces an empty string
+  # which OVERRIDES the IMDS credentials chain inside the container, and
+  # every aws call fails with "Unable to locate credentials".
   s3-sync:
     image: amazon/aws-cli:latest
-    restart: unless-stopped
-    volumes:
-      - /var/cctv/hls:/data:ro
-    # env_file alone — do NOT add an `environment:` block that re-declares AWS_*
-    # keys with ${VAR} interpolation. If .env omits them (because the EC2 host
-    # uses an IAM instance role / IMDS), the interpolation produces an empty
-    # string which OVERRIDES the IMDS credentials chain inside the container,
-    # and `aws s3 sync` will fail with "Unable to locate credentials".
-    env_file: .env
-    entrypoint: /bin/sh
-    command:
-      - -c
-      # Sync every 15s so admin S3 playback sees fresh segments quickly.
-      # Public read is granted via the bucket POLICY (s3:GetObject on hls/*) — NOT
-      # per-object ACLs. The bucket uses "Bucket owner enforced" object ownership,
-      # which DISABLES ACLs entirely; passing --acl public-read here makes every
-      # PutObject fail with AccessControlListNotSupported and stalls the whole sync.
-      - "while true; do aws s3 sync /data s3://$$S3_BUCKET/hls --exclude '*.tmp' --storage-class STANDARD_IA; sleep 15; done"
-
-  # Reclaim EC2 disk space after segments are safely on S3.
-  # Runs every 5 minutes; deletes any file in /var/cctv/hls whose mtime is older
-  # than 10 minutes. Live segments are still being written (mtime keeps updating)
-  # so they won't be touched. fmp4 recordings rotate every 1h (recordSegmentDuration)
-  # so a finalised .mp4 stops getting writes and becomes eligible after 10min — by
-  # which point s3-sync has pushed it (it runs every 15s).
-  # Tweak BETA_CLEANUP_AGE_MIN in .env if you want a longer safety window.
-  cleanup:
-    image: alpine:3.20
     restart: unless-stopped
     volumes:
       - /var/cctv/hls:/data
     env_file: .env
     environment:
-      - AGE_MIN=${BETA_CLEANUP_AGE_MIN:-10}
-      - INTERVAL_SEC=${BETA_CLEANUP_INTERVAL_SEC:-300}
+      - PRUNE_AGE_MIN=${BETA_PRUNE_AGE_MIN:-3}
+      - SYNC_INTERVAL_SEC=${BETA_SYNC_INTERVAL_SEC:-30}
     entrypoint: /bin/sh
     command:
       - -c
-      - "while true; do echo \"[cleanup] purging files older than $$AGE_MIN min\"; find /data -type f -mmin +$$AGE_MIN -print -delete 2>/dev/null | wc -l | xargs -I{} echo \"[cleanup] deleted {} files\"; find /data -type d -empty -not -path /data -delete 2>/dev/null; sleep $$INTERVAL_SEC; done"
+      - |
+        set -u
+        echo "[s3-sync] starting — bucket=$$S3_BUCKET interval=$${SYNC_INTERVAL_SEC}s prune_age=$${PRUNE_AGE_MIN}min"
+        while true; do
+          # ── (1) upload new .ts segments ──────────────────────────────────
+          # --size-only so re-uploads are skipped without checksumming, and
+          # --exclude index.m3u8 because the manifest is built in step (2).
+          aws s3 sync /data s3://$$S3_BUCKET/hls \
+            --exclude '*.tmp' \
+            --exclude '*.m3u8' \
+            --exclude '.ended' \
+            --size-only \
+            --cache-control 'public, max-age=31536000, immutable' \
+            --storage-class STANDARD_IA >/dev/null 2>&1 || true
+
+          # ── (2) + (3) build & upload per-stream manifests ────────────────
+          # Iterate every streamKey directory and rebuild its index.m3u8 from
+          # whatever segments are actually present on S3. Then push the manifest
+          # to S3 with short cache so players see updates quickly.
+          for dir in /data/live/*/; do
+            [ -d "$$dir" ] || continue
+            STREAM=$$(basename "$$dir")
+            PREFIX="hls/live/$$STREAM"
+
+            # ls S3 for this stream's segments, newest-naming-last (alphabetical
+            # works because filenames are ISO timestamps).
+            SEGS=$$(aws s3 ls "s3://$$S3_BUCKET/$$PREFIX/" 2>/dev/null \
+              | awk '{print $$4}' | grep '\.ts$$' | sort)
+            [ -z "$$SEGS" ] && continue
+
+            MANIFEST=/tmp/$$STREAM.m3u8
+            {
+              echo '#EXTM3U'
+              echo '#EXT-X-VERSION:3'
+              echo '#EXT-X-TARGETDURATION:7'
+              # Media sequence = number of segments already removed from the
+              # head. With a permanent S3 archive nothing is removed, so it
+              # stays 0 (VOD-style). Players treat it as a growing live
+              # playlist until #EXT-X-ENDLIST appears (step below).
+              echo '#EXT-X-MEDIA-SEQUENCE:0'
+              for s in $$SEGS; do
+                echo '#EXTINF:6.000,'
+                echo "$$s"
+              done
+              # If on-unpublish dropped the .ended marker, this stream is done —
+              # append #EXT-X-ENDLIST so players know not to poll for more.
+              if [ -f "$$dir.ended" ]; then
+                echo '#EXT-X-ENDLIST'
+              fi
+            } > "$$MANIFEST"
+
+            aws s3 cp "$$MANIFEST" "s3://$$S3_BUCKET/$$PREFIX/index.m3u8" \
+              --content-type 'application/vnd.apple.mpegurl' \
+              --cache-control 'public, max-age=2' \
+              --storage-class STANDARD >/dev/null 2>&1 || true
+            rm -f "$$MANIFEST"
+          done
+
+          # ── (4) prune local .ts older than PRUNE_AGE_MIN ─────────────────
+          # MediaMTX is still writing the CURRENT segment so its mtime keeps
+          # ticking — it won't get caught here. Once a segment finalises, its
+          # mtime stops updating and it becomes eligible after the cutoff.
+          find /data -type f -name '*.ts' -mmin +$$PRUNE_AGE_MIN -delete 2>/dev/null || true
+          find /data -type d -empty -not -path /data -delete 2>/dev/null || true
+
+          sleep $$SYNC_INTERVAL_SEC
+        done
