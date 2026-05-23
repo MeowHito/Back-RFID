@@ -1531,10 +1531,21 @@ export class SyncService {
             // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
+            // Snapshot manually-set DNF/DNS/DQ before delete so we can restore them after re-import
+            const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
+            const manualStoppedSnapshots = preCleanEventOids.length > 0
+                ? await (this.runnerModel as any).find({
+                    eventId: { $in: preCleanEventOids },
+                    isManualStatus: true,
+                    status: { $in: ['dnf', 'dns', 'dq'] },
+                }).select('bib eventId status statusCheckpoint statusNote statusChangedBy statusChangedAt').lean().exec()
+                : [];
+            if (manualStoppedSnapshots.length > 0) {
+                this.logger.log(`Snapshotted ${manualStoppedSnapshots.length} manually-set DNF/DNS/DQ runners before clean slate`);
+            }
             const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
-            const preCleanEventOids2 = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
-            if (preCleanEventOids2.length > 0) {
-                const trRemoved2 = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids2 } }).exec();
+            if (preCleanEventOids.length > 0) {
+                const trRemoved2 = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids } }).exec();
                 this.logger.log(`Clean slate: deleted ${trRemoved2.deletedCount} orphaned timing records`);
             }
             this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
@@ -1619,6 +1630,26 @@ export class SyncService {
             const scoreResult = await this.syncTimingOnly(campaignId);
             this.logger.log(`Score sync: ${scoreResult.updated} timing updates, ${scoreResult.statusChanges} status changes`);
             this.logger.log(`Pre-filter: skipped ${skippedNoResult} BIO rows with no race results in SCORE data`);
+            // Restore manually-set DNF/DNS/DQ statuses that were wiped by the clean-slate delete+recreate
+            if (manualStoppedSnapshots.length > 0) {
+                const restoreOps = manualStoppedSnapshots.map((snap: any) => ({
+                    updateOne: {
+                        filter: { eventId: snap.eventId, bib: snap.bib },
+                        update: {
+                            $set: {
+                                status: snap.status,
+                                isManualStatus: true,
+                                ...(snap.statusCheckpoint ? { statusCheckpoint: snap.statusCheckpoint } : {}),
+                                ...(snap.statusNote ? { statusNote: snap.statusNote } : {}),
+                                ...(snap.statusChangedBy ? { statusChangedBy: snap.statusChangedBy } : {}),
+                                ...(snap.statusChangedAt ? { statusChangedAt: snap.statusChangedAt } : {}),
+                            },
+                        },
+                    },
+                }));
+                await (this.runnerModel as any).bulkWrite(restoreOps, { ordered: false });
+                this.logger.log(`Restored ${restoreOps.length} manually-set DNF/DNS/DQ statuses after full sync`);
+            }
             // Also fetch split/checkpoint timing records (split distance, split time, split pace, supplement, chip note)
             this.logger.log(`Fetching split timing data for campaign ${campaignId}...`);
             let splitUpserted = 0;
