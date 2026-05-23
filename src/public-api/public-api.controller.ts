@@ -818,6 +818,9 @@ export class PublicApiController {
                     isApproveCertificate: campaign.isApproveCertificate ?? false,
                     certLayout: (campaign as any).certLayout || null,
                     certBackgroundImage: (campaign as any).certBackgroundImage || null,
+                    certPaperSize: (campaign as any).certPaperSize || 'a4-landscape',
+                    certBgOpacity: typeof (campaign as any).certBgOpacity === 'number' ? (campaign as any).certBgOpacity : 1,
+                    certBgColor: (campaign as any).certBgColor || null,
                 } : null,
             });
         } catch (error) {

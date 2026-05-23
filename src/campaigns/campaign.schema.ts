@@ -228,6 +228,14 @@ export class Campaign {
     @Prop({ default: 'a4-landscape' })
     certPaperSize: string;
 
+    /** Background opacity (0-1) applied to certBackgroundImage on the certificate */
+    @Prop({ default: 1 })
+    certBgOpacity: number;
+
+    /** Background color (hex) used when no background image, or behind a transparent BG image */
+    @Prop()
+    certBgColor: string;
+
     /** Scanning page display template: 'athletic' */
     @Prop({ default: 'athletic' })
     scanningTemplate: string;

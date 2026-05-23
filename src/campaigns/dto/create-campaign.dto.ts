@@ -226,6 +226,14 @@ export class CreateCampaignDto {
     certPaperSize?: string;
 
     @IsOptional()
+    @IsNumber()
+    certBgOpacity?: number;
+
+    @IsOptional()
+    @IsString()
+    certBgColor?: string;
+
+    @IsOptional()
     @IsString()
     scanningTemplate?: string;
 
