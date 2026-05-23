@@ -200,6 +200,9 @@ export class CreateCampaignDto {
     overallDisplayCount?: number;
 
     @IsOptional()
+    excludeAgeGroupTop?: number;
+
+    @IsOptional()
     @IsArray()
     displayColumns?: string[];
 

@@ -211,6 +211,10 @@ export class Campaign {
     @Prop({ default: 5 })
     overallDisplayCount: number;
 
+    /** Exclude runners with ageGroupRank <= N from Result-Winners page. 0 = no exclusion. */
+    @Prop({ default: 0 })
+    excludeAgeGroupTop: number;
+
     /** When true, race is finished → show Finish List view.
      *  When false (default), race is ongoing → show Pass Time (live) view. */
     @Prop({ default: false })
