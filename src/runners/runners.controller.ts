@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, NotFoundException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Types } from 'mongoose';
 import { RunnersService } from './runners.service';
@@ -144,11 +144,13 @@ export class RunnersController {
     @Put(':id/status')
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @RequirePermission('participants', 'create')
-    updateStatus(
+    async updateStatus(
         @Param('id') id: string,
         @Body() body: { status: string; statusCheckpoint?: string; statusNote?: string; changedBy?: string },
     ) {
-        return this.runnersService.updateStatus(id, body);
+        const result = await this.runnersService.updateStatus(id, body);
+        if (!result) throw new NotFoundException(`Runner ${id} not found`);
+        return result;
     }
 
     // Public endpoint — accessed from runner's phone via QR code on the scanning display.
