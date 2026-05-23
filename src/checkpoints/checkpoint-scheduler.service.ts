@@ -21,6 +21,8 @@ import { Event, EventDocument } from '../events/event.schema';
 export class CheckpointSchedulerService implements OnModuleInit {
     private readonly logger = new Logger(CheckpointSchedulerService.name);
     private intervalId: NodeJS.Timeout | null = null;
+    // Cache: cpId -> cutoffTime value last fully processed (no further mutations)
+    private settledCutoffs = new Map<string, string>();
 
     constructor(
         @InjectModel(Checkpoint.name) private checkpointModel: Model<CheckpointDocument>,
@@ -29,6 +31,11 @@ export class CheckpointSchedulerService implements OnModuleInit {
     ) { }
 
     onModuleInit() {
+        // Only instance 0 runs the scheduler to avoid duplicate writes in cluster mode
+        if (process.env.NODE_APP_INSTANCE !== undefined && process.env.NODE_APP_INSTANCE !== '0') {
+            this.logger.log(`Checkpoint cut-off scheduler skipped (instance ${process.env.NODE_APP_INSTANCE})`);
+            return;
+        }
         this.intervalId = setInterval(() => {
             this.checkCutOffTimes().catch(err => {
                 this.logger.error('Error checking cut-off times', err);
@@ -108,7 +115,12 @@ export class CheckpointSchedulerService implements OnModuleInit {
                         this.logger.debug(`CP "${(cp as any).name}": cutoff ${cutoff.toISOString()} > now ${now.toISOString()}, not yet`);
                         continue;
                     }
-                    this.logger.log(`CP "${(cp as any).name}": cutoff ${cutoff.toISOString()} <= now ${now.toISOString()}, processing...`);
+                    // Skip cutoffs we've already fully settled (no further mutations expected)
+                    const cpKey = String((cp as any)._id);
+                    if (this.settledCutoffs.get(cpKey) === cutoffStr) {
+                        continue;
+                    }
+                    this.logger.debug(`CP "${(cp as any).name}": cutoff ${cutoff.toISOString()} <= now ${now.toISOString()}, processing...`);
                     processed++;
 
                     const cpName = ((cp as any).name || '').toUpperCase();
@@ -136,6 +148,8 @@ export class CheckpointSchedulerService implements OnModuleInit {
                             this.logger.warn(
                                 `START cutoff "${(cp as any).name}" (${(cp as any).cutoffTime}): ${result.modifiedCount} runners → DNS`
                             );
+                        } else {
+                            this.settledCutoffs.set(cpKey, cutoffStr);
                         }
                     } else {
                         // Non-START checkpoint cutoff → mark running runners whose
@@ -160,9 +174,6 @@ export class CheckpointSchedulerService implements OnModuleInit {
                                 { latestCheckpoint: { $in: prevCpNames.map(n => new RegExp(`^${n}$`, 'i')) } },
                             ];
                         }
-                        // Count matching runners first for debug
-                        const matchCount = await this.runnerModel.countDocuments(filter).exec();
-                        this.logger.debug(`CP "${(cp as any).name}": ${matchCount} runner(s) match DNF filter`);
                         const result = await this.runnerModel.updateMany(
                             filter,
                             {
@@ -179,6 +190,8 @@ export class CheckpointSchedulerService implements OnModuleInit {
                             this.logger.warn(
                                 `Cutoff "${(cp as any).name}" (${(cp as any).cutoffTime}): ${result.modifiedCount} runners → DNF`
                             );
+                        } else {
+                            this.settledCutoffs.set(cpKey, cutoffStr);
                         }
                     }
                 }
@@ -214,6 +227,8 @@ export class CheckpointSchedulerService implements OnModuleInit {
     ): Promise<{ revertedCount: number }> {
         const now = new Date();
         let revertedCount = 0;
+        // Clear settled cache so the scheduler re-evaluates this cutoff next tick
+        this.settledCutoffs.clear();
 
         try {
             // Resolve event IDs for this campaign
