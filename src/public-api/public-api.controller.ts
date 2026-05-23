@@ -27,6 +27,20 @@ interface NormalizedResponse {
 
 @Controller('public-api')
 export class PublicApiController {
+    // In-memory response cache for hot public endpoints (TTL 8s — sync runs every 5s so max staleness is acceptable)
+    private readonly _cache = new Map<string, { data: any; expiry: number }>();
+    private readonly _CACHE_TTL = 8_000;
+    private readonly _campaignIdCache = new Map<string, { id: string; expiry: number }>();
+
+    private _cacheGet(key: string): any | null {
+        const entry = this._cache.get(key);
+        if (!entry || Date.now() > entry.expiry) { this._cache.delete(key); return null; }
+        return entry.data;
+    }
+    private _cacheSet(key: string, data: any): void {
+        this._cache.set(key, { data, expiry: Date.now() + this._CACHE_TTL });
+    }
+
     constructor(
         private readonly usersService: UsersService,
         private readonly authService: AuthService,
@@ -57,9 +71,12 @@ export class PublicApiController {
         if (!id) {
             throw new BadRequestException('Campaign id is required');
         }
-
+        const cached = this._campaignIdCache.get(id);
+        if (cached && Date.now() < cached.expiry) return cached.id;
         const campaign = await this.campaignsService.findById(id);
-        return String(campaign._id);
+        const resolved = String(campaign._id);
+        this._campaignIdCache.set(id, { id: resolved, expiry: Date.now() + 60_000 });
+        return resolved;
     }
 
     private getRunnerPrimaryTimeMs(runner: any): number {
@@ -335,8 +352,13 @@ export class PublicApiController {
     @Get('campaign/getCampaignDetailById')
     async getCampaignDetailById(@Query('id') id: string) {
         try {
+            const cacheKey = `campaignDetail:${id}`;
+            const cached = this._cacheGet(cacheKey);
+            if (cached) return cached;
             const data = await this.campaignsService.getDetailById(id);
-            return this.successResponse(data);
+            const result = this.successResponse(data);
+            this._cacheSet(cacheKey, result);
+            return result;
         } catch (error) {
             return this.errorResponse('404', 'Campaign not found');
         }
@@ -345,8 +367,13 @@ export class PublicApiController {
     @Get('campaign/getCheckpointById')
     async getCheckpointById(@Query('id') id: string) {
         const campaignId = await this.resolveCampaignObjectId(id);
+        const cacheKey = `checkpoints:${campaignId}`;
+        const cached = this._cacheGet(cacheKey);
+        if (cached) return cached;
         const data = await this.checkpointsService.findByCampaign(campaignId);
-        return this.successResponse(data);
+        const result = this.successResponse(data);
+        this._cacheSet(cacheKey, result);
+        return result;
     }
 
     // ========== Participant Endpoints ==========
@@ -374,6 +401,10 @@ export class PublicApiController {
         @Query('type') type: string,
     ) {
         const campaignId = await this.resolveCampaignObjectId(id);
+        const cacheKey = `allParticipants:${campaignId}:${gender || ''}:${ageGroup || ''}`;
+        const cached = this._cacheGet(cacheKey);
+        if (cached) return cached;
+
         const events = await this.eventsService.findByCampaign(campaignId);
         const eventIds = Array.from(
             new Set([
@@ -382,14 +413,9 @@ export class PublicApiController {
             ]),
         );
 
-        const filter = {
-            gender,
-            ageGroup,
-        };
-
+        const filter = { gender, ageGroup };
         const data = await this.runnersService.findByEventIds(eventIds, filter);
 
-        // Supplement runner documents with timing-based time values for accurate ranking
         try {
             const timingData = await this.timingService.getLatestPerRunner(eventIds);
             const timingByRunner = new Map<string, any>();
@@ -403,22 +429,16 @@ export class PublicApiController {
         } catch { /* timing supplement failed, proceed with runner data */ }
 
         const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(data as any[]);
-
-        // Apply computed ranks for all rankable runners so stale stored ranks cannot conflict
         for (const r of data as any[]) {
             const rid = String(r._id);
-            if (overallRankMap.has(rid)) {
-                r.overallRank = overallRankMap.get(rid);
-            }
-            if (genderRankMap.has(rid)) {
-                r.genderRank = genderRankMap.get(rid);
-            }
-            if (catRankMap.has(rid)) {
-                r.ageGroupRank = catRankMap.get(rid);
-            }
+            if (overallRankMap.has(rid)) r.overallRank = overallRankMap.get(rid);
+            if (genderRankMap.has(rid)) r.genderRank = genderRankMap.get(rid);
+            if (catRankMap.has(rid)) r.ageGroupRank = catRankMap.get(rid);
         }
 
-        return this.successResponse({ data, total: data.length });
+        const result = this.successResponse({ data, total: data.length });
+        this._cacheSet(cacheKey, result);
+        return result;
     }
 
     @Get('campaign/getPassTimeByEvent')
@@ -426,6 +446,10 @@ export class PublicApiController {
         @Query('id') id: string,
     ) {
         const campaignId = await this.resolveCampaignObjectId(id);
+        const cacheKey = `passTime:${campaignId}`;
+        const cached = this._cacheGet(cacheKey);
+        if (cached) return cached;
+
         const events = await this.eventsService.findByCampaign(campaignId);
         const eventIds = Array.from(
             new Set([
@@ -505,15 +529,21 @@ export class PublicApiController {
             }
         }
 
-        return this.successResponse({ data: merged, total: merged.length });
+        const result = this.successResponse({ data: merged, total: merged.length });
+        this._cacheSet(cacheKey, result);
+        return result;
     }
 
     @Get('campaign/getAllStatusByEvent')
     async getAllStatusByEvent(@Query('id') id: string) {
         const eventId = await this.resolveCampaignObjectId(id);
-        // Use server-side aggregation instead of loading all runners into memory
+        const cacheKey = `allStatus:${eventId}`;
+        const cached = this._cacheGet(cacheKey);
+        if (cached) return cached;
         const data = await this.runnersService.getAllStatusByEvent(eventId);
-        return this.successResponse(data);
+        const result = this.successResponse(data);
+        this._cacheSet(cacheKey, result);
+        return result;
     }
 
     @Get('campaign/getStartersByAge')

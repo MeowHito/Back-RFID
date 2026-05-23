@@ -1342,21 +1342,12 @@ export class SyncService {
             // ---- Step 3.5: Fetch start times from /Dif/split (Passed time data) ----
             // The INFO endpoint may not include WaveTime, so we fetch actual passed-time
             // records and look for the START checkpoint timestamp as the wave/gun start time.
-            this.logger.log('=== Fetching passed time data from RaceTiger (/Dif/split) ===');
             const startTimeByEventEid = new Map<string, string>();
             for (const eid of raceTigerEids.length > 0 ? raceTigerEids : [undefined as number | undefined]) {
                 try {
-                    const { response: splitRes, parsedBody: splitParsed, rawBody: splitRaw } = await this.requestRaceTiger(campaign, 'passedTime', 1, eid);
-                    this.logger.log(`  /Dif/split EID=${eid ?? 'all'} status=${splitRes.status} bodyLen=${splitRaw?.length ?? 0}`);
+                    const { response: splitRes, parsedBody: splitParsed } = await this.requestRaceTiger(campaign, 'passedTime', 1, eid);
                     if (!splitRes.ok || !splitParsed) continue;
-                    // Log first part to understand response structure
-                    this.logger.log(`  /Dif/split top-level keys: [${Object.keys(splitParsed).join(', ')}]`);
                     const splitRows = this.extractRowsFromPayload(splitParsed);
-                    this.logger.log(`  /Dif/split extracted ${splitRows.length} rows`);
-                    if (splitRows.length > 0) {
-                        this.logger.log(`  /Dif/split first row keys: [${Object.keys(splitRows[0]).join(', ')}]`);
-                        this.logger.log(`  /Dif/split first row: ${JSON.stringify(splitRows[0]).substring(0, 500)}`);
-                    }
                     // Look for START checkpoint records to find the wave start time
                     for (const row of splitRows) {
                         const tpName = this.toSafeString(
@@ -2061,7 +2052,7 @@ export class SyncService {
                     runnerByEventAthleteId.set(`${evId}:${(runner as any).athleteId}`, runner);
                 }
             }
-            this.logger.log(`Score sync: pre-loaded ${allRunners.length} runners into lookup maps`);
+            this.logger.debug(`Score sync: pre-loaded ${allRunners.length} runners into lookup maps`);
             // Collect all bulkWrite operations to execute at end
             const bulkOps: Array<{ updateOne: { filter: any; update: any } }> = [];
             // Track which runner IDs appeared in Score data (for DNF detection)
@@ -2077,25 +2068,6 @@ export class SyncService {
                         if (!parsedBody || typeof parsedBody !== 'object') break;
                         const rows = this.extractRowsFromPayload(parsedBody);
                         if (!rows.length) break;
-                        // Log first page's first rows to debug field mapping
-                        if (page === 1 && rows.length > 0) {
-                            this.logger.log(`  Score EID=${eid ?? 'all'} first row keys: [${Object.keys(rows[0]).join(', ')}]`);
-                            this.logger.log(`  Score EID=${eid ?? 'all'} first row: ${JSON.stringify(rows[0]).substring(0, 800)}`);
-                            // Log parsed values for first 3 rows to verify accuracy
-                            for (let sampleIdx = 0; sampleIdx < Math.min(3, rows.length); sampleIdx++) {
-                                const sr = rows[sampleIdx];
-                                const sAthId = this.toSafeString(sr?.AthleteId ?? sr?.athleteId);
-                                const sBib = this.toSafeString(sr?.BIB ?? sr?.Bib ?? sr?.bib);
-                                const sEvId = sr?.EventId ?? sr?.eventId;
-                                const sNet = sr?.NetTime ?? sr?.netTime ?? sr?.FinishTime ?? sr?.finishTime;
-                                const sGun = sr?.GunTime ?? sr?.gunTime ?? sr?.ElapsedTime ?? sr?.elapsedTime ?? sr?.RealTime ?? sr?.realTime ?? sr?.Time ?? sr?.time;
-                                const sNetRank = sr?.NetTimeOverallPosition ?? sr?.netTimeOverallPosition;
-                                const sGunRank = sr?.OverallPosition ?? sr?.overallPosition;
-                                const sNetGenRank = sr?.NetTimeGenderPosition ?? sr?.netTimeGenderPosition;
-                                const sNetCatRank = sr?.NetTimeCategoryPosition ?? sr?.netTimeCategoryPosition;
-                                this.logger.log(`  [SAMPLE ${sampleIdx}] AthleteId=${sAthId} BIB=${sBib} EventId=${sEvId} | Net="${sNet}" → ${this.parseTimeToMs(sNet)}ms | Gun="${sGun}" → ${this.parseTimeToMs(sGun)}ms | NetRank=${sNetRank} GunRank=${sGunRank} NetGenRank=${sNetGenRank} NetCatRank=${sNetCatRank}`);
-                            }
-                        }
                         const apiTotal = this.parseNumericValue(parsedBody?.total);
                         if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
                         totalFetched += rows.length;
