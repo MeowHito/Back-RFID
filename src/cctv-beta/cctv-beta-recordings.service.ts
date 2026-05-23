@@ -713,15 +713,7 @@ export class CctvBetaRecordingsService {
             let seekSeconds = 0;
 
             if (segment) {
-                // Prefer the direct .mp4 segment URL over the HLS manifest (index.m3u8).
-                // The manifest contains ALL historical segments — ffmpeg with ss=0 into the
-                // manifest starts at the earliest segment (e.g. 05:54:50), not at this
-                // segment's startedAt. The direct .mp4 file starts exactly at startedAt.
-                const segFileName = segment.s3Key?.split('/').pop();
-                const directUrl = segFileName && segment.s3MasterManifestUrl && !segment.s3Key?.endsWith('.m3u8')
-                    ? segment.s3MasterManifestUrl.replace(/index\.m3u8(\?.*)?$/, segFileName)
-                    : null;
-                playback = { url: directUrl || segment.s3MasterManifestUrl, source: 's3' };
+                playback = { url: segment.s3MasterManifestUrl, source: 's3' };
                 fileStart = new Date(segment.startedAt);
                 fileEnd = new Date(segment.endedAt || segment.startedAt);
                 seekSeconds = Math.max(0, Math.floor((scanTime.getTime() - fileStart.getTime()) / 1000));
@@ -741,19 +733,6 @@ export class CctvBetaRecordingsService {
                     ? new Date((recording as any).serverIngestEnd)
                     : new Date();
                 seekSeconds = Math.max(0, Math.floor((scanTime.getTime() - fileStart.getTime()) / 1000));
-                // Guard against Larix reconnect after the merge window: serverIngestStart gets
-                // set to the reconnect time (≈ scanTime), making seekSec ≈ 0. But the HLS
-                // manifest (index.m3u8) still contains footage from BEFORE the reconnect —
-                // ss=0 into the manifest would show footage from 10+ min earlier.
-                // In this case return no recording so the runner sees "no video yet" rather
-                // than completely wrong footage. The correct segment will be available once
-                // on-segment-complete fires (~2 min after the scan).
-                if (seekSeconds < 60 && !hasSegments && playback?.url?.includes('index.m3u8')) {
-                    playback = null;
-                    fileStart = null;
-                    fileEnd = null;
-                    seekSeconds = 0;
-                }
             }
 
             results.push({
@@ -761,9 +740,7 @@ export class CctvBetaRecordingsService {
                 scanTime: scanTime.toISOString(),
                 elapsedTime: (t as any).elapsedTime || null,
                 splitTime: (t as any).splitTime || null,
-                // When the guard above cleared playback (reconnect with stale manifest),
-                // treat the recording as not found so the runner page shows "no video yet".
-                recording: (recording && playback) ? {
+                recording: recording ? {
                     _id: (recording as any)._id,
                     cameraId: String((recording as any).cameraId || ''),
                     cameraName: (recording as any).cameraName,
