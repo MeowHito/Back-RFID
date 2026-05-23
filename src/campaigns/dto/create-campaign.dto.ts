@@ -194,6 +194,12 @@ export class CreateCampaignDto {
     disableAgeGroupRanking?: boolean;
 
     @IsOptional()
+    ageGroupDisplayCount?: number;
+
+    @IsOptional()
+    overallDisplayCount?: number;
+
+    @IsOptional()
     @IsArray()
     displayColumns?: string[];
 

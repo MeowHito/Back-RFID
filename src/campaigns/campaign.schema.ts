@@ -203,6 +203,14 @@ export class Campaign {
     @Prop({ default: false })
     disableAgeGroupRanking: boolean;
 
+    /** Number of top ranks to display per age group on Result-Winners page. Default 5. */
+    @Prop({ default: 5 })
+    ageGroupDisplayCount: number;
+
+    /** Number of top overall ranks to display on Overall-Winners page. Default 5. */
+    @Prop({ default: 5 })
+    overallDisplayCount: number;
+
     /** When true, race is finished → show Finish List view.
      *  When false (default), race is ongoing → show Pass Time (live) view. */
     @Prop({ default: false })
