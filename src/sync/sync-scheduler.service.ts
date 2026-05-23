@@ -22,7 +22,7 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
     private intervalId: NodeJS.Timeout | null = null;
     private isSyncing = false;
     private syncCount = 0;
-    private splitSyncTick = 0; // Run split sync every 3rd tick (~15s)
+    private splitSyncTick = 0; // Run split sync every 3rd tick (~30s)
 
     constructor(
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
@@ -30,13 +30,18 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
     ) { }
 
     onModuleInit() {
-        // Start auto-sync interval (5 seconds)
+        // Only instance 0 runs the scheduler to avoid duplicate writes in cluster mode
+        if (process.env.NODE_APP_INSTANCE !== '0') {
+            this.logger.log(`Auto-sync scheduler skipped (instance ${process.env.NODE_APP_INSTANCE})`);
+            return;
+        }
+        // Start auto-sync interval (10 seconds)
         this.intervalId = setInterval(() => {
             this.runAutoSync().catch(err => {
                 this.logger.error('Auto-sync error', err?.message || err);
             });
-        }, 5_000);
-        this.logger.log('RaceTiger auto-sync scheduler initialized (5s score / 15s split)');
+        }, 10_000);
+        this.logger.log('RaceTiger auto-sync scheduler initialized (10s score / 30s split)');
     }
 
     /**
