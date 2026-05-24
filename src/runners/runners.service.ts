@@ -621,12 +621,13 @@ export class RunnersService {
             }
         }
 
-        // Age group rankings
-        const ageGroups = [...new Set(runners.map(r => r.ageGroup))];
-        for (const ageGroup of ageGroups) {
-            const ageGroupRunners = runners.filter(r => r.ageGroup === ageGroup);
-            for (let i = 0; i < ageGroupRunners.length; i++) {
-                const entry = rankMap.get(ageGroupRunners[i]._id.toString())!;
+        // Age group rankings — scoped per gender so M40-49 and F40-49 rank separately
+        const ageGroupGenderKeys = [...new Set(runners.map(r => `${r.gender || ''}::${r.ageGroup || ''}`))];
+        for (const key of ageGroupGenderKeys) {
+            const [gender, ageGroup] = key.split('::');
+            const groupRunners = runners.filter(r => (r.gender || '') === gender && (r.ageGroup || '') === ageGroup);
+            for (let i = 0; i < groupRunners.length; i++) {
+                const entry = rankMap.get(groupRunners[i]._id.toString())!;
                 entry.ageGroupRank = i + 1;
             }
         }

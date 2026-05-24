@@ -175,12 +175,15 @@ export class PublicApiController {
                 });
             });
 
+            // CAT rank is scoped to gender + ageGroup so M40-49 and F40-49 rank separately.
             const catGroups = new Map<string, any[]>();
             eventRecords.forEach((record: any) => {
-                const category = String(record?.ageGroup || '');
-                if (!category) return;
-                if (!catGroups.has(category)) catGroups.set(category, []);
-                catGroups.get(category)!.push(record);
+                const ageGroup = String(record?.ageGroup || '');
+                if (!ageGroup) return;
+                const gender = String(record?.gender || '').toUpperCase();
+                const catKey = `${gender}::${ageGroup}`;
+                if (!catGroups.has(catKey)) catGroups.set(catKey, []);
+                catGroups.get(catKey)!.push(record);
             });
             catGroups.forEach((group) => {
                 group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((record, index) => {
@@ -758,7 +761,13 @@ export class PublicApiController {
                 const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(allRunners as any[]);
                 if (overallRankMap.has(runnerId)) runnerObj.overallRank = overallRankMap.get(runnerId);
                 if (genderRankMap.has(runnerId)) runnerObj.genderRank = genderRankMap.get(runnerId);
-                if (catRankMap.has(runnerId)) runnerObj.ageGroupRank = catRankMap.get(runnerId);
+                if (catRankMap.has(runnerId)) {
+                    const catRank = catRankMap.get(runnerId);
+                    // Surface as both fields so /runner/[id] (ageGroupRank) and /eslip (categoryRank)
+                    // display the same gender+ageGroup-scoped CAT rank.
+                    runnerObj.ageGroupRank = catRank;
+                    runnerObj.categoryRank = catRank;
+                }
 
                 const eventScopedRankable = (allRunners as any[]).filter((r: any) => {
                     const sameEvent = String(r?.eventId || '') === eventId;

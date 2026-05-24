@@ -389,8 +389,11 @@ export class TimingService {
                     latestCheckpoint: '$checkpoint',
                     passedCount: { $size: '$uniqueCheckpoints' },
                     scanTime: 1,
-                    netTime: 1,
-                    gunTime: 1,
+                    // Prefer the runner-stored value when an admin has manually edited it
+                    // (e.g. /admin/results gun/net time edit). Fall back to the timing
+                    // record's value when the runner has no override.
+                    netTime: { $cond: [{ $gt: ['$runner.netTime', 0] }, '$runner.netTime', '$netTime'] },
+                    gunTime: { $cond: [{ $gt: ['$runner.gunTime', 0] }, '$runner.gunTime', '$gunTime'] },
                     splitTime: 1,
                     distanceFromStart: 1,
                     order: 1,
@@ -645,13 +648,16 @@ export class TimingService {
                     genderRankMap.set(String(runner?.bib || ''), index + 1);
                 });
             });
+            // Category (CAT) rank is scoped to gender + ageGroup so M and F rank separately.
             const categoryRankMap = new Map<string, number>();
             const categoryGroups = new Map<string, any[]>();
             rankable.forEach((runner: any) => {
-                const categoryKey = String(runner?.ageGroup || '');
-                if (!categoryKey) return;
-                if (!categoryGroups.has(categoryKey)) categoryGroups.set(categoryKey, []);
-                categoryGroups.get(categoryKey)!.push(runner);
+                const ageGroup = String(runner?.ageGroup || '');
+                if (!ageGroup) return;
+                const gender = String(runner?.gender || '').toUpperCase();
+                const catKey = `${gender}::${ageGroup}`;
+                if (!categoryGroups.has(catKey)) categoryGroups.set(catKey, []);
+                categoryGroups.get(catKey)!.push(runner);
             });
             categoryGroups.forEach((group) => {
                 group.sort(compareCheckpointRaceRankOrder).forEach((runner, index) => {
