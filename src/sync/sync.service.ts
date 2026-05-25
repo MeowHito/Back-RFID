@@ -1952,11 +1952,11 @@ export class SyncService {
                     const hasFinishTiming = [...acc.uniqueCps].some(cp => finishCpNames.has(cp.toUpperCase()));
                     // Promote status: not_started → in_progress, and → finished if FINISH checkpoint reached.
                     // Respect isManualStatus: don't override manually-set DNF/DNS/DQ.
+                    const curStatus = existingRunner ? (existingRunner.status || '').toLowerCase() : '';
+                    const isManuallySet = existingRunner ? (existingRunner as any).isManualStatus === true : false;
+                    const isStoppedManual = isManuallySet && ['dnf', 'dns', 'dq'].includes(curStatus);
                     let statusUpdate: Record<string, any> = {};
                     if (existingRunner && acc.lapCount > 0) {
-                        const curStatus = (existingRunner.status || '').toLowerCase();
-                        const isManuallySet = (existingRunner as any).isManualStatus === true;
-                        const isStoppedManual = isManuallySet && ['dnf', 'dns', 'dq'].includes(curStatus);
                         if (!isStoppedManual) {
                             if (hasFinishTiming && curStatus !== 'finished') {
                                 statusUpdate = { status: 'finished', isStarted: true };
@@ -1968,13 +1968,13 @@ export class SyncService {
                     return {
                         id: new Types.ObjectId(rId),
                         data: {
-                            passedCount: acc.uniqueCps.size,
+                            ...(isStoppedManual ? {} : { passedCount: acc.uniqueCps.size }),
                             lapCount: acc.lapCount,
                             ...(bestLap !== undefined ? { bestLapTime: bestLap } : {}),
                             ...(avgLap !== undefined ? { avgLapTime: avgLap } : {}),
                             ...(acc.lastSplitTime !== null ? { lastLapTime: acc.lastSplitTime } : {}),
                             ...(acc.lastScanTime !== null ? { lastPassTime: acc.lastScanTime } : {}),
-                            ...(acc.lastCheckpointName !== null ? { latestCheckpoint: acc.lastCheckpointName } : {}),
+                            ...(isStoppedManual ? {} : acc.lastCheckpointName !== null ? { latestCheckpoint: acc.lastCheckpointName } : {}),
                             ...statusUpdate,
                             // Propagate chipCode/printingCode from passtime to runner
                             ...(acc.chipCode ? { chipCode: acc.chipCode, rfidTag: acc.chipCode } : {}),
@@ -2212,17 +2212,17 @@ export class SyncService {
                             if (totalFinishers !== null && totalFinishers > 0) updateData.totalFinishers = totalFinishers;
                             const genderFinishers = this.parseNumericValue(row?.GenderFinishers ?? row?.genderFinishers ?? row?.SexFinishCount ?? row?.sexFinishCount);
                             if (genderFinishers !== null && genderFinishers > 0) updateData.genderFinishers = genderFinishers;
-                            // Latest checkpoint
+                            // Latest checkpoint — skip for manually-stopped DNS/DNF/DQ runners
                             const latestCp = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.LastStation ?? row?.lastStation ?? row?.LatestCheckpoint);
-                            if (latestCp) updateData.latestCheckpoint = latestCp;
-                            // Passed count (number of checkpoints passed)
+                            if (latestCp && !isStoppedManual) updateData.latestCheckpoint = latestCp;
+                            // Passed count — skip for manually-stopped DNS/DNF/DQ runners
                             const passedCount = this.parseNumericValue(
                                 row?.PassedCount ?? row?.passedCount ?? row?.PassCount ?? row?.passCount
                                 ?? row?.Passedcount ?? row?.passedcount
                                 ?? row?.CheckpointCount ?? row?.checkpointCount
                                 ?? row?.TpCount ?? row?.tpCount
                             );
-                            if (passedCount !== null && passedCount >= 0) updateData.passedCount = passedCount;
+                            if (passedCount !== null && passedCount >= 0 && !isStoppedManual) updateData.passedCount = passedCount;
                             if (Object.keys(updateData).length > 0) {
                                 bulkOps.push({
                                     updateOne: {
