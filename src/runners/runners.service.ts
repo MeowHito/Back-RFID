@@ -4,6 +4,7 @@ import { Model, Types } from 'mongoose';
 import { Runner, RunnerDocument } from './runner.schema';
 import { CreateRunnerDto } from './dto/create-runner.dto';
 import { Event, EventDocument } from '../events/event.schema';
+import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
 
 export interface RunnerFilter {
     eventId?: string;
@@ -32,6 +33,7 @@ export class RunnersService {
     constructor(
         @InjectModel(Runner.name) private runnerModel: Model<RunnerDocument>,
         @InjectModel(Event.name) private eventModel: Model<EventDocument>,
+        @InjectModel(TimingRecord.name) private timingModel: Model<TimingRecordDocument>,
     ) { }
 
     // Get all runners without filter (for debugging/checking data)
@@ -572,7 +574,45 @@ export class RunnersService {
     }
 
     async update(id: string, updateData: any): Promise<RunnerDocument | null> {
-        return this.runnerModel.findByIdAndUpdate(id, updateData, { new: true }).exec();
+        const updated = await this.runnerModel.findByIdAndUpdate(id, updateData, { new: true }).exec();
+
+        // When the runner's net/gun finish time is edited, mirror it onto the
+        // FINISH TimingRecord so /runner/[id]'s checkpoint table shows the same value.
+        const touchedFinishFields = ['netTime', 'gunTime', 'elapsedTime', 'finishTime'].some(
+            k => Object.prototype.hasOwnProperty.call(updateData, k),
+        );
+        if (updated && touchedFinishFields) {
+            try {
+                const finishUpdate: Record<string, unknown> = {};
+                if (Object.prototype.hasOwnProperty.call(updateData, 'netTime')) {
+                    const v = Number(updateData.netTime) || 0;
+                    finishUpdate.netTime = v;
+                    finishUpdate.elapsedTime = v;
+                }
+                if (Object.prototype.hasOwnProperty.call(updateData, 'gunTime')) {
+                    finishUpdate.gunTime = Number(updateData.gunTime) || 0;
+                }
+                if (Object.prototype.hasOwnProperty.call(updateData, 'elapsedTime')
+                    && !Object.prototype.hasOwnProperty.call(updateData, 'netTime')) {
+                    finishUpdate.elapsedTime = Number(updateData.elapsedTime) || 0;
+                }
+                if (Object.prototype.hasOwnProperty.call(updateData, 'finishTime') && updateData.finishTime) {
+                    finishUpdate.scanTime = new Date(updateData.finishTime);
+                }
+                if (Object.keys(finishUpdate).length > 0) {
+                    await this.timingModel.updateOne(
+                        {
+                            eventId: updated.eventId,
+                            runnerId: updated._id,
+                            checkpoint: { $regex: /^finish$/i },
+                        },
+                        { $set: finishUpdate },
+                    ).exec();
+                }
+            } catch { /* non-fatal */ }
+        }
+
+        return updated;
     }
 
     // Old updateStatus removed — replaced by new version at bottom with checkpoint + note support

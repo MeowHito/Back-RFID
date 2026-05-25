@@ -20,6 +20,14 @@ function normalizeCheckpointRunnerValue(value?: string): string {
     return (value || '').trim().toLowerCase();
 }
 
+function formatPaceMs(timeMs: number, distKm: number): string {
+    if (!timeMs || timeMs <= 0 || !distKm || distKm <= 0) return '';
+    const paceMinPerKm = (timeMs / 60000) / distKm;
+    const pm = Math.floor(paceMinPerKm);
+    const ps = Math.round((paceMinPerKm - pm) * 60);
+    return `${pm}:${String(ps).padStart(2, '0')}`;
+}
+
 function getCheckpointRunnerScanTimeValue(scanTime?: string | Date): number {
     if (!scanTime) return Number.POSITIVE_INFINITY;
     const value = new Date(scanTime).getTime();
@@ -889,12 +897,122 @@ export class TimingService {
     }
 
     async updateRecordScanTime(id: string, scanTime: string): Promise<TimingRecordDocument | null> {
-        const record = await this.timingModel.findByIdAndUpdate(
-            id,
-            { scanTime: new Date(scanTime) },
-            { new: true },
-        ).lean().exec();
-        return record as TimingRecordDocument | null;
+        const existing = await this.timingModel.findById(id).exec();
+        if (!existing) return null;
+
+        const newScan = new Date(scanTime);
+        if (isNaN(newScan.getTime())) {
+            return existing.toObject() as TimingRecordDocument;
+        }
+
+        const runner = await this.runnersService.findOne(String(existing.runnerId)).catch(() => null);
+
+        // Load all of this runner's records (ordered) for split + START propagation.
+        const allRecords = await this.timingModel
+            .find({ eventId: existing.eventId, runnerId: existing.runnerId })
+            .sort({ order: 1 })
+            .exec();
+
+        const idx = allRecords.findIndex(r => String(r._id) === String(existing._id));
+        const prev = idx > 0 ? allRecords[idx - 1] : null;
+        const next = idx >= 0 && idx < allRecords.length - 1 ? allRecords[idx + 1] : null;
+
+        const cpUp = (existing.checkpoint || '').toUpperCase();
+        const isFinish = cpUp === 'FINISH';
+        const isStart = cpUp === 'START';
+
+        const startMs = isStart
+            ? newScan.getTime()
+            : (runner?.startTime ? new Date(runner.startTime).getTime() : null);
+
+        // 1) Recompute this record's derived fields.
+        const elapsedTime = startMs != null ? Math.max(0, newScan.getTime() - startMs) : 0;
+        const splitTime = prev ? Math.max(0, newScan.getTime() - new Date(prev.scanTime).getTime()) : 0;
+
+        const update: any = { scanTime: newScan, elapsedTime, splitTime };
+        if (isFinish || (existing.netTime && existing.netTime > 0)) update.netTime = elapsedTime;
+        if (existing.gunTime && existing.gunTime > 0) update.gunTime = elapsedTime;
+
+        const dist = existing.distanceFromStart;
+        if (dist && dist > 0 && elapsedTime > 0) {
+            const pace = formatPaceMs(elapsedTime, dist);
+            update.netPace = pace;
+            if (update.gunTime) update.gunPace = pace;
+        }
+        if (existing.legDistance && existing.legDistance > 0 && splitTime > 0) {
+            const segPace = formatPaceMs(splitTime, existing.legDistance);
+            update.legTime = splitTime;
+            update.legPace = segPace;
+            update.splitPace = segPace;
+        }
+
+        await this.timingModel.findByIdAndUpdate(id, update).exec();
+
+        // 2) Recompute next record's splitTime (depends on this scanTime).
+        if (next) {
+            const nextSplitMs = Math.max(0, new Date(next.scanTime).getTime() - newScan.getTime());
+            const nextUpdate: any = { splitTime: nextSplitMs };
+            if (next.legDistance && next.legDistance > 0 && nextSplitMs > 0) {
+                const segPace = formatPaceMs(nextSplitMs, next.legDistance);
+                nextUpdate.legTime = nextSplitMs;
+                nextUpdate.legPace = segPace;
+                nextUpdate.splitPace = segPace;
+            }
+            await this.timingModel.findByIdAndUpdate(next._id, nextUpdate).exec();
+        }
+
+        // 3) FINISH → sync runner aggregate.
+        if (isFinish && runner) {
+            await this.runnersService.update(String(existing.runnerId), {
+                finishTime: newScan,
+                netTime: elapsedTime,
+                elapsedTime,
+            });
+            if (runner.category) {
+                this.scheduleRankingUpdate(String(existing.eventId), runner.category);
+            }
+        }
+
+        // 4) START → update runner.startTime and recompute every other record.
+        if (isStart && runner) {
+            await this.runnersService.update(String(existing.runnerId), { startTime: newScan });
+            const newStartMs = newScan.getTime();
+            for (const r of allRecords) {
+                if (String(r._id) === String(existing._id)) continue;
+                const rScanMs = new Date(r.scanTime).getTime();
+                const newElapsed = Math.max(0, rScanMs - newStartMs);
+                const rCpUp = (r.checkpoint || '').toUpperCase();
+                const u: any = { elapsedTime: newElapsed };
+                if (rCpUp === 'FINISH' || (r.netTime && r.netTime > 0)) u.netTime = newElapsed;
+                if (r.gunTime && r.gunTime > 0) u.gunTime = newElapsed;
+                if (r.distanceFromStart && r.distanceFromStart > 0 && newElapsed > 0) {
+                    const pace = formatPaceMs(newElapsed, r.distanceFromStart);
+                    u.netPace = pace;
+                    if (u.gunTime) u.gunPace = pace;
+                }
+                await this.timingModel.findByIdAndUpdate(r._id, u).exec();
+                if (rCpUp === 'FINISH') {
+                    await this.runnersService.update(String(existing.runnerId), {
+                        finishTime: r.scanTime,
+                        netTime: newElapsed,
+                        elapsedTime: newElapsed,
+                    });
+                    if (runner.category) {
+                        this.scheduleRankingUpdate(String(existing.eventId), runner.category);
+                    }
+                }
+            }
+        }
+
+        // 5) Broadcast updated runner state.
+        try {
+            const updatedRunner = await this.runnersService.findOne(String(existing.runnerId)).catch(() => null);
+            if (updatedRunner) {
+                this.timingGateway.broadcastRunnerUpdate(String(existing.eventId), updatedRunner);
+            }
+        } catch { /* non-fatal */ }
+
+        return this.timingModel.findById(id).lean().exec() as Promise<TimingRecordDocument | null>;
     }
 
     async deleteRecord(id: string): Promise<void> {

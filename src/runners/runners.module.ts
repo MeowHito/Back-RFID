@@ -5,6 +5,7 @@ import { RunnersService } from './runners.service';
 import { Runner, RunnerSchema } from './runner.schema';
 import { User, UserSchema } from '../users/user.schema';
 import { Event, EventSchema } from '../events/event.schema';
+import { TimingRecord, TimingRecordSchema } from '../timing/timing-record.schema';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 
 @Module({
@@ -13,6 +14,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
             { name: Runner.name, schema: RunnerSchema },
             { name: User.name, schema: UserSchema },
             { name: Event.name, schema: EventSchema },
+            { name: TimingRecord.name, schema: TimingRecordSchema },
         ]),
     ],
     controllers: [RunnersController],
