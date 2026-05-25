@@ -57,7 +57,8 @@ export class CheckpointsService {
 
     async update(id: string, updateData: Partial<CreateCheckpointDto>): Promise<CheckpointDocument> {
         // Read old checkpoint before updating to detect cutoff extension
-        const oldCp = updateData.cutoffTime !== undefined
+        const cutoffTouched = updateData.cutoffTime !== undefined || updateData.cutoffTimes !== undefined;
+        const oldCp = cutoffTouched
             ? await this.checkpointModel.findById(id).lean().exec()
             : null;
 
@@ -74,6 +75,15 @@ export class CheckpointsService {
                 (oldCp as any).type,
             );
         }
+        if (oldCp && updateData.cutoffTimes !== undefined) {
+            await this.handleCutoffTimesExtension(
+                (oldCp as any).cutoffTimes || {},
+                updateData.cutoffTimes || {},
+                (oldCp as any).name,
+                String((oldCp as any).campaignId),
+                (oldCp as any).type,
+            );
+        }
 
         return checkpoint;
     }
@@ -81,8 +91,8 @@ export class CheckpointsService {
     async updateMany(checkpoints: Array<{ id: string } & Partial<CreateCheckpointDto>>): Promise<void> {
         if (checkpoints.length === 0) return;
 
-        // Pre-read old cutoff values for checkpoints that have cutoffTime changes
-        const cutoffChanges = checkpoints.filter(cp => cp.cutoffTime !== undefined);
+        // Pre-read old cutoff values for checkpoints that have cutoffTime or cutoffTimes changes
+        const cutoffChanges = checkpoints.filter(cp => cp.cutoffTime !== undefined || cp.cutoffTimes !== undefined);
         const oldCpMap = new Map<string, any>();
         if (cutoffChanges.length > 0) {
             const ids = cutoffChanges.map(cp => new Types.ObjectId(cp.id));
@@ -104,10 +114,20 @@ export class CheckpointsService {
         // After bulk write, check for cutoff extensions and revert auto-DNF'd runners
         for (const cp of cutoffChanges) {
             const oldCp = oldCpMap.get(cp.id);
-            if (oldCp) {
+            if (!oldCp) continue;
+            if (cp.cutoffTime !== undefined) {
                 await this.handleCutoffExtension(
                     (oldCp as any).cutoffTime,
                     cp.cutoffTime,
+                    (oldCp as any).name,
+                    String((oldCp as any).campaignId),
+                    (oldCp as any).type,
+                );
+            }
+            if (cp.cutoffTimes !== undefined) {
+                await this.handleCutoffTimesExtension(
+                    (oldCp as any).cutoffTimes || {},
+                    cp.cutoffTimes || {},
                     (oldCp as any).name,
                     String((oldCp as any).campaignId),
                     (oldCp as any).type,
@@ -160,6 +180,43 @@ export class CheckpointsService {
         const { revertedCount } = await this.schedulerService.revertCutoffRunners(cpName, campaignId, cpType);
         if (revertedCount > 0) {
             this.logger.log(`CP "${cpName}": ${revertedCount} runner(s) reverted to running/not_started`);
+        }
+    }
+
+    /**
+     * Per-category version of cutoff extension. Iterates each category key in the new
+     * cutoffTimes map and, when the cutoff was extended (or removed), reverts only the
+     * runners that belong to events in that category.
+     */
+    private async handleCutoffTimesExtension(
+        oldMap: Record<string, string>,
+        newMap: Record<string, string>,
+        cpName: string,
+        campaignId: string,
+        cpType: string,
+    ): Promise<void> {
+        const allKeys = new Set<string>([...Object.keys(oldMap || {}), ...Object.keys(newMap || {})]);
+        for (const category of allKeys) {
+            const oldVal = oldMap?.[category];
+            const newVal = newMap?.[category];
+            // Removed or cleared cutoff → revert everything we auto-changed for this category
+            if (!newVal || newVal === '-' || newVal === '') {
+                if (oldVal && oldVal !== '-' && oldVal !== '') {
+                    this.logger.log(`CP "${cpName}" [${category}]: cutoff REMOVED, reverting`);
+                    await this.schedulerService.revertCutoffRunners(cpName, campaignId, cpType, category);
+                }
+                continue;
+            }
+            const newDate = new Date(newVal);
+            if (isNaN(newDate.getTime())) continue;
+            if (!oldVal || oldVal === '-' || oldVal === '') continue; // first-time set, no revert
+            const oldDate = new Date(oldVal);
+            if (isNaN(oldDate.getTime())) continue;
+            if (newDate.getTime() <= oldDate.getTime()) continue; // shortened, not extended
+            this.logger.log(
+                `CP "${cpName}" [${category}]: cutoff EXTENDED ${oldDate.toISOString()} → ${newDate.toISOString()}`
+            );
+            await this.schedulerService.revertCutoffRunners(cpName, campaignId, cpType, category);
         }
     }
 

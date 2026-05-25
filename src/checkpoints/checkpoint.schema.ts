@@ -42,7 +42,10 @@ export class Checkpoint {
     kmCumulative?: number;
 
     @Prop()
-    cutoffTime?: string; // e.g. "2026-02-15T10:30" or "10:30" or "-"
+    cutoffTime?: string; // LEGACY (applies to all distances). Prefer cutoffTimes for per-distance scoping.
+
+    @Prop({ type: Object, default: {} })
+    cutoffTimes?: Record<string, string>; // key: category name (e.g. "100K"), value: ISO datetime
 
     @Prop({ type: [String], default: [] })
     distanceMappings?: string[]; // category names this checkpoint is enabled for

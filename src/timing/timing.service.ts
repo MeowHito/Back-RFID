@@ -229,6 +229,12 @@ export class TimingService {
         // Respect isManualStatus: if staff manually set DNF/DNS/DQ, don't override
         const isManuallySet = (runner as any).isManualStatus === true;
         const isStoppedStatus = ['dnf', 'dns', 'dq'].includes(runner.status);
+        // A DNS/DNF set by the cutoff scheduler is recoverable: if the runner shows up
+        // and scans any checkpoint, treat it as a re-entry. We never override a manual
+        // status, but we DO undo automatic ones.
+        const isAutoStoppedByScheduler = !isManuallySet
+            && (runner.status === 'dns' || runner.status === 'dnf')
+            && (runner as any).statusChangedBy === 'cutoff-scheduler';
 
         if (isManuallySet && isStoppedStatus) {
             // Staff manually set this status — record the timing but DON'T change status
@@ -241,9 +247,14 @@ export class TimingService {
             updateData.finishTime = scanData.scanTime;
             updateData.netTime = elapsedTime;
             updateData.status = 'finished';
-        } else if (runner.status === 'not_started') {
+        } else if (runner.status === 'not_started' || isAutoStoppedByScheduler) {
+            // not_started → first scan brings them into the race.
+            // dns/dnf-by-scheduler → revert when they actually scan a CP (safety net for the
+            // case where someone misses START but appears at CP1+, or was DNS'd by an
+            // earlier cutoff but is now passing checkpoints).
             updateData.status = 'in_progress';
             updateData.isStarted = true;
+            updateData.statusChangedBy = 'timing-scan';
         }
 
         await this.runnersService.update(runner._id.toString(), updateData);
@@ -1044,12 +1055,14 @@ export class TimingService {
      * gunTime, finishTime, status) stay in sync with the underlying records.
      */
     async recomputeRunnerAggregates(eventId: string, runnerId: string): Promise<void> {
+        // Load by scanTime ascending so we can derive splitTime/elapsedTime from neighbors.
+        // (The persisted `order` field can be stale after manual edits; trust scanTime instead.)
         const records = await this.timingModel
             .find({
                 eventId: new Types.ObjectId(eventId),
                 runnerId: new Types.ObjectId(runnerId),
             })
-            .sort({ order: 1, scanTime: 1 })
+            .sort({ scanTime: 1, order: 1 })
             .lean()
             .exec() as any[];
 
@@ -1068,6 +1081,72 @@ export class TimingService {
             }
         }
 
+        // Anchor for elapsedTime calculation. Prefer the START timing record's scanTime —
+        // this is what makes admin-added checkpoints get a correct NET time even if
+        // runner.startTime was never synced (e.g. START scan was inserted by sync but
+        // the runner aggregate wasn't updated).
+        const runner = await this.runnersService.findOne(runnerId).catch(() => null);
+        const startMs = startRecord?.scanTime
+            ? new Date(startRecord.scanTime).getTime()
+            : (runner?.startTime ? new Date(runner.startTime).getTime() : null);
+
+        // Recompute each record's derived fields when a START anchor is available.
+        // This fixes records inserted via admin manual entry whose elapsedTime/netTime
+        // came out as 0 because runner.startTime wasn't populated at insert time.
+        if (startMs != null && records.length > 0) {
+            const bulkOps: any[] = [];
+            let prevScanMs: number | null = null;
+            for (const r of records) {
+                const scanMs = new Date(r.scanTime).getTime();
+                if (!Number.isFinite(scanMs)) {
+                    prevScanMs = scanMs;
+                    continue;
+                }
+                const newElapsed = Math.max(0, scanMs - startMs);
+                const splitTime = prevScanMs != null ? Math.max(0, scanMs - prevScanMs) : 0;
+                const cpUp = String(r.checkpoint || '').toUpperCase();
+                const isFinishRec = cpUp === 'FINISH';
+                const recUpdate: any = { elapsedTime: newElapsed, splitTime };
+                // FINISH always carries netTime. For other records, only refresh netTime
+                // when it was already set (preserves intentional zero-net records).
+                if (isFinishRec || (r.netTime && Number(r.netTime) > 0)) {
+                    recUpdate.netTime = newElapsed;
+                }
+                // Recompute pace strings when distance is known.
+                const dist = Number(r.distanceFromStart) || 0;
+                if (dist > 0 && newElapsed > 0) {
+                    const pace = formatPaceMs(newElapsed, dist);
+                    recUpdate.netPace = pace;
+                    if (r.gunTime && Number(r.gunTime) > 0) recUpdate.gunPace = pace;
+                }
+                const legDist = Number(r.legDistance) || 0;
+                if (legDist > 0 && splitTime > 0) {
+                    const segPace = formatPaceMs(splitTime, legDist);
+                    recUpdate.legTime = splitTime;
+                    recUpdate.legPace = segPace;
+                    recUpdate.splitPace = segPace;
+                }
+                // Skip the write if nothing meaningfully changed (avoids touching
+                // unchanged docs and keeps writes cheap).
+                const stale =
+                    Number(r.elapsedTime || 0) !== newElapsed
+                    || Number(r.splitTime || 0) !== splitTime
+                    || (recUpdate.netTime !== undefined && Number(r.netTime || 0) !== recUpdate.netTime);
+                if (stale) {
+                    bulkOps.push({
+                        updateOne: {
+                            filter: { _id: r._id },
+                            update: { $set: recUpdate },
+                        },
+                    });
+                }
+                prevScanMs = scanMs;
+            }
+            if (bulkOps.length > 0) {
+                await this.timingModel.bulkWrite(bulkOps, { ordered: false });
+            }
+        }
+
         const update: Record<string, unknown> = {
             passedCount: uniqueCps.size,
         };
@@ -1075,14 +1154,18 @@ export class TimingService {
         if (startRecord?.scanTime) update.startTime = new Date(startRecord.scanTime);
         if (finishRecord) {
             const finishMs = new Date(finishRecord.scanTime).getTime();
-            const startMs = startRecord?.scanTime
-                ? new Date(startRecord.scanTime).getTime()
-                : (finishRecord.elapsedTime != null ? finishMs - Number(finishRecord.elapsedTime) : finishMs);
-            const elapsed = Math.max(0, finishMs - startMs);
+            const anchorMs = startMs ?? (finishRecord.elapsedTime != null ? finishMs - Number(finishRecord.elapsedTime) : finishMs);
+            const elapsed = Math.max(0, finishMs - anchorMs);
             update.finishTime = new Date(finishRecord.scanTime);
-            update.netTime = Number(finishRecord.netTime) > 0 ? Number(finishRecord.netTime) : elapsed;
+            update.netTime = elapsed > 0
+                ? elapsed
+                : (Number(finishRecord.netTime) > 0 ? Number(finishRecord.netTime) : 0);
             update.elapsedTime = elapsed;
-            if (Number(finishRecord.gunTime) > 0) update.gunTime = Number(finishRecord.gunTime);
+            // gunTime mirrors netTime by default (gun-time = net-time when there's no offset).
+            // Preserve an explicit non-zero gunTime if it was already set on the record.
+            update.gunTime = Number(finishRecord.gunTime) > 0
+                ? Number(finishRecord.gunTime)
+                : elapsed;
             update.status = 'finished';
         }
 
