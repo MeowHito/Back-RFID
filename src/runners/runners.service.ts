@@ -584,22 +584,65 @@ export class RunnersService {
         if (updated && touchedFinishFields) {
             try {
                 const finishUpdate: Record<string, unknown> = {};
+                let newNetTime: number | null = null;
                 if (Object.prototype.hasOwnProperty.call(updateData, 'netTime')) {
                     const v = Number(updateData.netTime) || 0;
                     finishUpdate.netTime = v;
                     finishUpdate.elapsedTime = v;
+                    newNetTime = v;
                 }
                 if (Object.prototype.hasOwnProperty.call(updateData, 'gunTime')) {
                     finishUpdate.gunTime = Number(updateData.gunTime) || 0;
                 }
                 if (Object.prototype.hasOwnProperty.call(updateData, 'elapsedTime')
                     && !Object.prototype.hasOwnProperty.call(updateData, 'netTime')) {
-                    finishUpdate.elapsedTime = Number(updateData.elapsedTime) || 0;
+                    const v = Number(updateData.elapsedTime) || 0;
+                    finishUpdate.elapsedTime = v;
+                    if (newNetTime == null) newNetTime = v;
                 }
                 if (Object.prototype.hasOwnProperty.call(updateData, 'finishTime') && updateData.finishTime) {
                     finishUpdate.scanTime = new Date(updateData.finishTime);
                 }
                 if (Object.keys(finishUpdate).length > 0) {
+                    // Load all timing records for this runner so we can recompute
+                    // splitTime on the FINISH row relative to the previous checkpoint,
+                    // and refresh pace strings that depend on the new net time.
+                    const records = await this.timingModel
+                        .find({ eventId: updated.eventId, runnerId: updated._id })
+                        .sort({ order: 1 })
+                        .lean()
+                        .exec() as any[];
+                    const finishIdx = records.findIndex(r => /^finish$/i.test(String(r.checkpoint || '')));
+                    const finishRec = finishIdx >= 0 ? records[finishIdx] : null;
+                    const prevRec = finishIdx > 0 ? records[finishIdx - 1] : null;
+
+                    if (newNetTime != null && finishRec) {
+                        const prevNet = prevRec ? Number(prevRec.netTime ?? prevRec.elapsedTime ?? 0) : 0;
+                        const split = Math.max(0, newNetTime - prevNet);
+                        finishUpdate.splitTime = split;
+
+                        // Recompute pace strings when distance is known. If not, clear
+                        // them so the frontend falls back to its own computation.
+                        const finishDist = Number(finishRec.distanceFromStart) || 0;
+                        const legDist = Number(finishRec.legDistance)
+                            || (prevRec && finishRec.distanceFromStart != null && prevRec.distanceFromStart != null
+                                ? Math.max(0, Number(finishRec.distanceFromStart) - Number(prevRec.distanceFromStart))
+                                : 0);
+                        const fmtPace = (ms: number, km: number): string => {
+                            if (!(ms > 0) || !(km > 0)) return '';
+                            const totalSec = ms / 1000 / km;
+                            const m = Math.floor(totalSec / 60);
+                            const s = Math.round(totalSec - m * 60);
+                            return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                        };
+                        finishUpdate.netPace = fmtPace(newNetTime, finishDist);
+                        finishUpdate.splitPace = fmtPace(split, legDist);
+                        const gunMs = Object.prototype.hasOwnProperty.call(updateData, 'gunTime')
+                            ? Number(updateData.gunTime) || 0
+                            : Number(finishRec.gunTime) || 0;
+                        finishUpdate.gunPace = fmtPace(gunMs, finishDist);
+                    }
+
                     await this.timingModel.updateOne(
                         {
                             eventId: updated.eventId,
