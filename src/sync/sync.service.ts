@@ -1915,10 +1915,7 @@ export class SyncService {
                         lapAccByRunner.set(rId, { uniqueCps: new Set(), lapCount: 0, splitTimes: [], lastScanTime: null, lastSplitTime: null, lastCheckpointName: null, chipCode: null, printingCode: null });
                     }
                     const acc = lapAccByRunner.get(rId)!;
-                    // Exclude START from uniqueCps so passedCount counts only the
-                    // checkpoints a runner had to reach (CP1..FINISH). The progress
-                    // badge "X/Y CP" in the UI mirrors the same exclusion.
-                    if ((cp || '').toUpperCase() !== 'START') acc.uniqueCps.add(cp);
+                    acc.uniqueCps.add(cp);
                     acc.lapCount += 1;
                     // Track chipCode/printingCode from passtime data
                     if ($set.chipCode && !acc.chipCode) acc.chipCode = $set.chipCode;

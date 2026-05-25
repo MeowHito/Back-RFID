@@ -1073,7 +1073,7 @@ export class TimingService {
         for (const r of records) {
             const cp = String(r.checkpoint || '').trim();
             const cpUp = cp.toUpperCase();
-            if (cp && cpUp !== 'START') uniqueCps.add(cp.toLowerCase());
+            if (cp) uniqueCps.add(cp.toLowerCase());
             if (cpUp === 'START') startRecord = r;
             if (cpUp === 'FINISH') finishRecord = r;
             if (!latestRecord || new Date(r.scanTime).getTime() > new Date(latestRecord.scanTime).getTime()) {
