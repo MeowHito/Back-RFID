@@ -903,9 +903,34 @@ export class RunnersService {
         if (data.statusNote !== undefined) update.statusNote = data.statusNote;
         if (data.changedBy) update.statusChangedBy = data.changedBy;
         // Clear manual status fields when reverting to running/not_started
-        if (!isManualStop) {
+        // (but keep them for 'finished' — admin uses statusCheckpoint='FINISH' to override
+        //  a stale latestCheckpoint set by an earlier scan like CP4)
+        if (!isManualStop && targetStatus !== 'finished') {
             update.statusCheckpoint = '';
             update.statusNote = '';
+        }
+        // When manually marking as finished, also push latestCheckpoint forward to the
+        // FINISH checkpoint so the /event/[slug] STATUS column doesn't keep falling
+        // back to splitDesc (e.g. 'CP4') from the last RaceTiger pass-time sync.
+        if (targetStatus === 'finished') {
+            try {
+                const runner = await this.runnerModel.findById(runnerId).lean().exec();
+                if (runner) {
+                    const TimingModel = this.runnerModel.db.model('TimingRecord');
+                    const finishTiming = await TimingModel.findOne({
+                        eventId: (runner as any).eventId,
+                        bib: (runner as any).bib,
+                        checkpoint: { $regex: /^finish$/i },
+                    }).select('checkpoint scanTime order splitNo splitDesc').sort({ order: -1 }).lean().exec() as any;
+                    const finishName = (data.statusCheckpoint && data.statusCheckpoint.trim())
+                        || finishTiming?.checkpoint
+                        || 'FINISH';
+                    update.latestCheckpoint = finishName;
+                    update.splitDesc = finishName;
+                    if (finishTiming?.order != null) update.splitNo = finishTiming.order;
+                    if (finishTiming?.scanTime) update.finishTime = finishTiming.scanTime;
+                }
+            } catch { /* non-fatal */ }
         }
         return this.runnerModel.findByIdAndUpdate(runnerId, { $set: update }, { new: true }).lean().exec() as Promise<RunnerDocument | null>;
     }
@@ -942,10 +967,12 @@ export class RunnersService {
             }
         } catch { /* fallback to ['FINISH'] */ }
 
-        // Check which runners have finish timing (for auto-promote from in_progress)
+        // Check which runners have finish timing (for auto-promote from in_progress
+        // AND to push latestCheckpoint forward when manually marking 'finished').
         const TimingModel = this.runnerModel.db.model('TimingRecord');
-        const runnersNeedingFinishCheck = updates.filter(u => u.status === 'in_progress');
+        const runnersNeedingFinishCheck = updates.filter(u => u.status === 'in_progress' || u.status === 'finished');
         const finishBibs = new Set<string>();
+        const finishTimingByBib = new Map<string, any>();
         if (runnersNeedingFinishCheck.length > 0) {
             const bibs = runnersNeedingFinishCheck
                 .map(u => runnerMap.get(u.id)?.bib)
@@ -959,9 +986,11 @@ export class RunnersService {
                     eventId: { $in: eventIds },
                     bib: { $in: bibs },
                     checkpoint: { $regex: new RegExp(`^(${finishNames.join('|')})$`, 'i') },
-                }).select('bib').lean().exec();
+                }).select('bib checkpoint scanTime order').sort({ order: -1 }).lean().exec();
                 for (const ft of finishTimings) {
-                    finishBibs.add(String((ft as any).bib));
+                    const bib = String((ft as any).bib);
+                    finishBibs.add(bib);
+                    if (!finishTimingByBib.has(bib)) finishTimingByBib.set(bib, ft);
                 }
             }
         }
@@ -997,11 +1026,30 @@ export class RunnersService {
             if (isManualStop) {
                 if (u.statusCheckpoint !== undefined) update.statusCheckpoint = u.statusCheckpoint;
                 if (u.statusNote !== undefined) update.statusNote = u.statusNote;
+            } else if (targetStatus === 'finished') {
+                // Keep statusCheckpoint/statusNote if provided; admin uses them to
+                // override stale RaceTiger splitDesc on the /event/[slug] STATUS column.
+                if (u.statusCheckpoint !== undefined) update.statusCheckpoint = u.statusCheckpoint;
+                if (u.statusNote !== undefined) update.statusNote = u.statusNote;
             } else {
                 update.statusCheckpoint = '';
                 update.statusNote = '';
             }
             if (u.changedBy) update.statusChangedBy = u.changedBy;
+
+            // For runners being marked 'finished' (manually or auto-promoted),
+            // align latestCheckpoint/splitDesc with the FINISH timing record so the
+            // /event/[slug] STATUS column doesn't fall back to a stale 'CP4'.
+            if (targetStatus === 'finished') {
+                const ft = runner?.bib ? finishTimingByBib.get(String(runner.bib)) : null;
+                const finishName = (u.statusCheckpoint && u.statusCheckpoint.trim())
+                    || ft?.checkpoint
+                    || 'FINISH';
+                update.latestCheckpoint = finishName;
+                update.splitDesc = finishName;
+                if (ft?.order != null) update.splitNo = ft.order;
+                if (ft?.scanTime) update.finishTime = ft.scanTime;
+            }
 
             bulkOps.push({
                 updateOne: {
