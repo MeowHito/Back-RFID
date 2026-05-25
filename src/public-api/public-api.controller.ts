@@ -228,6 +228,21 @@ export class PublicApiController {
         if (!target.legPace) target.legPace = timing.legPace;
         if (target.legDistance == null) target.legDistance = timing.legDistance;
         if (target.lagMs == null) target.lagMs = timing.lagMs;
+
+        // Result mode (raceFinished=true) hits getAllParticipantByEvent which seeds
+        // `latestCheckpoint` from the Runner doc. RaceTiger's pass-time sync stamps
+        // `latestCheckpoint='CP4'` for runners whose last RaceTiger pass-time row was
+        // CP4 — even after FINISH is recorded — so the STATUS column on /event/[slug]
+        // (RESULT mode) shows CP4 forever. Force the FINISH label for runners whose
+        // status is finished, regardless of what the source row says.
+        if (String(target.status || '').toLowerCase() === 'finished') {
+            const looksLikeFinish = (v: any) => /finish|^fin$/i.test(String(v || ''));
+            const finishName = looksLikeFinish(target.statusCheckpoint) ? target.statusCheckpoint
+                : looksLikeFinish(timing?.checkpoint) ? timing.checkpoint
+                : 'FINISH';
+            if (!looksLikeFinish(target.latestCheckpoint)) target.latestCheckpoint = finishName;
+            if (!looksLikeFinish(target.splitDesc)) target.splitDesc = finishName;
+        }
     }
 
     private async getRunnerCctvContext(runnerId: string) {
@@ -451,6 +466,17 @@ export class PublicApiController {
             }
         } catch { /* timing supplement failed, proceed with runner data */ }
 
+        // Normalize STATUS for finished runners regardless of whether timing data was
+        // available — covers the case where RaceTiger pass-time sync left
+        // latestCheckpoint='CP4' on the Runner doc even after FINISH was recorded.
+        for (const r of data as any[]) {
+            if (String(r?.status || '').toLowerCase() !== 'finished') continue;
+            const looksLikeFinish = (v: any) => /finish|^fin$/i.test(String(v || ''));
+            const finishName = looksLikeFinish(r.statusCheckpoint) ? r.statusCheckpoint : 'FINISH';
+            if (!looksLikeFinish(r.latestCheckpoint)) r.latestCheckpoint = finishName;
+            if (!looksLikeFinish(r.splitDesc)) r.splitDesc = finishName;
+        }
+
         const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(data as any[]);
         for (const r of data as any[]) {
             const rid = String(r._id);
@@ -535,6 +561,18 @@ export class PublicApiController {
             }));
 
         const merged = [...timingData, ...extraRunners];
+
+        // Normalize STATUS for finished runners so RaceTiger's stale
+        // latestCheckpoint='CP4' doesn't leak through.
+        for (const r of merged as any[]) {
+            if (String(r?.status || '').toLowerCase() !== 'finished') continue;
+            const looksLikeFinish = (v: any) => /finish|^fin$/i.test(String(v || ''));
+            const finishName = looksLikeFinish(r.statusCheckpoint) ? r.statusCheckpoint
+                : looksLikeFinish(r.checkpoint) ? r.checkpoint
+                : 'FINISH';
+            if (!looksLikeFinish(r.latestCheckpoint)) r.latestCheckpoint = finishName;
+            if (!looksLikeFinish(r.splitDesc)) r.splitDesc = finishName;
+        }
 
         const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(merged as any[]);
 
