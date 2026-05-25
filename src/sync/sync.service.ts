@@ -1952,18 +1952,23 @@ export class SyncService {
                     const hasFinishTiming = [...acc.uniqueCps].some(cp => finishCpNames.has(cp.toUpperCase()));
                     // Promote status: not_started → in_progress, and → finished if FINISH checkpoint reached.
                     // Respect isManualStatus: don't override manually-set DNF/DNS/DQ.
+                    const curStatus = (existingRunner?.status || '').toLowerCase();
+                    const isManuallySet = (existingRunner as any)?.isManualStatus === true;
+                    const isStoppedManual = isManuallySet && ['dnf', 'dns', 'dq'].includes(curStatus);
                     let statusUpdate: Record<string, any> = {};
-                    if (existingRunner && acc.lapCount > 0) {
-                        const curStatus = (existingRunner.status || '').toLowerCase();
-                        const isManuallySet = (existingRunner as any).isManualStatus === true;
-                        const isStoppedManual = isManuallySet && ['dnf', 'dns', 'dq'].includes(curStatus);
-                        if (!isStoppedManual) {
-                            if (hasFinishTiming && curStatus !== 'finished') {
-                                statusUpdate = { status: 'finished', isStarted: true };
-                            } else if (curStatus === 'not_started') {
-                                statusUpdate = { status: 'in_progress', isStarted: true };
-                            }
+                    if (existingRunner && acc.lapCount > 0 && !isStoppedManual) {
+                        if (hasFinishTiming && curStatus !== 'finished') {
+                            statusUpdate = { status: 'finished', isStarted: true };
+                        } else if (curStatus === 'not_started') {
+                            statusUpdate = { status: 'in_progress', isStarted: true };
                         }
+                    }
+                    // Skip all Runner-doc field writes for manually-stopped (DNS/DNF/DQ) runners.
+                    // Otherwise RaceTiger pass-time rows leak latestCheckpoint='FINISH' (and
+                    // passedCount > 0) onto the doc, which downstream readers interpret as
+                    // 100% progress and full distance.
+                    if (isStoppedManual) {
+                        return { id: new Types.ObjectId(rId), data: {} as Record<string, any> };
                     }
                     return {
                         id: new Types.ObjectId(rId),
@@ -1981,7 +1986,7 @@ export class SyncService {
                             ...(acc.printingCode ? { printingCode: acc.printingCode } : {}),
                         },
                     };
-                });
+                }).filter(op => Object.keys(op.data).length > 0);
                 if (runnerPassedOps.length > 0) {
                     await this.runnersService.bulkUpdateTiming(runnerPassedOps);
                     this.logger.log(`  Split sync: updated passedCount + latestCheckpoint + lap stats on ${runnerPassedOps.length} runners`);
@@ -2125,6 +2130,16 @@ export class SyncService {
                             if (!existingRunner && athleteId) existingRunner = runnerByEventAthleteId.get(`${eventId}:${athleteId}`);
                             if (!existingRunner && athleteId && athleteId !== bib) existingRunner = runnerByEventBib.get(`${eventId}:${athleteId}`);
                             if (!existingRunner) continue;
+                            // Skip manually-stopped runners (DNS/DNF/DQ with isManualStatus=true).
+                            // RaceTiger may still return score rows for them (e.g. residual data from
+                            // before the manual flip). Writing latestCheckpoint='FINISH' / passedCount
+                            // back onto the Runner doc causes downstream readers to render 100% progress
+                            // and full distance for runners who never started.
+                            {
+                                const curStatus = (existingRunner.status || '').toLowerCase();
+                                const isManuallySet = (existingRunner as any).isManualStatus === true;
+                                if (isManuallySet && ['dnf', 'dns', 'dq'].includes(curStatus)) continue;
+                            }
                             // Parse timing fields from score row
                             const updateData: Record<string, any> = {};
                             // ── Net Time (store BOTH raw string and parsed ms) ──
