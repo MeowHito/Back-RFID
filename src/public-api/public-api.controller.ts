@@ -730,10 +730,50 @@ export class PublicApiController {
             const runnerId = String(runner._id);
 
             // Fetch timing records for this runner + per-checkpoint ranks
-            const [timingRecords, checkpointRanks] = await Promise.all([
+            const [timingRecordsRaw, checkpointRanks] = await Promise.all([
                 this.timingService.getRunnerRecords(eventId, runnerId),
                 this.timingService.getCheckpointRanksForRunner(eventId, runner.bib),
             ]);
+
+            // Normalize the FINISH timing record against the (authoritative) Runner doc.
+            // Admins can edit gunTime/netTime on the Runner doc from /event/[slug],
+            // /event/[slug] Manual Status, or /admin/results — runners.service.update()
+            // syncs those edits to the FINISH TimingRecord. This layer self-heals any
+            // legacy records that pre-date that sync so /runner/[id] (NET/SPLIT/PACE)
+            // and the eslip Checkpoint Splits always match the runner doc.
+            const runnerForOverride: any = runner as any;
+            const timingRecords = timingRecordsRaw.map(rec => {
+                const r: any = (rec as any).toObject ? (rec as any).toObject() : { ...(rec as any) };
+                if (!/^finish$/i.test(String(r.checkpoint || ''))) return r;
+                const docNet = Number(runnerForOverride.netTime) || 0;
+                const docGun = Number(runnerForOverride.gunTime) || 0;
+                if (docNet > 0) { r.netTime = docNet; r.elapsedTime = docNet; }
+                if (docGun > 0) { r.gunTime = docGun; }
+                // Recompute split from the previous timing record's net/elapsed.
+                if (docNet > 0) {
+                    const idx = timingRecordsRaw.indexOf(rec);
+                    const prev: any = idx > 0 ? timingRecordsRaw[idx - 1] : null;
+                    const prevNet = prev ? Number((prev as any).netTime ?? (prev as any).elapsedTime ?? 0) : 0;
+                    r.splitTime = Math.max(0, docNet - prevNet);
+                    // Recompute pace strings when distance is known so the row matches the new time.
+                    const fmtPace = (ms: number, km: number): string => {
+                        if (!(ms > 0) || !(km > 0)) return '';
+                        const totalSec = ms / 1000 / km;
+                        const m = Math.floor(totalSec / 60);
+                        const s = Math.round(totalSec - m * 60);
+                        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    };
+                    const finishDist = Number(r.distanceFromStart) || 0;
+                    const legDist = Number(r.legDistance)
+                        || (prev && r.distanceFromStart != null && (prev as any).distanceFromStart != null
+                            ? Math.max(0, Number(r.distanceFromStart) - Number((prev as any).distanceFromStart))
+                            : 0);
+                    r.netPace = fmtPace(docNet, finishDist);
+                    r.splitPace = fmtPace(r.splitTime, legDist);
+                    if (docGun > 0) r.gunPace = fmtPace(docGun, finishDist);
+                }
+                return r;
+            });
 
             // Fetch event to get campaign info
             const event = await this.eventsService.findOne(eventId).catch(() => null);
