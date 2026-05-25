@@ -64,6 +64,11 @@ export class CampaignsController {
         return isFull(full) ? campaign : stripHeavyCampaignFields(campaign);
     }
 
+    @Get('cert-templates')
+    async listCertTemplates() {
+        return this.campaignsService.findCertTemplates();
+    }
+
     @Put(':id/featured')
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @AdminOnly()

@@ -253,4 +253,55 @@ export class CampaignsService {
             eventTotal: 0, // Will be populated by events module
         };
     }
+
+    /**
+     * Lists campaigns whose admins have saved a certificate template
+     * (`certLayout` non-empty). One row per campaign — saving a layout multiple
+     * times overwrites the same document, so dedup is implicit at the data level.
+     * Strips the heavy base64 background; the consumer fetches full data via
+     * `findById(..., full=true)` when applying a template.
+     */
+    async findCertTemplates(): Promise<Array<{
+        _id: unknown;
+        name?: string;
+        nameTh?: string;
+        nameEn?: string;
+        eventDate?: Date;
+        certPaperSize?: string;
+        certBgColor?: string;
+        certBgOpacity?: number;
+        elementCount: number;
+        updatedAt?: Date;
+    }>> {
+        type Row = {
+            _id: unknown;
+            name?: string;
+            nameTh?: string;
+            nameEn?: string;
+            eventDate?: Date;
+            certPaperSize?: string;
+            certBgColor?: string;
+            certBgOpacity?: number;
+            certLayout?: unknown[];
+            updatedAt?: Date;
+        };
+        const rows = (await this.campaignModel
+            .find({ certLayout: { $exists: true, $ne: [] } })
+            .select('_id name nameTh nameEn eventDate certPaperSize certBgColor certBgOpacity certLayout updatedAt')
+            .sort({ updatedAt: -1, eventDate: -1 })
+            .lean()
+            .exec()) as unknown as Row[];
+        return rows.map(r => ({
+            _id: r._id,
+            name: r.name,
+            nameTh: r.nameTh,
+            nameEn: r.nameEn,
+            eventDate: r.eventDate,
+            certPaperSize: r.certPaperSize,
+            certBgColor: r.certBgColor,
+            certBgOpacity: r.certBgOpacity,
+            elementCount: Array.isArray(r.certLayout) ? r.certLayout.length : 0,
+            updatedAt: r.updatedAt,
+        }));
+    }
 }

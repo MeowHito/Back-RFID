@@ -208,6 +208,26 @@ export class PublicApiController {
         if (!target.totalGunTimeMs || target.totalGunTimeMs <= 0) target.totalGunTimeMs = timing.totalGunTimeMs || 0;
         if (!target.scanTime) target.scanTime = timing.scanTime;
         if (!target.passedCount || target.passedCount <= 0) target.passedCount = timing.passedCount || 0;
+        // Pass-time fields — needed so Results mode (raceFinished=true) keeps the same
+        // column coverage as Live mode. Without these the Distance / Split* / Leg* /
+        // Chip Code / Cut-off etc. columns render as "-" after raceFinished is toggled.
+        if (target.distanceFromStart == null) target.distanceFromStart = timing.distanceFromStart;
+        if (target.order == null) target.order = timing.order;
+        if (!target.latestCheckpoint) target.latestCheckpoint = timing.latestCheckpoint || timing.checkpoint;
+        if (!target.splitTime) target.splitTime = timing.splitTime;
+        if (target.splitNo == null) target.splitNo = timing.splitNo;
+        if (!target.splitDesc) target.splitDesc = timing.splitDesc;
+        if (!target.splitPace) target.splitPace = timing.splitPace;
+        if (!target.gunPace) target.gunPace = timing.gunPace;
+        if (!target.netPace) target.netPace = timing.netPace;
+        if (!target.chipCode) target.chipCode = timing.chipCode;
+        if (!target.printingCode) target.printingCode = timing.printingCode;
+        if (!target.supplement) target.supplement = timing.supplement;
+        if (!target.cutOff) target.cutOff = timing.cutOff;
+        if (!target.legTime) target.legTime = timing.legTime;
+        if (!target.legPace) target.legPace = timing.legPace;
+        if (target.legDistance == null) target.legDistance = timing.legDistance;
+        if (target.lagMs == null) target.lagMs = timing.lagMs;
     }
 
     private async getRunnerCctvContext(runnerId: string) {
