@@ -573,6 +573,17 @@ export class RunnersService {
         return modified;
     }
 
+    /**
+     * Direct $set of derived/aggregate fields without triggering the FINISH
+     * TimingRecord mirror logic that update() performs. Intended for callers
+     * (e.g. TimingService) that are already the source of truth for these
+     * fields and just need to push them onto the Runner doc.
+     */
+    async setAggregates(id: string, fields: Record<string, unknown>): Promise<void> {
+        if (!fields || Object.keys(fields).length === 0) return;
+        await this.runnerModel.findByIdAndUpdate(id, { $set: fields }).exec();
+    }
+
     async update(id: string, updateData: any): Promise<RunnerDocument | null> {
         const updated = await this.runnerModel.findByIdAndUpdate(id, updateData, { new: true }).exec();
 
@@ -602,6 +613,22 @@ export class RunnersService {
                 }
                 if (Object.prototype.hasOwnProperty.call(updateData, 'finishTime') && updateData.finishTime) {
                     finishUpdate.scanTime = new Date(updateData.finishTime);
+                    // If only finishTime was edited (no explicit netTime/elapsedTime),
+                    // derive net time from finishTime - runner.startTime so the runner's
+                    // displayed Net/Gun times update automatically.
+                    if (newNetTime == null) {
+                        const startMs = updated.startTime ? new Date(updated.startTime).getTime() : 0;
+                        const finishMs = new Date(updateData.finishTime).getTime();
+                        if (startMs > 0 && Number.isFinite(finishMs) && finishMs >= startMs) {
+                            const derived = finishMs - startMs;
+                            newNetTime = derived;
+                            finishUpdate.netTime = derived;
+                            finishUpdate.elapsedTime = derived;
+                            await this.runnerModel.findByIdAndUpdate(id, {
+                                $set: { netTime: derived, elapsedTime: derived },
+                            }).exec();
+                        }
+                    }
                 }
                 if (Object.keys(finishUpdate).length > 0) {
                     // Load all timing records for this runner so we can recompute

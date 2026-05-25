@@ -248,6 +248,11 @@ export class TimingService {
 
         await this.runnersService.update(runner._id.toString(), updateData);
 
+        // Recompute passedCount + latestCheckpoint from records so the Runner doc
+        // reflects the new scan immediately (the warning "5/6 CP" badge depends on this).
+        await this.recomputeRunnerAggregates(scanData.eventId, runner._id.toString())
+            .catch(() => { /* non-fatal */ });
+
         // Update rankings if finished — debounced to consolidate concurrent finish scans
         if (isFinish) {
             this.scheduleRankingUpdate(scanData.eventId, runner.category);
@@ -1004,7 +1009,13 @@ export class TimingService {
             }
         }
 
-        // 5) Broadcast updated runner state.
+        // 5) Sync derived aggregate fields (passedCount, netTime, gunTime, finishTime).
+        await this.recomputeRunnerAggregates(
+            String(existing.eventId),
+            String(existing.runnerId),
+        ).catch(() => { /* non-fatal */ });
+
+        // 6) Broadcast updated runner state.
         try {
             const updatedRunner = await this.runnersService.findOne(String(existing.runnerId)).catch(() => null);
             if (updatedRunner) {
@@ -1016,6 +1027,65 @@ export class TimingService {
     }
 
     async deleteRecord(id: string): Promise<void> {
+        const existing = await this.timingModel.findById(id).lean().exec() as any;
         await this.timingModel.findByIdAndDelete(id).exec();
+        if (existing?.eventId && existing?.runnerId) {
+            await this.recomputeRunnerAggregates(
+                String(existing.eventId),
+                String(existing.runnerId),
+            ).catch(() => { /* non-fatal */ });
+        }
+    }
+
+    /**
+     * Recompute Runner aggregate fields from current TimingRecords.
+     * Must be called whenever a TimingRecord is created/edited/deleted, so the
+     * cached values on the Runner doc (passedCount, latestCheckpoint, netTime,
+     * gunTime, finishTime, status) stay in sync with the underlying records.
+     */
+    async recomputeRunnerAggregates(eventId: string, runnerId: string): Promise<void> {
+        const records = await this.timingModel
+            .find({
+                eventId: new Types.ObjectId(eventId),
+                runnerId: new Types.ObjectId(runnerId),
+            })
+            .sort({ order: 1, scanTime: 1 })
+            .lean()
+            .exec() as any[];
+
+        const uniqueCps = new Set<string>();
+        let latestRecord: any = null;
+        let finishRecord: any = null;
+        let startRecord: any = null;
+        for (const r of records) {
+            const cp = String(r.checkpoint || '').trim();
+            const cpUp = cp.toUpperCase();
+            if (cp && cpUp !== 'START') uniqueCps.add(cp.toLowerCase());
+            if (cpUp === 'START') startRecord = r;
+            if (cpUp === 'FINISH') finishRecord = r;
+            if (!latestRecord || new Date(r.scanTime).getTime() > new Date(latestRecord.scanTime).getTime()) {
+                latestRecord = r;
+            }
+        }
+
+        const update: Record<string, unknown> = {
+            passedCount: uniqueCps.size,
+        };
+        if (latestRecord) update.latestCheckpoint = latestRecord.checkpoint;
+        if (startRecord?.scanTime) update.startTime = new Date(startRecord.scanTime);
+        if (finishRecord) {
+            const finishMs = new Date(finishRecord.scanTime).getTime();
+            const startMs = startRecord?.scanTime
+                ? new Date(startRecord.scanTime).getTime()
+                : (finishRecord.elapsedTime != null ? finishMs - Number(finishRecord.elapsedTime) : finishMs);
+            const elapsed = Math.max(0, finishMs - startMs);
+            update.finishTime = new Date(finishRecord.scanTime);
+            update.netTime = Number(finishRecord.netTime) > 0 ? Number(finishRecord.netTime) : elapsed;
+            update.elapsedTime = elapsed;
+            if (Number(finishRecord.gunTime) > 0) update.gunTime = Number(finishRecord.gunTime);
+            update.status = 'finished';
+        }
+
+        await this.runnersService.setAggregates(runnerId, update);
     }
 }
