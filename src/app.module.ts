@@ -22,6 +22,7 @@ import { User, UserSchema } from './users/user.schema';
 import { AdminLogsModule } from './admin-logs/admin-logs.module';
 import { CctvCamerasModule } from './cctv-cameras/cctv-cameras.module';
 import { CctvBetaModule } from './cctv-beta/cctv-beta.module';
+import { ApplicantsModule } from './applicants/applicants.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { CctvBetaModule } from './cctv-beta/cctv-beta.module';
     AdminLogsModule,
     CctvCamerasModule,
     CctvBetaModule,
+    ApplicantsModule,
   ],
   controllers: [AppController],
   providers: [AppService, SeedService],
