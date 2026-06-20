@@ -18,6 +18,19 @@ export interface RaceCategory {
     utmbIndex?: string; // UTMB Index
 }
 
+// One finish-time band, e.g. "sub 40" covering [0, 40) minutes
+export interface TargetTimeBand {
+    label: string;       // e.g. "sub 40"
+    minMinutes: number;  // inclusive lower bound in minutes (0 = from start)
+    maxMinutes: number;  // exclusive upper bound in minutes
+}
+
+// Target-time ranking bands defined per race category
+export interface TargetTimeBandGroup {
+    category: string;          // RaceCategory.name this config applies to
+    bands: TargetTimeBand[];
+}
+
 @Schema({ timestamps: true })
 export class Campaign {
     @Prop({ required: true, unique: true })
@@ -214,6 +227,12 @@ export class Campaign {
     /** Exclude runners with ageGroupRank <= N from Result-Winners page. 0 = no exclusion. */
     @Prop({ default: 0 })
     excludeAgeGroupTop: number;
+
+    /** Target-time ranking bands, defined per race category.
+     *  Each runner is grouped into a finish-time band (e.g. "sub 40") on the
+     *  Target-Time-Winners page. */
+    @Prop({ type: [Object], default: [] })
+    targetTimeBands: TargetTimeBandGroup[];
 
     /** When true, race is finished → show Finish List view.
      *  When false (default), race is ongoing → show Pass Time (live) view. */

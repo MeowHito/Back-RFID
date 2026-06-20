@@ -43,6 +43,30 @@ export class RaceCategoryDto {
     utmbIndex?: string;
 }
 
+// DTO for a single finish-time band (e.g. "sub 40")
+export class TargetTimeBandDto {
+    @IsString()
+    label: string;
+
+    @IsNumber()
+    minMinutes: number;
+
+    @IsNumber()
+    maxMinutes: number;
+}
+
+// DTO for the target-time bands of one race category
+export class TargetTimeBandGroupDto {
+    @IsString()
+    category: string;
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => TargetTimeBandDto)
+    bands?: TargetTimeBandDto[];
+}
+
 export class CreateCampaignDto {
     @IsString()
     name: string;
@@ -201,6 +225,12 @@ export class CreateCampaignDto {
 
     @IsOptional()
     excludeAgeGroupTop?: number;
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => TargetTimeBandGroupDto)
+    targetTimeBands?: TargetTimeBandGroupDto[];
 
     @IsOptional()
     @IsArray()
