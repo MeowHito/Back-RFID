@@ -922,6 +922,12 @@ export class PublicApiController {
                     eslipMode: (campaign as any).eslipMode || 'v1',
                     eslipV2Layout: (campaign as any).eslipV2Layout || null,
                     displayMode: (campaign as any).displayMode || 'marathon',
+                    // Award config — used by the AWARD column / e-slip to compute
+                    // Overall + Age-group winners consistently with the winner boards.
+                    overallDisplayCount: (campaign as any).overallDisplayCount ?? null,
+                    ageGroupDisplayCount: (campaign as any).ageGroupDisplayCount ?? null,
+                    excludeOverallFromAgeGroup: (campaign as any).excludeOverallFromAgeGroup ?? null,
+                    excludeAgeGroupTop: (campaign as any).excludeAgeGroupTop ?? null,
                     isApproveCertificate: campaign.isApproveCertificate ?? false,
                     certLayout: (campaign as any).certLayout || null,
                     certBackgroundImage: (campaign as any).certBackgroundImage || null,
