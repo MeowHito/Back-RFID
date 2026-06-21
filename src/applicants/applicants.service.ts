@@ -16,6 +16,7 @@ export interface ApplicantInput {
     shirtSize?: string;
     category?: string;
     team?: string;
+    challenge?: string;
     extra?: Record<string, string>;
 }
 
@@ -51,6 +52,7 @@ export class ApplicantsService {
             shirtSize: (row.shirtSize || '').toString().trim(),
             category: (row.category || '').toString().trim(),
             team: (row.team || '').toString().trim(),
+            challenge: (row.challenge || '').toString().trim(),
             extra: row.extra || {},
         };
     }

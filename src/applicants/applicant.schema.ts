@@ -49,6 +49,9 @@ export class Applicant {
     @Prop({ default: '' })
     team: string; // ทีม/กลุ่ม
 
+    @Prop({ default: '' })
+    challenge: string; // เลือกเวลาในการลงแข่งขัน Challenge (optional, only some rosters have it)
+
     // Any extra columns from the uploaded sheet that don't map to a known field.
     @Prop({ type: Object, default: {} })
     extra: Record<string, string>;
