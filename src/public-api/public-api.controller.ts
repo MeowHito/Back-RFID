@@ -928,6 +928,9 @@ export class PublicApiController {
                     ageGroupDisplayCount: (campaign as any).ageGroupDisplayCount ?? null,
                     excludeOverallFromAgeGroup: (campaign as any).excludeOverallFromAgeGroup ?? null,
                     excludeAgeGroupTop: (campaign as any).excludeAgeGroupTop ?? null,
+                    // Target-time bands (e.g. "sub 45") — used by the e-slip to show the
+                    // runner's finish-time band below the Award.
+                    targetTimeBands: (campaign as any).targetTimeBands || [],
                     isApproveCertificate: campaign.isApproveCertificate ?? false,
                     certLayout: (campaign as any).certLayout || null,
                     certBackgroundImage: (campaign as any).certBackgroundImage || null,
