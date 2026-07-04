@@ -273,6 +273,10 @@ export class Campaign {
     /** Background image for scanning page (base64 or URL) — portrait */
     @Prop()
     scanningBgImagePortrait: string;
+
+    /** E-Slip scan display template: 'template3' (Default) | 'template2' (Photo) */
+    @Prop({ default: 'template3' })
+    slipScanTemplate: string;
 }
 
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);

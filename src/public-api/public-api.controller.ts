@@ -946,6 +946,8 @@ export class PublicApiController {
                     eslipVisibleFields: (campaign as any).eslipVisibleFields || [],
                     eslipMode: (campaign as any).eslipMode || 'v1',
                     eslipV2Layout: (campaign as any).eslipV2Layout || null,
+                    slipScanTemplate: (campaign as any).slipScanTemplate || 'template3',
+                    separateOverallNationalityCategories: (campaign as any).separateOverallNationalityCategories || [],
                     displayMode: (campaign as any).displayMode || 'marathon',
                     // Award config — used by the AWARD column / e-slip to compute
                     // Overall + Age-group winners consistently with the winner boards.

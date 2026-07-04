@@ -279,4 +279,8 @@ export class CreateCampaignDto {
     @IsOptional()
     @IsString()
     scanningBgImagePortrait?: string;
+
+    @IsOptional()
+    @IsString()
+    slipScanTemplate?: string;
 }
