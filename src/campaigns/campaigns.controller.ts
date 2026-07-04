@@ -1,9 +1,11 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import type { Request } from 'express';
 import { CampaignsService } from './campaigns.service';
 import type { PagingData, CampaignFilter } from './campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { AdminOnly } from '../auth/decorators/permissions.decorator';
 
 // Fields holding base64 data URIs that bloat responses (100KB–1MB each).
@@ -59,8 +61,12 @@ export class CampaignsController {
     }
 
     @Get('featured')
-    async getFeatured(@Query('full') full?: string) {
-        const campaign = await this.campaignsService.findFeatured();
+    @UseGuards(OptionalJwtAuthGuard)
+    async getFeatured(@Req() req: Request, @Query('full') full?: string) {
+        // Authenticated users get their own selected campaign; anonymous requests
+        // (public shortcut pages) get the global featured campaign.
+        const userUuid = (req.user as { sub?: string } | undefined)?.sub;
+        const campaign = await this.campaignsService.findFeaturedForUser(userUuid);
         return isFull(full) ? campaign : stripHeavyCampaignFields(campaign);
     }
 
@@ -72,11 +78,15 @@ export class CampaignsController {
     @Put(':id/featured')
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @AdminOnly()
-    setFeatured(@Param('id') id: string, @Body('value') value: boolean) {
-        if (value) {
-            return this.campaignsService.setFeatured(id);
+    async setFeatured(@Req() req: Request, @Param('id') id: string, @Body('value') value: boolean) {
+        // Per-user selection: starring an event only changes THIS admin's current
+        // work, never the global featured campaign or any other account's view.
+        const userUuid = (req.user as { sub?: string } | undefined)?.sub;
+        if (!userUuid) {
+            return { success: false };
         }
-        return this.campaignsService.unsetFeatured(id);
+        await this.campaignsService.setUserSelectedCampaign(userUuid, value ? id : null);
+        return { success: true, selectedCampaignId: value ? id : '' };
     }
 
     @Get(':id')

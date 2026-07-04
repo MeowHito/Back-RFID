@@ -54,6 +54,14 @@ export class User {
 
     @Prop({ type: Object, default: () => ({}) })
     modulePermissions: Record<string, { view: boolean; create: boolean; delete: boolean; export: boolean }>;
+
+    /**
+     * The campaign this user is currently working on (their own "featured" / starred
+     * event). Per-user so switching work in one admin account never affects others.
+     * Empty → fall back to the global featured campaign.
+     */
+    @Prop({ default: '' })
+    selectedCampaignId: string;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

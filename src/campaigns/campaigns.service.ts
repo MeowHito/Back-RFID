@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Campaign, CampaignDocument } from './campaign.schema';
+import { User, UserDocument } from '../users/user.schema';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -22,6 +23,7 @@ export interface CampaignFilter {
 export class CampaignsService {
     constructor(
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
+        @InjectModel(User.name) private userModel: Model<UserDocument>,
     ) { }
 
     private slugify(value: string): string {
@@ -188,9 +190,36 @@ export class CampaignsService {
         return campaign;
     }
 
-    /** Get the single featured campaign (for admin header) */
+    /** Get the single global featured campaign (fallback / public shortcut). */
     async findFeatured(): Promise<CampaignDocument | null> {
         return this.campaignModel.findOne({ isFeatured: true }).lean().exec() as Promise<CampaignDocument | null>;
+    }
+
+    /**
+     * Resolve the campaign a specific user is working on: their own selected campaign
+     * if set and still exists, otherwise the global featured campaign. This keeps each
+     * admin account's "current work" independent — switching in one account never
+     * changes what another account sees.
+     */
+    async findFeaturedForUser(userUuid?: string): Promise<CampaignDocument | null> {
+        if (userUuid) {
+            const user = await this.userModel.findOne({ uuid: userUuid }).select('selectedCampaignId').lean().exec() as { selectedCampaignId?: string } | null;
+            const selected = user?.selectedCampaignId;
+            if (selected && Types.ObjectId.isValid(selected)) {
+                const campaign = await this.campaignModel.findById(selected).lean().exec() as CampaignDocument | null;
+                if (campaign) return campaign;
+                // Selected campaign was deleted → fall through to the global featured.
+            }
+        }
+        return this.findFeatured();
+    }
+
+    /** Set (or clear) the campaign a user is working on. Does not touch the global featured. */
+    async setUserSelectedCampaign(userUuid: string, campaignId: string | null): Promise<void> {
+        await this.userModel.updateOne(
+            { uuid: userUuid },
+            { $set: { selectedCampaignId: campaignId || '' } },
+        ).exec();
     }
 
     /** Set one campaign as featured; all others are unset. Only one can be featured. */
