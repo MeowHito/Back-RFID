@@ -231,6 +231,15 @@ export class Campaign {
     @Prop({ type: [String], default: [] })
     separateOverallNationalityCategories: string[];
 
+    /** In nationality-split categories, how many top Thai / foreign overall winners
+     *  (per gender) are excluded from age-group awards. Null/undefined = fall back
+     *  to overallDisplayCount (the previous, coupled behavior). */
+    @Prop({ type: Number, default: null })
+    excludeOverallThaiFromAgeGroup: number | null;
+
+    @Prop({ type: Number, default: null })
+    excludeOverallForeignFromAgeGroup: number | null;
+
     /** Exclude runners with ageGroupRank <= N from Result-Winners page. 0 = no exclusion. */
     @Prop({ default: 0 })
     excludeAgeGroupTop: number;

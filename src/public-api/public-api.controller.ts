@@ -954,6 +954,8 @@ export class PublicApiController {
                     overallDisplayCount: (campaign as any).overallDisplayCount ?? null,
                     ageGroupDisplayCount: (campaign as any).ageGroupDisplayCount ?? null,
                     excludeOverallFromAgeGroup: (campaign as any).excludeOverallFromAgeGroup ?? null,
+                    excludeOverallThaiFromAgeGroup: (campaign as any).excludeOverallThaiFromAgeGroup ?? null,
+                    excludeOverallForeignFromAgeGroup: (campaign as any).excludeOverallForeignFromAgeGroup ?? null,
                     excludeAgeGroupTop: (campaign as any).excludeAgeGroupTop ?? null,
                     // Target-time bands (e.g. "sub 45") — used by the e-slip to show the
                     // runner's finish-time band below the Award.

@@ -229,6 +229,12 @@ export class CreateCampaignDto {
     separateOverallNationalityCategories?: string[];
 
     @IsOptional()
+    excludeOverallThaiFromAgeGroup?: number;
+
+    @IsOptional()
+    excludeOverallForeignFromAgeGroup?: number;
+
+    @IsOptional()
     excludeAgeGroupTop?: number;
 
     @IsOptional()
