@@ -2,11 +2,19 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Runner, RunnerDocument } from './runner.schema';
+import { RunnerEditLog, RunnerEditLogDocument } from './runner-edit-log.schema';
 import { CreateRunnerDto } from './dto/create-runner.dto';
 import { Event, EventDocument } from '../events/event.schema';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
 import { Campaign, CampaignDocument } from '../campaigns/campaign.schema';
 import { isThaiNationality, isNationalitySplitCategory } from '../common/nationality.util';
+
+// Bio fields an admin can hand-edit via PUT /runners/:id that a RaceTiger re-import would otherwise clobber
+export const PROTECTED_BIO_FIELDS = [
+    'firstName', 'lastName', 'firstNameTh', 'lastNameTh', 'gender', 'category',
+    'ageGroup', 'age', 'nationality', 'birthDate', 'idNo', 'team', 'teamName',
+    'chipCode', 'rfidTag', 'printingCode', 'email', 'phone',
+];
 
 export interface RunnerFilter {
     eventId?: string;
@@ -37,6 +45,7 @@ export class RunnersService {
         @InjectModel(Event.name) private eventModel: Model<EventDocument>,
         @InjectModel(TimingRecord.name) private timingModel: Model<TimingRecordDocument>,
         @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
+        @InjectModel(RunnerEditLog.name) private runnerEditLogModel: Model<RunnerEditLogDocument>,
     ) { }
 
     // Get all runners without filter (for debugging/checking data)
@@ -83,25 +92,34 @@ export class RunnersService {
                 if ((r as any).athleteId) bioFields.athleteId = (r as any).athleteId;
                 if (r.sourceFile) bioFields.sourceFile = r.sourceFile;
 
+                // Pipeline update: skip any field an admin has manually edited (tracked in
+                // manuallyEditedFields), and only apply insert-only defaults when the field
+                // doesn't already exist (equivalent to $setOnInsert, which pipeline updates don't support).
+                const setStage: Record<string, any> = {};
+                for (const [key, value] of Object.entries(bioFields)) {
+                    setStage[key] = PROTECTED_BIO_FIELDS.includes(key)
+                        ? { $cond: [{ $in: [key, { $ifNull: ['$manuallyEditedFields', []] }] }, `$${key}`, value] }
+                        : value;
+                }
+                const insertOnlyDefaults: Record<string, any> = {
+                    status: 'not_started',
+                    isStarted: false,
+                    isManualStatus: false,
+                    netTime: 0,
+                    elapsedTime: 0,
+                    overallRank: 0,
+                    genderRank: 0,
+                    ageGroupRank: 0,
+                    categoryRank: 0,
+                };
+                for (const [key, value] of Object.entries(insertOnlyDefaults)) {
+                    setStage[key] = { $ifNull: [`$${key}`, value] };
+                }
+
                 return {
                     updateOne: {
                         filter: { eventId: new Types.ObjectId(r.eventId), bib: r.bib },
-                        update: {
-                            $set: bioFields,
-                            // status, timing, and rank fields only set on FIRST INSERT
-                            // DNF/DNS/DQ statuses are NOT imported — managed manually by checkpoint staff
-                            $setOnInsert: {
-                                status: 'not_started',
-                                isStarted: false,
-                                isManualStatus: false,
-                                netTime: 0,
-                                elapsedTime: 0,
-                                overallRank: 0,
-                                genderRank: 0,
-                                ageGroupRank: 0,
-                                categoryRank: 0,
-                            },
-                        },
+                        update: [{ $set: setStage }],
                         upsert: true,
                     },
                 };
@@ -587,8 +605,44 @@ export class RunnersService {
         await this.runnerModel.findByIdAndUpdate(id, { $set: fields }).exec();
     }
 
-    async update(id: string, updateData: any): Promise<RunnerDocument | null> {
-        const updated = await this.runnerModel.findByIdAndUpdate(id, updateData, { new: true }).exec();
+    async update(id: string, updateData: any, changedBy?: string): Promise<RunnerDocument | null> {
+        const before = await this.runnerModel.findById(id).lean().exec();
+        if (!before) return null;
+
+        // Diff against the whitelist of fields RaceTiger sync would otherwise overwrite —
+        // only fields that actually changed get flagged as manually-edited & logged,
+        // since the edit form re-submits the whole record on every save.
+        const logChanges: { field: string; oldValue: string; newValue: string }[] = [];
+        const toComparable = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v ?? ''));
+        for (const field of PROTECTED_BIO_FIELDS) {
+            if (!Object.prototype.hasOwnProperty.call(updateData, field)) continue;
+            const oldStr = toComparable((before as any)[field]);
+            const newStr = toComparable(updateData[field]);
+            if (oldStr === newStr) continue;
+            logChanges.push({ field, oldValue: oldStr, newValue: newStr });
+        }
+
+        const finalUpdate: Record<string, any> = { ...updateData };
+        if (logChanges.length > 0) {
+            const protectedFields = new Set<string>((before as any).manuallyEditedFields || []);
+            logChanges.forEach(c => protectedFields.add(c.field));
+            finalUpdate.manuallyEditedFields = [...protectedFields];
+            finalUpdate.lastEditedBy = changedBy || 'admin';
+            finalUpdate.lastEditedAt = new Date();
+        }
+
+        const updated = await this.runnerModel.findByIdAndUpdate(id, finalUpdate, { new: true }).exec();
+
+        if (updated && logChanges.length > 0) {
+            try {
+                await this.runnerEditLogModel.create({
+                    runnerId: updated._id,
+                    bib: updated.bib,
+                    changedBy: changedBy || 'admin',
+                    changes: logChanges,
+                });
+            } catch { /* non-fatal */ }
+        }
 
         // When the runner's net/gun finish time is edited, mirror it onto the
         // FINISH TimingRecord so /runner/[id]'s checkpoint table shows the same value.
@@ -686,6 +740,15 @@ export class RunnersService {
         }
 
         return updated;
+    }
+
+    async getEditLogs(runnerId: string): Promise<RunnerEditLogDocument[]> {
+        return this.runnerEditLogModel
+            .find({ runnerId: new Types.ObjectId(runnerId) })
+            .sort({ changedAt: -1 })
+            .limit(100)
+            .lean()
+            .exec() as unknown as Promise<RunnerEditLogDocument[]>;
     }
 
     // Old updateStatus removed — replaced by new version at bottom with checkpoint + note support

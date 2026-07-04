@@ -207,6 +207,16 @@ export class Runner {
 
     @Prop()
     photoUrl: string; // Base64 data URI of runner photo (uploaded via QR scan)
+
+    // === Manual bio-field edit protection (survives RaceTiger sync) ===
+    @Prop({ type: [String], default: [] })
+    manuallyEditedFields: string[]; // field names admin edited manually — sync will not overwrite these
+
+    @Prop()
+    lastEditedBy: string; // admin email/name who last made a manual edit
+
+    @Prop()
+    lastEditedAt: Date; // when the last manual edit happened
 }
 
 export const RunnerSchema = SchemaFactory.createForClass(Runner);

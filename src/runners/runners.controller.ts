@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, Req, UseGuards, NotFoundException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Types } from 'mongoose';
 import { RunnersService } from './runners.service';
@@ -137,8 +137,15 @@ export class RunnersController {
     @Put(':id')
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @RequirePermission('participants', 'create')
-    update(@Param('id') id: string, @Body() updateData: any) {
-        return this.runnersService.update(id, updateData);
+    update(@Param('id') id: string, @Body() updateData: any, @Req() req: any) {
+        return this.runnersService.update(id, updateData, req.user?.email);
+    }
+
+    @Get(':id/edit-logs')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
+    getEditLogs(@Param('id') id: string) {
+        return this.runnersService.getEditLogs(id);
     }
 
     @Put(':id/status')

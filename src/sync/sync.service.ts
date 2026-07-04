@@ -6,7 +6,7 @@ import { Campaign, CampaignDocument } from '../campaigns/campaign.schema';
 import { Event, EventDocument } from '../events/event.schema';
 import { Runner, RunnerDocument } from '../runners/runner.schema';
 import { CreateRunnerDto } from '../runners/dto/create-runner.dto';
-import { RunnersService } from '../runners/runners.service';
+import { RunnersService, PROTECTED_BIO_FIELDS } from '../runners/runners.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
 import { SyncLog, SyncLogDocument } from './sync-log.schema';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
@@ -41,6 +41,65 @@ export class SyncService {
         private readonly checkpointsService: CheckpointsService,
         private readonly configService: ConfigService,
     ) { }
+    // Snapshot runners with manually-set DNF/DNS/DQ status or manually-edited bio fields
+    // before a clean-slate delete, so they can be restored after RaceTiger data is re-imported.
+    private async snapshotProtectedRunners(eventOids: Types.ObjectId[]): Promise<any[]> {
+        if (eventOids.length === 0) return [];
+        const snapshots = await (this.runnerModel as any).find({
+            eventId: { $in: eventOids },
+            $or: [
+                { isManualStatus: true, status: { $in: ['dnf', 'dns', 'dq'] } },
+                { manuallyEditedFields: { $exists: true, $ne: [] } },
+            ],
+        }).select(
+            [
+                'bib', 'eventId', 'status', 'isManualStatus', 'statusCheckpoint', 'statusNote',
+                'statusChangedBy', 'statusChangedAt', 'manuallyEditedFields', 'lastEditedBy', 'lastEditedAt',
+                ...PROTECTED_BIO_FIELDS,
+            ].join(' '),
+        ).lean().exec();
+        if (snapshots.length > 0) {
+            this.logger.log(`Snapshotted ${snapshots.length} runners with manual status/edits before clean slate`);
+        }
+        return snapshots;
+    }
+
+    // Restore manually-set DNF/DNS/DQ status and manually-edited bio fields wiped by clean-slate delete+recreate
+    private async restoreProtectedRunners(snapshots: any[]): Promise<number> {
+        if (!snapshots.length) return 0;
+        const restoreOps = snapshots.map((snap: any) => {
+            const setFields: Record<string, any> = {};
+            if (snap.isManualStatus && ['dnf', 'dns', 'dq'].includes(snap.status)) {
+                setFields.status = snap.status;
+                setFields.isManualStatus = true;
+                if (snap.statusCheckpoint) setFields.statusCheckpoint = snap.statusCheckpoint;
+                if (snap.statusNote) setFields.statusNote = snap.statusNote;
+                if (snap.statusChangedBy) setFields.statusChangedBy = snap.statusChangedBy;
+                if (snap.statusChangedAt) setFields.statusChangedAt = snap.statusChangedAt;
+            }
+            if (Array.isArray(snap.manuallyEditedFields) && snap.manuallyEditedFields.length > 0) {
+                for (const field of snap.manuallyEditedFields) {
+                    if (PROTECTED_BIO_FIELDS.includes(field) && snap[field] !== undefined) {
+                        setFields[field] = snap[field];
+                    }
+                }
+                setFields.manuallyEditedFields = snap.manuallyEditedFields;
+                if (snap.lastEditedBy) setFields.lastEditedBy = snap.lastEditedBy;
+                if (snap.lastEditedAt) setFields.lastEditedAt = snap.lastEditedAt;
+            }
+            return {
+                updateOne: {
+                    filter: { eventId: snap.eventId, bib: snap.bib },
+                    update: { $set: setFields },
+                },
+            };
+        }).filter(op => Object.keys(op.updateOne.update.$set).length > 0);
+        if (!restoreOps.length) return 0;
+        await (this.runnerModel as any).bulkWrite(restoreOps, { ordered: false });
+        this.logger.log(`Restored ${restoreOps.length} runners' manual status/edits after clean slate`);
+        return restoreOps.length;
+    }
+
     private toCampaignObjectId(campaignId: string): Types.ObjectId {
         if (!Types.ObjectId.isValid(campaignId)) {
             throw new BadRequestException('Invalid campaign id');
@@ -1120,8 +1179,9 @@ export class SyncService {
             // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
-            const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
             const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
+            const protectedSnapshots = await this.snapshotProtectedRunners(preCleanEventOids);
+            const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
             if (preCleanEventOids.length > 0) {
                 const trRemoved = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids } }).exec();
                 this.logger.log(`Clean slate: deleted ${trRemoved.deletedCount} orphaned timing records`);
@@ -1166,6 +1226,8 @@ export class SyncService {
             }
             syncResult.runners = { inserted: bioInserted, updated: bioUpdated, skipped: bioSkipped, skippedNoResult: bioSkippedNoResult };
             this.logger.log(`BIO import: inserted=${bioInserted}, updated=${bioUpdated}, skipped=${bioSkipped}, skippedNoResult=${bioSkippedNoResult}`);
+            // Restore manually-set DNF/DNS/DQ status + manually-edited bio fields wiped by the clean-slate delete+recreate
+            await this.restoreProtectedRunners(protectedSnapshots);
             // Post-import diagnostic: log runner counts per category for debugging
             this.logger.log('=== Post-Import Runner Category Diagnostics ===');
             for (const [localEventId, catLabel] of eventResolver.categoryByEventId.entries()) {
@@ -1531,18 +1593,9 @@ export class SyncService {
             // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
             const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
-            // Snapshot manually-set DNF/DNS/DQ before delete so we can restore them after re-import
+            // Snapshot manually-set DNF/DNS/DQ status + manually-edited bio fields before delete so we can restore them after re-import
             const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
-            const manualStoppedSnapshots = preCleanEventOids.length > 0
-                ? await (this.runnerModel as any).find({
-                    eventId: { $in: preCleanEventOids },
-                    isManualStatus: true,
-                    status: { $in: ['dnf', 'dns', 'dq'] },
-                }).select('bib eventId status statusCheckpoint statusNote statusChangedBy statusChangedAt').lean().exec()
-                : [];
-            if (manualStoppedSnapshots.length > 0) {
-                this.logger.log(`Snapshotted ${manualStoppedSnapshots.length} manually-set DNF/DNS/DQ runners before clean slate`);
-            }
+            const protectedSnapshots = await this.snapshotProtectedRunners(preCleanEventOids);
             const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
             if (preCleanEventOids.length > 0) {
                 const trRemoved2 = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids } }).exec();
@@ -1630,26 +1683,8 @@ export class SyncService {
             const scoreResult = await this.syncTimingOnly(campaignId);
             this.logger.log(`Score sync: ${scoreResult.updated} timing updates, ${scoreResult.statusChanges} status changes`);
             this.logger.log(`Pre-filter: skipped ${skippedNoResult} BIO rows with no race results in SCORE data`);
-            // Restore manually-set DNF/DNS/DQ statuses that were wiped by the clean-slate delete+recreate
-            if (manualStoppedSnapshots.length > 0) {
-                const restoreOps = manualStoppedSnapshots.map((snap: any) => ({
-                    updateOne: {
-                        filter: { eventId: snap.eventId, bib: snap.bib },
-                        update: {
-                            $set: {
-                                status: snap.status,
-                                isManualStatus: true,
-                                ...(snap.statusCheckpoint ? { statusCheckpoint: snap.statusCheckpoint } : {}),
-                                ...(snap.statusNote ? { statusNote: snap.statusNote } : {}),
-                                ...(snap.statusChangedBy ? { statusChangedBy: snap.statusChangedBy } : {}),
-                                ...(snap.statusChangedAt ? { statusChangedAt: snap.statusChangedAt } : {}),
-                            },
-                        },
-                    },
-                }));
-                await (this.runnerModel as any).bulkWrite(restoreOps, { ordered: false });
-                this.logger.log(`Restored ${restoreOps.length} manually-set DNF/DNS/DQ statuses after full sync`);
-            }
+            // Restore manually-set DNF/DNS/DQ status + manually-edited bio fields wiped by the clean-slate delete+recreate
+            await this.restoreProtectedRunners(protectedSnapshots);
             // Also fetch split/checkpoint timing records (split distance, split time, split pace, supplement, chip note)
             this.logger.log(`Fetching split timing data for campaign ${campaignId}...`);
             let splitUpserted = 0;
