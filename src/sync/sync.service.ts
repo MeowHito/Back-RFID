@@ -1181,6 +1181,10 @@ export class SyncService {
             if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
             const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
             const protectedSnapshots = await this.snapshotProtectedRunners(preCleanEventOids);
+            // Capture the runner ids about to be deleted so we can re-link their edit logs afterwards.
+            const oldRunnerIds = (await this.runnerModel
+                .find({ eventId: { $in: preCleanEventOids } })
+                .select('_id').lean().exec()).map(r => r._id as Types.ObjectId);
             const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
             if (preCleanEventOids.length > 0) {
                 const trRemoved = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids } }).exec();
@@ -1228,6 +1232,9 @@ export class SyncService {
             this.logger.log(`BIO import: inserted=${bioInserted}, updated=${bioUpdated}, skipped=${bioSkipped}, skippedNoResult=${bioSkippedNoResult}`);
             // Restore manually-set DNF/DNS/DQ status + manually-edited bio fields wiped by the clean-slate delete+recreate
             await this.restoreProtectedRunners(protectedSnapshots);
+            // Re-link edit-log history to the freshly re-inserted runners so the "Edited List" survives sync
+            const relinked = await this.runnersService.relinkEditLogsByBib(oldRunnerIds, preCleanEventOids);
+            if (relinked > 0) this.logger.log(`Re-linked ${relinked} edit-log entries to re-imported runners`);
             // Post-import diagnostic: log runner counts per category for debugging
             this.logger.log('=== Post-Import Runner Category Diagnostics ===');
             for (const [localEventId, catLabel] of eventResolver.categoryByEventId.entries()) {
@@ -1596,6 +1603,10 @@ export class SyncService {
             // Snapshot manually-set DNF/DNS/DQ status + manually-edited bio fields before delete so we can restore them after re-import
             const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
             const protectedSnapshots = await this.snapshotProtectedRunners(preCleanEventOids);
+            // Capture the runner ids about to be deleted so we can re-link their edit logs afterwards.
+            const oldRunnerIds = (await this.runnerModel
+                .find({ eventId: { $in: preCleanEventOids } })
+                .select('_id').lean().exec()).map(r => r._id as Types.ObjectId);
             const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
             if (preCleanEventOids.length > 0) {
                 const trRemoved2 = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids } }).exec();
@@ -1685,6 +1696,9 @@ export class SyncService {
             this.logger.log(`Pre-filter: skipped ${skippedNoResult} BIO rows with no race results in SCORE data`);
             // Restore manually-set DNF/DNS/DQ status + manually-edited bio fields wiped by the clean-slate delete+recreate
             await this.restoreProtectedRunners(protectedSnapshots);
+            // Re-link edit-log history to the freshly re-inserted runners so the "Edited List" survives sync
+            const relinked = await this.runnersService.relinkEditLogsByBib(oldRunnerIds, preCleanEventOids);
+            if (relinked > 0) this.logger.log(`Re-linked ${relinked} edit-log entries to re-imported runners`);
             // Also fetch split/checkpoint timing records (split distance, split time, split pace, supplement, chip note)
             this.logger.log(`Fetching split timing data for campaign ${campaignId}...`);
             let splitUpserted = 0;

@@ -835,6 +835,49 @@ export class RunnersService {
             .exec();
     }
 
+    /**
+     * Re-point edit logs at the freshly re-imported runners after a clean-slate sync.
+     *
+     * The RaceTiger sync deletes every runner and re-inserts them, so each runner gets a
+     * brand-new `_id`. Edit logs reference runners by `runnerId`, which would leave them
+     * orphaned (and invisible in the "Edited List") after every sync. We heal the link by
+     * matching on `bib` — stable across syncs — but only for logs that belonged to the runners
+     * we just deleted (`oldRunnerIds`), so we never touch logs from other events/campaigns that
+     * happen to reuse the same bib number.
+     */
+    async relinkEditLogsByBib(oldRunnerIds: Types.ObjectId[], eventOids: Types.ObjectId[]): Promise<number> {
+        if (!oldRunnerIds.length || !eventOids.length) return 0;
+
+        const logs = await this.runnerEditLogModel
+            .find({ runnerId: { $in: oldRunnerIds } })
+            .select('_id bib')
+            .lean()
+            .exec();
+        if (!logs.length) return 0;
+
+        const runners = await this.runnerModel
+            .find({ eventId: { $in: eventOids } })
+            .select('_id bib')
+            .lean()
+            .exec();
+        const bibToId = new Map<string, Types.ObjectId>();
+        for (const r of runners) {
+            if (r.bib != null) bibToId.set(String(r.bib), r._id as Types.ObjectId);
+        }
+
+        const ops: any[] = [];
+        for (const log of logs) {
+            const newId = bibToId.get(String(log.bib));
+            if (newId && String((log as any).runnerId) !== String(newId)) {
+                ops.push({ updateOne: { filter: { _id: log._id }, update: { $set: { runnerId: newId } } } });
+            }
+        }
+        if (!ops.length) return 0;
+
+        await this.runnerEditLogModel.bulkWrite(ops, { ordered: false });
+        return ops.length;
+    }
+
     // Old updateStatus removed — replaced by new version at bottom with checkpoint + note support
 
     async updateTiming(
