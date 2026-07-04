@@ -751,6 +751,38 @@ export class RunnersService {
             .exec() as unknown as Promise<RunnerEditLogDocument[]>;
     }
 
+    /** All edit-log entries for every runner in a campaign (or a single event), newest first, with runner name/bib attached. */
+    async getEditLogsByScope(campaignId?: string, eventId?: string): Promise<any[]> {
+        let eventOidFilter: any;
+        if (campaignId && Types.ObjectId.isValid(campaignId)) {
+            const campaignOid = new Types.ObjectId(campaignId);
+            const events = await (this.runnerModel.db.model('Event') as any)
+                .find({ $or: [{ campaignId: campaignOid }, { campaignId: campaignId }] })
+                .select('_id').lean().exec();
+            const eventIds = events.map((e: any) => new Types.ObjectId(String(e._id)));
+            eventIds.push(campaignOid);
+            eventOidFilter = { $in: eventIds };
+        } else if (eventId && Types.ObjectId.isValid(eventId)) {
+            eventOidFilter = new Types.ObjectId(eventId);
+        } else {
+            return [];
+        }
+
+        const runnerIds = await this.runnerModel
+            .find({ eventId: eventOidFilter })
+            .select('_id')
+            .lean()
+            .exec();
+
+        return this.runnerEditLogModel
+            .find({ runnerId: { $in: runnerIds.map(r => r._id) } })
+            .sort({ changedAt: -1 })
+            .limit(500)
+            .populate('runnerId', 'bib firstName lastName firstNameTh lastNameTh category')
+            .lean()
+            .exec();
+    }
+
     // Old updateStatus removed — replaced by new version at bottom with checkpoint + note support
 
     async updateTiming(

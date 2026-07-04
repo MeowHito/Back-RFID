@@ -119,6 +119,13 @@ export class RunnersController {
         return { found: !!runner, runner };
     }
 
+    @Get('edit-logs')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
+    getAllEditLogs(@Query('campaignId') campaignId?: string, @Query('eventId') eventId?: string) {
+        return this.runnersService.getEditLogsByScope(campaignId, eventId);
+    }
+
     @Get(':id')
     findOne(@Param('id') id: string) {
         return this.runnersService.findOne(id);
