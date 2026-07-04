@@ -10,8 +10,9 @@ async function bootstrap() {
   });
 
   // Increase body size limit to support base64 image uploads
-  app.use(json({ limit: '10mb' }));
-  app.use(urlencoded({ extended: true, limit: '10mb' }));
+  // (a 5MB image → ~6.7MB base64; a cert layout can carry several)
+  app.use(json({ limit: '25mb' }));
+  app.use(urlencoded({ extended: true, limit: '25mb' }));
 
   // Security: Helmet for HTTP headers (install with: npm install helmet)
   try {
