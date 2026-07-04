@@ -246,6 +246,9 @@ export class CreateCampaignDto {
     overallDisplayCount?: number;
 
     @IsOptional()
+    bestOfDisplayCount?: number;
+
+    @IsOptional()
     @IsArray()
     @IsString({ each: true })
     separateOverallNationalityCategories?: string[];

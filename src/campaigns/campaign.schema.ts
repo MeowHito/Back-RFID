@@ -234,6 +234,11 @@ export class Campaign {
     @Prop({ default: 5 })
     overallDisplayCount: number;
 
+    /** Number of top ranks (per gender) to display on the Best-Of-Winners page
+     *  (local-province "Best Of" award). Default 1. */
+    @Prop({ default: 1 })
+    bestOfDisplayCount: number;
+
     /** Race categories (by name) whose Overall ranking is split into Thai vs foreign
      *  (non-Thai) groups. Only the Overall rank is affected — gender and age-group
      *  rankings stay combined. Runners with empty/unknown nationality count as Thai.
