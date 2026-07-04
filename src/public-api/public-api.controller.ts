@@ -16,6 +16,7 @@ import { CctvRecordingsService } from '../cctv-cameras/cctv-recordings.service';
 import { CctvSettingsService } from '../cctv-cameras/cctv-settings.service';
 import { CctvBetaRecordingsService } from '../cctv-beta/cctv-beta-recordings.service';
 import { CreateUserDto, LoginStationDto, UpdatePasswordDto } from '../users/dto/user.dto';
+import { isThaiNationality, isNationalitySplitCategory } from '../common/nationality.util';
 
 interface NormalizedResponse {
     status: {
@@ -77,6 +78,17 @@ export class PublicApiController {
         const resolved = String(campaign._id);
         this._campaignIdCache.set(id, { id: resolved, expiry: Date.now() + 60_000 });
         return resolved;
+    }
+
+    /** Category names whose Overall ranking is split by nationality (from campaign settings). */
+    private async getNationalitySplitCategories(id: string): Promise<string[]> {
+        try {
+            const campaign = await this.campaignsService.findById(id);
+            const list = (campaign as any)?.separateOverallNationalityCategories;
+            return Array.isArray(list) ? list : [];
+        } catch {
+            return [];
+        }
     }
 
     private getRunnerPrimaryTimeMs(runner: any): number {
@@ -144,7 +156,7 @@ export class PublicApiController {
         return this.compareStableRunnerOrder(a, b);
     }
 
-    private buildScopedPublicRankMaps(records: any[]) {
+    private buildScopedPublicRankMaps(records: any[], nationalitySplitCategories: string[] = []) {
         const overallRankMap = new Map<string, number>();
         const genderRankMap = new Map<string, number>();
         const catRankMap = new Map<string, number>();
@@ -159,8 +171,16 @@ export class PublicApiController {
         });
 
         byEvent.forEach((eventRecords) => {
-            [...eventRecords].sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((record, index) => {
-                overallRankMap.set(String(record._id), index + 1);
+            // Overall rank. For records in a nationality-split category the rank is
+            // scoped to the runner's Thai/foreign bucket; other records keep the
+            // combined event-wide rank.
+            const overallCounters = { combined: 0, thai: 0, foreign: 0 };
+            [...eventRecords].sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((record) => {
+                overallCounters.combined += 1;
+                const natKey = isThaiNationality(record?.nationality) ? 'thai' as const : 'foreign' as const;
+                overallCounters[natKey] += 1;
+                const split = isNationalitySplitCategory(nationalitySplitCategories, record?.category);
+                overallRankMap.set(String(record._id), split ? overallCounters[natKey] : overallCounters.combined);
             });
 
             const genderGroups = new Map<string, any[]>();
@@ -477,7 +497,8 @@ export class PublicApiController {
             if (!looksLikeFinish(r.splitDesc)) r.splitDesc = finishName;
         }
 
-        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(data as any[]);
+        const natSplitCategories = await this.getNationalitySplitCategories(id);
+        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(data as any[], natSplitCategories);
         for (const r of data as any[]) {
             const rid = String(r._id);
             if (overallRankMap.has(rid)) r.overallRank = overallRankMap.get(rid);
@@ -574,7 +595,8 @@ export class PublicApiController {
             if (!looksLikeFinish(r.splitDesc)) r.splitDesc = finishName;
         }
 
-        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(merged as any[]);
+        const natSplitCategories = await this.getNationalitySplitCategories(id);
+        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(merged as any[], natSplitCategories);
 
         // Apply computed ranks to merged data
         for (const r of merged) {
@@ -856,7 +878,10 @@ export class PublicApiController {
                     this.mergeTimingIntoRunner(r, timing);
                 }
 
-                const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(allRunners as any[]);
+                const campaignSplitCategories: string[] = Array.isArray((campaign as any)?.separateOverallNationalityCategories)
+                    ? (campaign as any).separateOverallNationalityCategories
+                    : [];
+                const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(allRunners as any[], campaignSplitCategories);
                 if (overallRankMap.has(runnerId)) runnerObj.overallRank = overallRankMap.get(runnerId);
                 if (genderRankMap.has(runnerId)) runnerObj.genderRank = genderRankMap.get(runnerId);
                 if (catRankMap.has(runnerId)) {

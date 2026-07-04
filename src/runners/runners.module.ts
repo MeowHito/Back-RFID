@@ -6,6 +6,7 @@ import { Runner, RunnerSchema } from './runner.schema';
 import { User, UserSchema } from '../users/user.schema';
 import { Event, EventSchema } from '../events/event.schema';
 import { TimingRecord, TimingRecordSchema } from '../timing/timing-record.schema';
+import { Campaign, CampaignSchema } from '../campaigns/campaign.schema';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 
 @Module({
@@ -15,6 +16,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
             { name: User.name, schema: UserSchema },
             { name: Event.name, schema: EventSchema },
             { name: TimingRecord.name, schema: TimingRecordSchema },
+            { name: Campaign.name, schema: CampaignSchema },
         ]),
     ],
     controllers: [RunnersController],

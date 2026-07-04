@@ -224,6 +224,13 @@ export class Campaign {
     @Prop({ default: 5 })
     overallDisplayCount: number;
 
+    /** Race categories (by name) whose Overall ranking is split into Thai vs foreign
+     *  (non-Thai) groups. Only the Overall rank is affected — gender and age-group
+     *  rankings stay combined. Runners with empty/unknown nationality count as Thai.
+     *  In split categories, Overall winners are excluded from age-group awards. */
+    @Prop({ type: [String], default: [] })
+    separateOverallNationalityCategories: string[];
+
     /** Exclude runners with ageGroupRank <= N from Result-Winners page. 0 = no exclusion. */
     @Prop({ default: 0 })
     excludeAgeGroupTop: number;

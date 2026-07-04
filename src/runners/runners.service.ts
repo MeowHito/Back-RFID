@@ -5,6 +5,8 @@ import { Runner, RunnerDocument } from './runner.schema';
 import { CreateRunnerDto } from './dto/create-runner.dto';
 import { Event, EventDocument } from '../events/event.schema';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
+import { Campaign, CampaignDocument } from '../campaigns/campaign.schema';
+import { isThaiNationality, isNationalitySplitCategory } from '../common/nationality.util';
 
 export interface RunnerFilter {
     eventId?: string;
@@ -34,6 +36,7 @@ export class RunnersService {
         @InjectModel(Runner.name) private runnerModel: Model<RunnerDocument>,
         @InjectModel(Event.name) private eventModel: Model<EventDocument>,
         @InjectModel(TimingRecord.name) private timingModel: Model<TimingRecordDocument>,
+        @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
     ) { }
 
     // Get all runners without filter (for debugging/checking data)
@@ -714,12 +717,27 @@ export class RunnersService {
 
         if (runners.length === 0) return;
 
+        // When this category is one of the campaign's nationality-split categories, the
+        // Overall rank is scoped to the runner's nationality group (Thai vs foreign).
+        // Gender and age-group rankings stay combined.
+        const splitCategories = await this.getNationalitySplitCategories(eventId);
+        const separateByNationality = isNationalitySplitCategory(splitCategories, category);
+
         // Build a map: runnerId -> { overallRank, genderRank, ageGroupRank }
         const rankMap = new Map<string, { overallRank: number; genderRank: number; ageGroupRank: number }>();
 
         // Overall ranking
-        for (let i = 0; i < runners.length; i++) {
-            rankMap.set(runners[i]._id.toString(), { overallRank: i + 1, genderRank: 0, ageGroupRank: 0 });
+        if (separateByNationality) {
+            const overallCounters: Record<'thai' | 'foreign', number> = { thai: 0, foreign: 0 };
+            for (const runner of runners) {
+                const key = isThaiNationality(runner.nationality) ? 'thai' : 'foreign';
+                overallCounters[key] += 1;
+                rankMap.set(runner._id.toString(), { overallRank: overallCounters[key], genderRank: 0, ageGroupRank: 0 });
+            }
+        } else {
+            for (let i = 0; i < runners.length; i++) {
+                rankMap.set(runners[i]._id.toString(), { overallRank: i + 1, genderRank: 0, ageGroupRank: 0 });
+            }
         }
 
         // Gender rankings
@@ -751,6 +769,28 @@ export class RunnersService {
         }));
 
         await this.runnerModel.bulkWrite(bulkOps, { ordered: false });
+    }
+
+    /** Category names whose Overall ranking is split by nationality, from the event's campaign. */
+    private async getNationalitySplitCategories(eventId: string): Promise<string[]> {
+        try {
+            const event = await this.eventModel
+                .findById(eventId)
+                .select({ campaignId: 1 })
+                .lean()
+                .exec();
+            if (!event?.campaignId) return [];
+            const campaign = await this.campaignModel
+                .findById(event.campaignId)
+                .select({ separateOverallNationalityCategories: 1 })
+                .lean()
+                .exec();
+            return Array.isArray(campaign?.separateOverallNationalityCategories)
+                ? campaign.separateOverallNationalityCategories
+                : [];
+        } catch {
+            return [];
+        }
     }
 
     // Statistics methods from reference

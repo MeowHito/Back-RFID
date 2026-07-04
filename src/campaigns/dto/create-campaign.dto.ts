@@ -224,6 +224,11 @@ export class CreateCampaignDto {
     overallDisplayCount?: number;
 
     @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    separateOverallNationalityCategories?: string[];
+
+    @IsOptional()
     excludeAgeGroupTop?: number;
 
     @IsOptional()

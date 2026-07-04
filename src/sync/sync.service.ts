@@ -565,11 +565,11 @@ export class SyncService {
         const parsedAge = this.parseDistanceValue(row?.Age ?? row?.age);
         const rawCategory = this.toSafeString(row?.Category ?? row?.category);
         const rawCategory2 = this.toSafeString(row?.Category2 ?? row?.category2);
-        // Detect if RaceTiger "Category" is actually an age group (e.g. "45-49", "M 30-39", "F U18")
-        // Age group patterns: "XX-XX", "M XX-XX", "F XX-XX", "U18", "70+", etc.
-        const isAgeGroupPattern = /^[MF]?\s*\d{1,2}[-+]/.test(rawCategory)
+        // Detect if RaceTiger "Category" is actually an age group (e.g. "45-49", "M 30-39", "F U18", "U19")
+        // Age group patterns: "XX-XX", "M XX-XX", "F XX-XX", "U18", "U19", "M U18", "70+", etc.
+        const isAgeGroupPattern = /^[MF]?\s*\d{1,2}\s*[-+]/.test(rawCategory)
             || /^\d{1,2}\s*-\s*\d{1,2}$/.test(rawCategory)
-            || /^[MF]\s+U?\d/i.test(rawCategory);
+            || /^[MF]?\s*U\s*\d{1,2}\b/i.test(rawCategory);
         // Category (race distance) should ALWAYS come from the local event mapping, not from RaceTiger's Category field
         // because RaceTiger often puts age groups in Category and has no distance field per runner
         const eventCategory = eventResolver.categoryByEventId.get(eventId);
