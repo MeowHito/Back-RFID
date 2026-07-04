@@ -30,6 +30,14 @@ export class RunnersController {
         return this.runnersService.findByEvent(filter);
     }
 
+    @Get('nationality-counts')
+    getNationalityCounts(
+        @Query('campaignId') campaignId: string,
+        @Query('category') category: string,
+    ) {
+        return this.runnersService.getNationalityCounts(campaignId, category);
+    }
+
     @Get('counts')
     getCounts(@Query('campaignId') campaignId: string) {
         return this.runnersService.countByEventGrouped(campaignId);
@@ -45,6 +53,7 @@ export class RunnersController {
         @Query('status') status: string,
         @Query('chipStatus') chipStatus: string,
         @Query('runnerStatus') runnerStatus: string,
+        @Query('nationality') nationality: string,
         @Query('sortBy') sortBy: string,
         @Query('sortOrder') sortOrder: string,
         @Query('search') search: string,
@@ -52,7 +61,7 @@ export class RunnersController {
         @Query('limit') limit: number,
         @Query('skipStatusCounts') skipStatusCounts: string,
     ) {
-        const filter: RunnerFilter = { eventId, campaignId, category, gender, ageGroup, status, chipStatus, runnerStatus, sortBy, sortOrder, search };
+        const filter: RunnerFilter = { eventId, campaignId, category, gender, ageGroup, status, chipStatus, runnerStatus, nationality, sortBy, sortOrder, search };
         const paging: PagingData = { page: page || 1, limit: limit || 50, search };
         return this.runnersService.findByEventWithPaging(filter, paging, skipStatusCounts === 'true');
     }

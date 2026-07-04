@@ -28,8 +28,23 @@ export interface RunnerFilter {
     checkpoint?: string;
     chipStatus?: string;
     runnerStatus?: string; // comma-separated: no_bib,dup_bib,no_chip,dup_chip,ready,no_name,no_gender,no_nat,no_age
+    nationality?: string; // 'thai' | 'foreign' — filter by nationality group
     sortBy?: string; // bib, firstName, ageGroup, chipCode
     sortOrder?: string; // asc, desc
+}
+
+/** Case-insensitive match for Thailand nationality tokens (mirrors isThaiNationality). */
+const THAI_NATIONALITY_REGEX = /^\s*(tha|th|thai|thailand|ไทย)\s*$/i;
+
+/** Mongo condition for a nationality group ('thai' includes empty/unknown, per app convention). */
+function nationalityGroupCondition(kind?: string): Record<string, any> | null {
+    if (kind === 'thai') {
+        return { $or: [{ nationality: { $exists: false } }, { nationality: { $in: ['', null] } }, { nationality: THAI_NATIONALITY_REGEX }] };
+    }
+    if (kind === 'foreign') {
+        return { nationality: { $exists: true, $nin: ['', null], $not: THAI_NATIONALITY_REGEX } };
+    }
+    return null;
 }
 
 export interface PagingData {
@@ -277,6 +292,11 @@ export class RunnersService {
         if (filter.gender) queryMatch.gender = filter.gender;
         if (filter.ageGroup) queryMatch.ageGroup = filter.ageGroup;
         if (filter.status) queryMatch.status = filter.status;
+        const natCond = nationalityGroupCondition(filter.nationality);
+        if (natCond) {
+            if (!queryMatch.$and) queryMatch.$and = [];
+            queryMatch.$and.push(natCond);
+        }
         if (filter.chipStatus === 'has') {
             queryMatch.chipCode = { $exists: true, $nin: ['', null] };
         } else if (filter.chipStatus === 'missing') {
@@ -424,6 +444,38 @@ export class RunnersService {
             total: df.total?.[0]?.c || 0,
             dupBibs, dupChips, statusCounts,
         };
+    }
+
+    /** Count runners by nationality group (Thai vs foreign) for a campaign, optionally scoped to a category. */
+    async getNationalityCounts(
+        campaignId: string,
+        category?: string,
+    ): Promise<{ thai: number; foreign: number; total: number }> {
+        if (!campaignId || !Types.ObjectId.isValid(campaignId)) {
+            return { thai: 0, foreign: 0, total: 0 };
+        }
+        const campaignOid = new Types.ObjectId(campaignId);
+        const events = await (this.runnerModel.db.model('Event') as any)
+            .find({ $or: [{ campaignId: campaignOid }, { campaignId: campaignId }] })
+            .select('_id').lean().exec();
+        const eventIds = events.map((e: any) => new Types.ObjectId(String(e._id)));
+        eventIds.push(campaignOid);
+
+        const match: any = { eventId: { $in: eventIds } };
+        if (category) match.category = category;
+
+        const grouped = await this.runnerModel.aggregate([
+            { $match: match },
+            { $group: { _id: '$nationality', count: { $sum: 1 } } },
+        ]).exec();
+
+        let thai = 0, foreign = 0, total = 0;
+        for (const g of grouped) {
+            const n = g.count || 0;
+            total += n;
+            if (isThaiNationality(g._id)) thai += n; else foreign += n;
+        }
+        return { thai, foreign, total };
     }
 
     async deleteMany(ids: string[]): Promise<{ deletedCount: number }> {
