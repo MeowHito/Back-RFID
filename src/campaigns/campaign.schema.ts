@@ -31,6 +31,16 @@ export interface TargetTimeBandGroup {
     bands: TargetTimeBand[];
 }
 
+// Public visibility of the results-page ranking menu, defined per race category.
+// A category missing from this array defaults every item to visible (true).
+export interface RankingMenuVisibility {
+    category: string;   // RaceCategory.name this config applies to
+    general?: boolean;   // "General [N]" — overall ranking
+    bestOf?: boolean;     // "Best of [event name]" — fastest male + female
+    nationality?: boolean; // "Nationality [N]" — top foreign ranking
+    ageGroup?: boolean;   // "Age Group Top [N]"
+}
+
 @Schema({ timestamps: true })
 export class Campaign {
     @Prop({ required: true, unique: true })
@@ -249,6 +259,12 @@ export class Campaign {
      *  Target-Time-Winners page. */
     @Prop({ type: [Object], default: [] })
     targetTimeBands: TargetTimeBandGroup[];
+
+    /** Per-category visibility of the results-page ranking menu (General / Best of /
+     *  Nationality / Age Group). A category with no entry here defaults all 4 to
+     *  visible — admins opt OUT per distance, not in. */
+    @Prop({ type: [Object], default: [] })
+    rankingMenuVisibility: RankingMenuVisibility[];
 
     /** When true, race is finished → show Finish List view.
      *  When false (default), race is ongoing → show Pass Time (live) view. */

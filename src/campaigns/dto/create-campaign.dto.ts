@@ -67,6 +67,28 @@ export class TargetTimeBandGroupDto {
     bands?: TargetTimeBandDto[];
 }
 
+// DTO for the results-page ranking menu visibility of one race category
+export class RankingMenuVisibilityDto {
+    @IsString()
+    category: string;
+
+    @IsOptional()
+    @IsBoolean()
+    general?: boolean;
+
+    @IsOptional()
+    @IsBoolean()
+    bestOf?: boolean;
+
+    @IsOptional()
+    @IsBoolean()
+    nationality?: boolean;
+
+    @IsOptional()
+    @IsBoolean()
+    ageGroup?: boolean;
+}
+
 export class CreateCampaignDto {
     @IsString()
     name: string;
@@ -242,6 +264,12 @@ export class CreateCampaignDto {
     @ValidateNested({ each: true })
     @Type(() => TargetTimeBandGroupDto)
     targetTimeBands?: TargetTimeBandGroupDto[];
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => RankingMenuVisibilityDto)
+    rankingMenuVisibility?: RankingMenuVisibilityDto[];
 
     @IsOptional()
     @IsArray()
