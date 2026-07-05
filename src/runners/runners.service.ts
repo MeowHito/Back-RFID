@@ -100,6 +100,8 @@ export class RunnersService {
                 if (r.chipCode) bioFields.chipCode = r.chipCode;
                 if (r.rfidTag) bioFields.rfidTag = r.rfidTag;
                 if (r.nationality) bioFields.nationality = r.nationality;
+                if (r.province) bioFields.province = r.province;
+                if (r.address) bioFields.address = r.address;
                 if (r.phone) bioFields.phone = r.phone;
                 if (r.birthDate) bioFields.birthDate = r.birthDate;
                 if (r.idNo) bioFields.idNo = r.idNo;
@@ -331,7 +333,7 @@ export class RunnersService {
             team: 1, teamName: 1, box: 1, shirtSize: 1,
             email: 1, phone: 1, idNo: 1, birthDate: 1,
             emergencyContact: 1, emergencyPhone: 1, medicalInfo: 1,
-            bloodType: 1, chronicDiseases: 1, address: 1, sourceFile: 1,
+            bloodType: 1, chronicDiseases: 1, address: 1, province: 1, sourceFile: 1,
             netTime: 1, gunTime: 1, netTimeStr: 1, gunTimeStr: 1,
             overallRank: 1, genderRank: 1, ageGroupRank: 1, categoryRank: 1,
         };

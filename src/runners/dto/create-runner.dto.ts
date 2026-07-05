@@ -129,6 +129,10 @@ export class CreateRunnerDto {
 
     @IsOptional()
     @IsString()
+    province?: string;
+
+    @IsOptional()
+    @IsString()
     sourceFile?: string;
 
     @IsOptional()

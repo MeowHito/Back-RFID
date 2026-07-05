@@ -672,6 +672,20 @@ export class SyncService {
             row?.Email ?? row?.email ?? row?.EMAIL
             ?? this.findRowValueByNormalizedKeys(row, ['email', 'mail']),
         ) || undefined;
+        // Province drives the "Best of Buriram" local award. RaceTiger field name
+        // varies, so probe a broad set of location keys.
+        const province = this.toSafeString(
+            row?.Province ?? row?.province
+            ?? row?.City ?? row?.city
+            ?? row?.State ?? row?.state
+            ?? row?.Region ?? row?.region
+            ?? row?.Area ?? row?.area
+            ?? this.findRowValueByNormalizedKeys(row, ['province', 'provincename', 'city', 'cityname', 'state', 'region', 'area', 'district', 'hometown', 'domicile']),
+        ) || undefined;
+        const address = this.toSafeString(
+            row?.Address ?? row?.address ?? row?.Addr ?? row?.addr
+            ?? this.findRowValueByNormalizedKeys(row, ['address', 'addr', 'addressline', 'fulladdress', 'residence', 'location']),
+        ) || undefined;
         return {
             eventId,
             bib,
@@ -698,6 +712,8 @@ export class SyncService {
                 ?? this.findRowValueByNormalizedKeys(row, ['country', 'nation', 'nationality', 'countryregion', 'countrycode', 'nat']),
             ) || undefined,
             phone: this.toSafeString(row?.Phone ?? row?.phone) || undefined,
+            province,
+            address,
             birthDate: this.toOptionalDate(row?.Birthday ?? row?.birthday),
             idNo,
             email,
@@ -1202,6 +1218,11 @@ export class SyncService {
                     if (!bioRes.ok) break;
                     const bioRows = this.extractRowsFromPayload(bioParsed);
                     if (!bioRows.length) break;
+                    // One-time diagnostic: log the BIO row field names so we can confirm which
+                    // RaceTiger column carries the province (for the "Best of Buriram" award).
+                    if (page === 1 && bioRows[0] && typeof bioRows[0] === 'object') {
+                        this.logger.log(`BIO row keys (eid=${eid ?? 'all'}): [${Object.keys(bioRows[0]).join(', ')}]`);
+                    }
                     // Use total from API response to determine expected item count
                     const apiTotal = this.parseNumericValue(bioParsed?.total);
                     if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;

@@ -132,6 +132,9 @@ export class Runner {
     @Prop()
     address: string; // ที่อยู่
 
+    @Prop()
+    province: string; // จังหวัด — synced from RaceTiger; drives the "Best of Buriram" local award
+
     // Category ranking
     @Prop({ default: 0 })
     categoryRank: number;
