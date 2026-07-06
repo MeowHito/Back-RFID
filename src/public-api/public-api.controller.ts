@@ -878,10 +878,11 @@ export class PublicApiController {
                     this.mergeTimingIntoRunner(r, timing);
                 }
 
-                const campaignSplitCategories: string[] = Array.isArray((campaign as any)?.separateOverallNationalityCategories)
-                    ? (campaign as any).separateOverallNationalityCategories
-                    : [];
-                const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(allRunners as any[], campaignSplitCategories);
+                // The /runner/[id] OVERALL RANK card always shows the COMBINED overall
+                // position (Thai + foreign together) to match the /event RANK column —
+                // the nationality split only changes the AWARD label, never the rank —
+                // so build the rank maps with no split categories.
+                const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(allRunners as any[], []);
                 if (overallRankMap.has(runnerId)) runnerObj.overallRank = overallRankMap.get(runnerId);
                 if (genderRankMap.has(runnerId)) runnerObj.genderRank = genderRankMap.get(runnerId);
                 if (catRankMap.has(runnerId)) {
@@ -957,6 +958,11 @@ export class PublicApiController {
                     excludeOverallThaiFromAgeGroup: (campaign as any).excludeOverallThaiFromAgeGroup ?? null,
                     excludeOverallForeignFromAgeGroup: (campaign as any).excludeOverallForeignFromAgeGroup ?? null,
                     excludeAgeGroupTop: (campaign as any).excludeAgeGroupTop ?? null,
+                    // Best-of-Province award config — used by the AWARD badge on
+                    // /runner/[id], the e-slip and the certificate. Without these the
+                    // "Best of <province>" badge can never render.
+                    bestOfProvinceEnabled: (campaign as any).bestOfProvinceEnabled ?? false,
+                    bestOfProvinces: (campaign as any).bestOfProvinces || [],
                     // Target-time bands (e.g. "sub 45") — used by the e-slip to show the
                     // runner's finish-time band below the Award.
                     targetTimeBands: (campaign as any).targetTimeBands || [],
