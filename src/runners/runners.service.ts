@@ -961,11 +961,18 @@ export class RunnersService {
                 category,
                 status: 'finished',
             })
-            .sort({ netTime: 1 })
             .lean()
             .exec();
 
         if (runners.length === 0) return;
+
+        // Ranking convention: Overall placing is decided by GUN time, while Gender and
+        // Age-group placings are decided by NET (chip) time. Locally-timed events only
+        // store netTime, so each key falls back to the other time when its own is 0.
+        const gunKey = (r: any) => (r.gunTime && r.gunTime > 0 ? r.gunTime : (r.netTime && r.netTime > 0 ? r.netTime : Infinity));
+        const netKey = (r: any) => (r.netTime && r.netTime > 0 ? r.netTime : (r.gunTime && r.gunTime > 0 ? r.gunTime : Infinity));
+        const byGun = [...runners].sort((a, b) => gunKey(a) - gunKey(b));
+        const byNet = [...runners].sort((a, b) => netKey(a) - netKey(b));
 
         // When this category is one of the campaign's nationality-split categories, the
         // Overall rank is scoped to the runner's nationality group (Thai vs foreign).
@@ -975,38 +982,39 @@ export class RunnersService {
 
         // Build a map: runnerId -> { overallRank, genderRank, ageGroupRank }
         const rankMap = new Map<string, { overallRank: number; genderRank: number; ageGroupRank: number }>();
+        for (const runner of runners) {
+            rankMap.set(runner._id.toString(), { overallRank: 0, genderRank: 0, ageGroupRank: 0 });
+        }
 
-        // Overall ranking
+        // Overall ranking — by GUN time
         if (separateByNationality) {
             const overallCounters: Record<'thai' | 'foreign', number> = { thai: 0, foreign: 0 };
-            for (const runner of runners) {
+            for (const runner of byGun) {
                 const key = isThaiNationality(runner.nationality) ? 'thai' : 'foreign';
                 overallCounters[key] += 1;
-                rankMap.set(runner._id.toString(), { overallRank: overallCounters[key], genderRank: 0, ageGroupRank: 0 });
+                rankMap.get(runner._id.toString())!.overallRank = overallCounters[key];
             }
         } else {
-            for (let i = 0; i < runners.length; i++) {
-                rankMap.set(runners[i]._id.toString(), { overallRank: i + 1, genderRank: 0, ageGroupRank: 0 });
+            for (let i = 0; i < byGun.length; i++) {
+                rankMap.get(byGun[i]._id.toString())!.overallRank = i + 1;
             }
         }
 
-        // Gender rankings
+        // Gender rankings — by NET time
         for (const gender of ['M', 'F']) {
-            const genderRunners = runners.filter(r => r.gender === gender);
+            const genderRunners = byNet.filter(r => r.gender === gender);
             for (let i = 0; i < genderRunners.length; i++) {
-                const entry = rankMap.get(genderRunners[i]._id.toString())!;
-                entry.genderRank = i + 1;
+                rankMap.get(genderRunners[i]._id.toString())!.genderRank = i + 1;
             }
         }
 
-        // Age group rankings — scoped per gender so M40-49 and F40-49 rank separately
-        const ageGroupGenderKeys = [...new Set(runners.map(r => `${r.gender || ''}::${r.ageGroup || ''}`))];
+        // Age group rankings — by NET time, scoped per gender so M40-49 and F40-49 rank separately
+        const ageGroupGenderKeys = [...new Set(byNet.map(r => `${r.gender || ''}::${r.ageGroup || ''}`))];
         for (const key of ageGroupGenderKeys) {
             const [gender, ageGroup] = key.split('::');
-            const groupRunners = runners.filter(r => (r.gender || '') === gender && (r.ageGroup || '') === ageGroup);
+            const groupRunners = byNet.filter(r => (r.gender || '') === gender && (r.ageGroup || '') === ageGroup);
             for (let i = 0; i < groupRunners.length; i++) {
-                const entry = rankMap.get(groupRunners[i]._id.toString())!;
-                entry.ageGroupRank = i + 1;
+                rankMap.get(groupRunners[i]._id.toString())!.ageGroupRank = i + 1;
             }
         }
 

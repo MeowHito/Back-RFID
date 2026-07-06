@@ -2273,11 +2273,12 @@ export class SyncService {
                                     updateData.status = 'in_progress'; updateData.isStarted = true; result.statusChanges++;
                                 }
                             }
-                            // ── Rankings — prefer Net Time positions, fall back to Gun Time positions ──
+                            // ── Rankings ──
                             // RaceTiger provides: OverallPosition (gun), NetTimeOverallPosition (net), etc.
+                            // Convention: Overall placing = GUN time; Gender / Category / Age-group = NET time.
                             const overallRank = this.parseNumericValue(
-                                row?.NetTimeOverallPosition ?? row?.netTimeOverallPosition
-                                ?? row?.OverallPosition ?? row?.overallPosition
+                                row?.OverallPosition ?? row?.overallPosition
+                                ?? row?.NetTimeOverallPosition ?? row?.netTimeOverallPosition
                                 ?? row?.Rank ?? row?.rank ?? row?.OverallRank ?? row?.overallRank ?? row?.Place ?? row?.place
                             );
                             if (overallRank !== null && overallRank > 0) updateData.overallRank = overallRank;
