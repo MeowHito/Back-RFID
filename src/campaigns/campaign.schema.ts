@@ -239,6 +239,18 @@ export class Campaign {
     @Prop({ default: 1 })
     bestOfDisplayCount: number;
 
+    /** "Best of Province" award. When enabled, the Best-Of-Winners page shows one board
+     *  per configured province (top `count` male + female finishers who reside in that
+     *  province), replacing the single hard-coded Best-Of board. When disabled, no
+     *  Best-Of board is shown. */
+    @Prop({ default: false })
+    bestOfProvinceEnabled: boolean;
+
+    /** Provinces configured for the "Best of Province" award, each with its own per-gender
+     *  top-N count. `province` holds the canonical Thai province name. */
+    @Prop({ type: [{ province: String, count: Number }], default: [] })
+    bestOfProvinces: { province: string; count: number }[];
+
     /** Race categories (by name) whose Overall ranking is split into Thai vs foreign
      *  (non-Thai) groups. Only the Overall rank is affected — gender and age-group
      *  rankings stay combined. Runners with empty/unknown nationality count as Thai.

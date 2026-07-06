@@ -89,6 +89,14 @@ export class RankingMenuVisibilityDto {
     ageGroup?: boolean;
 }
 
+export class BestOfProvinceDto {
+    @IsString()
+    province: string;
+
+    @IsNumber()
+    count: number;
+}
+
 export class CreateCampaignDto {
     @IsString()
     name: string;
@@ -247,6 +255,16 @@ export class CreateCampaignDto {
 
     @IsOptional()
     bestOfDisplayCount?: number;
+
+    @IsOptional()
+    @IsBoolean()
+    bestOfProvinceEnabled?: boolean;
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => BestOfProvinceDto)
+    bestOfProvinces?: BestOfProvinceDto[];
 
     @IsOptional()
     @IsArray()

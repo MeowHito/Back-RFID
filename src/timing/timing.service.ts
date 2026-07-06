@@ -246,7 +246,19 @@ export class TimingService {
         } else if (isFinish) {
             updateData.finishTime = scanData.scanTime;
             updateData.netTime = elapsedTime;
-            updateData.status = 'finished';
+            // Auto-DQ (mirrors the manual admin action): a runner who reaches FINISH but never
+            // crossed START is disqualified. Guarded by eventHasStartRecords() so gun-start events
+            // with no START mat are never affected. Manually-set statuses are left untouched.
+            const crossedStart = !!runner.startTime
+                || existingRecords.some(r => String(r.checkpoint || '').toUpperCase() === 'START');
+            if (!crossedStart && !isManuallySet && await this.eventHasStartRecords(scanData.eventId)) {
+                updateData.status = 'dq';
+                updateData.statusChangedBy = 'auto-dq-no-start';
+                updateData.statusChangedAt = new Date();
+                updateData.statusNote = 'Auto DQ: finished without a START record';
+            } else {
+                updateData.status = 'finished';
+            }
         } else if (runner.status === 'not_started' || isAutoStoppedByScheduler) {
             // not_started → first scan brings them into the race.
             // dns/dnf-by-scheduler → revert when they actually scan a CP (safety net for the
@@ -284,6 +296,15 @@ export class TimingService {
             await this.runnersService.updateRankings(eventId, category).catch(console.error);
         }, 500);
         this.rankingDebounceTimers.set(key, timer);
+    }
+
+    /** True if any runner in the event has a START timing record (i.e. the event uses a START line). */
+    private async eventHasStartRecords(eventId: string): Promise<boolean> {
+        const one = await this.timingModel.findOne({
+            eventId: new Types.ObjectId(eventId),
+            $expr: { $eq: [{ $toUpper: '$checkpoint' }, 'START'] },
+        }).select('_id').lean().exec();
+        return !!one;
     }
 
     async getRunnerRecords(eventId: string, runnerId: string): Promise<TimingRecordDocument[]> {

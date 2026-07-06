@@ -649,6 +649,64 @@ export class RunnersService {
     }
 
     /**
+     * Auto-DQ finishers who never crossed the START line — the automatic equivalent of an
+     * admin manually setting DQ for a "finished but no Start" runner.
+     *
+     * A runner is set to 'dq' when their status is an AUTO 'finished' (isManualStatus !== true)
+     * and they have no timing record at a START checkpoint. Manually-set statuses are never
+     * touched, and we intentionally do NOT set isManualStatus, so if a START record arrives
+     * later the normal sync/scan promotion restores them to 'finished'.
+     *
+     * Safety guard: if not a single runner in the event has a START record (e.g. a gun-start
+     * event with no START mat, or RaceTiger naming the start split something else), the rule is
+     * skipped entirely so we never disqualify a whole field.
+     *
+     * @param startNames START checkpoint names to match, case-insensitive (defaults to ['START'])
+     * @returns number of runners newly set to DQ
+     */
+    async autoDqFinishersWithoutStart(eventId: string, startNames: string[] = ['START']): Promise<number> {
+        if (!Types.ObjectId.isValid(eventId)) return 0;
+        const eventOid = new Types.ObjectId(eventId);
+        const upperNames = Array.from(new Set(startNames.map(n => String(n || '').toUpperCase()).filter(Boolean)));
+        if (upperNames.length === 0) upperNames.push('START');
+
+        // runnerIds that have a START timing record (checkpoint name matched case-insensitively)
+        const started = await this.timingModel.aggregate([
+            { $match: { eventId: eventOid } },
+            { $project: { runnerId: 1, cp: { $toUpper: '$checkpoint' } } },
+            { $match: { cp: { $in: upperNames } } },
+            { $group: { _id: '$runnerId' } },
+        ]);
+        const startedIds = new Set(started.map((r: { _id: unknown }) => String(r._id)));
+        // No START records anywhere → this event has no start line to miss. Never DQ.
+        if (startedIds.size === 0) return 0;
+
+        const finishers = await this.runnerModel.find({
+            eventId: eventOid,
+            status: 'finished',
+            isManualStatus: { $ne: true },
+        }).select('_id').lean().exec() as Array<{ _id: Types.ObjectId }>;
+
+        const toDqIds = finishers
+            .map(r => r._id)
+            .filter(id => !startedIds.has(String(id)));
+        if (toDqIds.length === 0) return 0;
+
+        const res = await this.runnerModel.updateMany(
+            { _id: { $in: toDqIds } },
+            {
+                $set: {
+                    status: 'dq',
+                    statusChangedBy: 'auto-dq-no-start',
+                    statusChangedAt: new Date(),
+                    statusNote: 'Auto DQ: finished without a START record',
+                },
+            },
+        ).exec();
+        return res.modifiedCount || 0;
+    }
+
+    /**
      * Direct $set of derived/aggregate fields without triggering the FINISH
      * TimingRecord mirror logic that update() performs. Intended for callers
      * (e.g. TimingService) that are already the source of truth for these

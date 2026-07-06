@@ -2011,6 +2011,16 @@ export class SyncService {
                 } catch { /* checkpoints may not exist yet */ }
                 // Fallback: if no 'finish' type checkpoint, detect by name containing 'FINISH'
                 if (finishCpNames.size === 0) finishCpNames.add('FINISH');
+                // START checkpoint names — used by the auto-DQ (finished-without-start) enforcement below.
+                const startCpNames = new Set<string>();
+                try {
+                    const campaignCps = await this.checkpointsService.findByCampaign(campaignId);
+                    for (const cp of campaignCps) {
+                        const cpObj = cp as any;
+                        if (cpObj.type === 'start') startCpNames.add((cpObj.name || '').toUpperCase());
+                    }
+                } catch { /* checkpoints may not exist yet */ }
+                if (startCpNames.size === 0) startCpNames.add('START');
 
                 const runnerPassedOps = Array.from(lapAccByRunner.entries()).map(([rId, acc]) => {
                     const validSplits = acc.splitTimes.filter(s => s > 0);
@@ -2061,6 +2071,20 @@ export class SyncService {
                     await this.runnersService.bulkUpdateTiming(runnerPassedOps);
                     this.logger.log(`  Split sync: updated passedCount + latestCheckpoint + lap stats on ${runnerPassedOps.length} runners`);
                 }
+
+                // Auto-DQ: finishers who never crossed START. Runs last in the sync cycle (split
+                // sync executes after score sync), so the DQ sticks. Applied per event.
+                const startNameList = [...startCpNames];
+                const eventIdsInSync = [...new Set(allRunners.map(r => String(r.eventId)).filter(Boolean))];
+                let autoDqTotal = 0;
+                for (const evId of eventIdsInSync) {
+                    try {
+                        autoDqTotal += await this.runnersService.autoDqFinishersWithoutStart(evId, startNameList);
+                    } catch (e: any) {
+                        this.logger.warn(`  Auto-DQ (no START) failed for event ${evId}: ${e?.message}`);
+                    }
+                }
+                if (autoDqTotal > 0) this.logger.log(`  Auto-DQ (no START): ${autoDqTotal} finisher(s) set to DQ`);
             }
         } catch (err: any) {
             result.errors.push(err?.message || 'syncSplitTimingRecords failed');
