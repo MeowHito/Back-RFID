@@ -966,11 +966,14 @@ export class RunnersService {
 
         if (runners.length === 0) return;
 
-        // Ranking convention: Overall, Gender and Age-group are ALL decided by GUN time.
-        // Overall is a single combined list (no gender / nationality split). Locally-timed
-        // events only store netTime, so the key falls back to netTime when gunTime is 0.
+        // Ranking convention: Overall + Gender placings are decided by GUN time, while
+        // Age-group placing is decided by NET (chip) time. Overall is a single combined
+        // list (no gender / nationality split). Locally-timed events only store netTime,
+        // so each key falls back to the other time when its own is 0.
         const gunKey = (r: any) => (r.gunTime && r.gunTime > 0 ? r.gunTime : (r.netTime && r.netTime > 0 ? r.netTime : Infinity));
+        const netKey = (r: any) => (r.netTime && r.netTime > 0 ? r.netTime : (r.gunTime && r.gunTime > 0 ? r.gunTime : Infinity));
         const byGun = [...runners].sort((a, b) => gunKey(a) - gunKey(b));
+        const byNet = [...runners].sort((a, b) => netKey(a) - netKey(b));
 
         // Build a map: runnerId -> { overallRank, genderRank, ageGroupRank }
         const rankMap = new Map<string, { overallRank: number; genderRank: number; ageGroupRank: number }>();
@@ -991,11 +994,11 @@ export class RunnersService {
             }
         }
 
-        // Age group rankings — by GUN time, scoped per gender so M40-49 and F40-49 rank separately
-        const ageGroupGenderKeys = [...new Set(byGun.map(r => `${r.gender || ''}::${r.ageGroup || ''}`))];
+        // Age group rankings — by NET time, scoped per gender so M40-49 and F40-49 rank separately
+        const ageGroupGenderKeys = [...new Set(byNet.map(r => `${r.gender || ''}::${r.ageGroup || ''}`))];
         for (const key of ageGroupGenderKeys) {
             const [gender, ageGroup] = key.split('::');
-            const groupRunners = byGun.filter(r => (r.gender || '') === gender && (r.ageGroup || '') === ageGroup);
+            const groupRunners = byNet.filter(r => (r.gender || '') === gender && (r.ageGroup || '') === ageGroup);
             for (let i = 0; i < groupRunners.length; i++) {
                 rankMap.get(groupRunners[i]._id.toString())!.ageGroupRank = i + 1;
             }
