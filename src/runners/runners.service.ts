@@ -7,7 +7,7 @@ import { CreateRunnerDto } from './dto/create-runner.dto';
 import { Event, EventDocument } from '../events/event.schema';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
 import { Campaign, CampaignDocument } from '../campaigns/campaign.schema';
-import { isThaiNationality, isNationalitySplitCategory } from '../common/nationality.util';
+import { isThaiNationality } from '../common/nationality.util';
 
 // Bio fields an admin can hand-edit via PUT /runners/:id that a RaceTiger re-import would otherwise clobber
 export const PROTECTED_BIO_FIELDS = [
@@ -966,19 +966,11 @@ export class RunnersService {
 
         if (runners.length === 0) return;
 
-        // Ranking convention: Overall placing is decided by GUN time, while Gender and
-        // Age-group placings are decided by NET (chip) time. Locally-timed events only
-        // store netTime, so each key falls back to the other time when its own is 0.
+        // Ranking convention: Overall, Gender and Age-group are ALL decided by GUN time.
+        // Overall is a single combined list (no gender / nationality split). Locally-timed
+        // events only store netTime, so the key falls back to netTime when gunTime is 0.
         const gunKey = (r: any) => (r.gunTime && r.gunTime > 0 ? r.gunTime : (r.netTime && r.netTime > 0 ? r.netTime : Infinity));
-        const netKey = (r: any) => (r.netTime && r.netTime > 0 ? r.netTime : (r.gunTime && r.gunTime > 0 ? r.gunTime : Infinity));
         const byGun = [...runners].sort((a, b) => gunKey(a) - gunKey(b));
-        const byNet = [...runners].sort((a, b) => netKey(a) - netKey(b));
-
-        // When this category is one of the campaign's nationality-split categories, the
-        // Overall rank is scoped to the runner's nationality group (Thai vs foreign).
-        // Gender and age-group rankings stay combined.
-        const splitCategories = await this.getNationalitySplitCategories(eventId);
-        const separateByNationality = isNationalitySplitCategory(splitCategories, category);
 
         // Build a map: runnerId -> { overallRank, genderRank, ageGroupRank }
         const rankMap = new Map<string, { overallRank: number; genderRank: number; ageGroupRank: number }>();
@@ -986,33 +978,24 @@ export class RunnersService {
             rankMap.set(runner._id.toString(), { overallRank: 0, genderRank: 0, ageGroupRank: 0 });
         }
 
-        // Overall ranking — by GUN time
-        if (separateByNationality) {
-            const overallCounters: Record<'thai' | 'foreign', number> = { thai: 0, foreign: 0 };
-            for (const runner of byGun) {
-                const key = isThaiNationality(runner.nationality) ? 'thai' : 'foreign';
-                overallCounters[key] += 1;
-                rankMap.get(runner._id.toString())!.overallRank = overallCounters[key];
-            }
-        } else {
-            for (let i = 0; i < byGun.length; i++) {
-                rankMap.get(byGun[i]._id.toString())!.overallRank = i + 1;
-            }
+        // Overall ranking — by GUN time, combined across both genders and all nationalities
+        for (let i = 0; i < byGun.length; i++) {
+            rankMap.get(byGun[i]._id.toString())!.overallRank = i + 1;
         }
 
-        // Gender rankings — by NET time
+        // Gender rankings — by GUN time
         for (const gender of ['M', 'F']) {
-            const genderRunners = byNet.filter(r => r.gender === gender);
+            const genderRunners = byGun.filter(r => r.gender === gender);
             for (let i = 0; i < genderRunners.length; i++) {
                 rankMap.get(genderRunners[i]._id.toString())!.genderRank = i + 1;
             }
         }
 
-        // Age group rankings — by NET time, scoped per gender so M40-49 and F40-49 rank separately
-        const ageGroupGenderKeys = [...new Set(byNet.map(r => `${r.gender || ''}::${r.ageGroup || ''}`))];
+        // Age group rankings — by GUN time, scoped per gender so M40-49 and F40-49 rank separately
+        const ageGroupGenderKeys = [...new Set(byGun.map(r => `${r.gender || ''}::${r.ageGroup || ''}`))];
         for (const key of ageGroupGenderKeys) {
             const [gender, ageGroup] = key.split('::');
-            const groupRunners = byNet.filter(r => (r.gender || '') === gender && (r.ageGroup || '') === ageGroup);
+            const groupRunners = byGun.filter(r => (r.gender || '') === gender && (r.ageGroup || '') === ageGroup);
             for (let i = 0; i < groupRunners.length; i++) {
                 rankMap.get(groupRunners[i]._id.toString())!.ageGroupRank = i + 1;
             }
