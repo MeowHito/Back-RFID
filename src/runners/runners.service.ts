@@ -334,7 +334,7 @@ export class RunnersService {
             email: 1, phone: 1, idNo: 1, birthDate: 1,
             emergencyContact: 1, emergencyPhone: 1, medicalInfo: 1,
             bloodType: 1, chronicDiseases: 1, address: 1, province: 1, sourceFile: 1,
-            netTime: 1, gunTime: 1, netTimeStr: 1, gunTimeStr: 1,
+            netTime: 1, gunTime: 1, netTimeStr: 1, gunTimeStr: 1, finishTime: 1, lastPassTime: 1,
             overallRank: 1, genderRank: 1, ageGroupRank: 1, categoryRank: 1,
         };
 
