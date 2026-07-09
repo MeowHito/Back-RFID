@@ -93,6 +93,7 @@ function dedupeCheckpointRunnerRecords<T extends { _id?: any; scanTime?: string 
     return Array.from(deduped.values());
 }
 
+// Net-first time (used for Age-group / CAT ranking — matches /event/[id] liveRanks).
 function getCheckpointRankPrimaryTimeMs(record: any): number {
     const candidates = [
         record?.netTimeMs,
@@ -112,48 +113,76 @@ function getCheckpointRankPrimaryTimeMs(record: any): number {
     return 0;
 }
 
+// Gun-first time (used for Overall + Gender ranking — matches /event/[id] liveRanks).
+function getCheckpointRankGunTimeMs(record: any): number {
+    const candidates = [
+        record?.gunTimeMs,
+        record?.totalGunTimeMs,
+        record?.totalGunTime,
+        record?.gunTime,
+        record?.netTimeMs,
+        record?.totalNetTimeMs,
+        record?.totalNetTime,
+        record?.netTime,
+        record?.elapsedTime,
+    ];
+    for (const value of candidates) {
+        const num = Number(value || 0);
+        if (Number.isFinite(num) && num > 0) return num;
+    }
+    return 0;
+}
+
 function compareCheckpointStableBib(a: any, b: any): number {
     const bibCompare = String(a?.bib || '').localeCompare(String(b?.bib || ''), undefined, { numeric: true });
     if (bibCompare !== 0) return bibCompare;
     return String(a?._id || '').localeCompare(String(b?._id || ''));
 }
 
-function compareCheckpointRaceRankOrder(a: any, b: any): number {
-    const statusOrder: Record<string, number> = { finished: 0, in_progress: 1, dnf: 2, dns: 3, dq: 4, not_started: 5 };
-    const aStatus = String(a?.status || '').toLowerCase();
-    const bStatus = String(b?.status || '').toLowerCase();
-    const statusDiff = (statusOrder[aStatus] ?? 6) - (statusOrder[bStatus] ?? 6);
-    if (statusDiff !== 0) return statusDiff;
+// Ranking comparator parametrized by the primary time extractor, so Overall/Gender
+// can rank by GUN time while Age-group ranks by NET time — matching /event/[id].
+function makeCheckpointRankComparator(getTime: (record: any) => number) {
+    return function (a: any, b: any): number {
+        const statusOrder: Record<string, number> = { finished: 0, in_progress: 1, dnf: 2, dns: 3, dq: 4, not_started: 5 };
+        const aStatus = String(a?.status || '').toLowerCase();
+        const bStatus = String(b?.status || '').toLowerCase();
+        const statusDiff = (statusOrder[aStatus] ?? 6) - (statusOrder[bStatus] ?? 6);
+        if (statusDiff !== 0) return statusDiff;
 
-    if (aStatus === 'finished' && bStatus === 'finished') {
-        const aTime = getCheckpointRankPrimaryTimeMs(a);
-        const bTime = getCheckpointRankPrimaryTimeMs(b);
-        if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
-        if (aTime > 0 && bTime <= 0) return -1;
-        if (aTime <= 0 && bTime > 0) return 1;
-        const aScan = getCheckpointRunnerScanTimeValue(a?.scanTime);
-        const bScan = getCheckpointRunnerScanTimeValue(b?.scanTime);
-        if (aScan !== bScan) return aScan - bScan;
+        if (aStatus === 'finished' && bStatus === 'finished') {
+            const aTime = getTime(a);
+            const bTime = getTime(b);
+            if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
+            if (aTime > 0 && bTime <= 0) return -1;
+            if (aTime <= 0 && bTime > 0) return 1;
+            const aScan = getCheckpointRunnerScanTimeValue(a?.scanTime);
+            const bScan = getCheckpointRunnerScanTimeValue(b?.scanTime);
+            if (aScan !== bScan) return aScan - bScan;
+            return compareCheckpointStableBib(a, b);
+        }
+
+        if (aStatus === 'in_progress' && bStatus === 'in_progress') {
+            const aPassed = Number(a?.passedCount ?? 0);
+            const bPassed = Number(b?.passedCount ?? 0);
+            if (aPassed !== bPassed) return bPassed - aPassed;
+            const aTime = getTime(a);
+            const bTime = getTime(b);
+            if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
+            if (aTime > 0 && bTime <= 0) return -1;
+            if (aTime <= 0 && bTime > 0) return 1;
+            const aScan = getCheckpointRunnerScanTimeValue(a?.scanTime);
+            const bScan = getCheckpointRunnerScanTimeValue(b?.scanTime);
+            if (aScan !== bScan) return aScan - bScan;
+            return compareCheckpointStableBib(a, b);
+        }
+
         return compareCheckpointStableBib(a, b);
-    }
-
-    if (aStatus === 'in_progress' && bStatus === 'in_progress') {
-        const aPassed = Number(a?.passedCount ?? 0);
-        const bPassed = Number(b?.passedCount ?? 0);
-        if (aPassed !== bPassed) return bPassed - aPassed;
-        const aTime = getCheckpointRankPrimaryTimeMs(a);
-        const bTime = getCheckpointRankPrimaryTimeMs(b);
-        if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
-        if (aTime > 0 && bTime <= 0) return -1;
-        if (aTime <= 0 && bTime > 0) return 1;
-        const aScan = getCheckpointRunnerScanTimeValue(a?.scanTime);
-        const bScan = getCheckpointRunnerScanTimeValue(b?.scanTime);
-        if (aScan !== bScan) return aScan - bScan;
-        return compareCheckpointStableBib(a, b);
-    }
-
-    return compareCheckpointStableBib(a, b);
+    };
 }
+
+// Overall + Gender rank by GUN time; Age-group (CAT) rank by NET time.
+const compareCheckpointGunRankOrder = makeCheckpointRankComparator(getCheckpointRankGunTimeMs);
+const compareCheckpointNetRankOrder = makeCheckpointRankComparator(getCheckpointRankPrimaryTimeMs);
 
 @Injectable()
 export class TimingService {
@@ -677,37 +706,35 @@ export class TimingService {
                 const status = String(runner?.status || '').toLowerCase();
                 return status === 'finished' || status === 'in_progress';
             });
+            // Rank ordering mirrors /event/[id] liveRanks:
+            //  • Overall + Gender by GUN time, scoped PER EVENT (each distance ranks separately)
+            //  • Age-group (CAT) by NET time, scoped per event + gender + ageGroup
+            const eventKeyOf = (runner: any) => String(runner?.eventId || '_');
+            const genderKeyOf = (runner: any) => String(runner?.gender || '_').toUpperCase();
+
             const overallRankMap = new Map<string, number>();
-            [...rankable].sort(compareCheckpointRaceRankOrder).forEach((runner: any, index: number) => {
-                overallRankMap.set(String(runner?.bib || ''), index + 1);
-            });
             const genderRankMap = new Map<string, number>();
-            const genderGroups = new Map<string, any[]>();
-            rankable.forEach((runner: any) => {
-                const gender = String(runner?.gender || '').toUpperCase();
-                if (!genderGroups.has(gender)) genderGroups.set(gender, []);
-                genderGroups.get(gender)!.push(runner);
+            const overallCounters = new Map<string, number>();
+            const genderCounters = new Map<string, number>();
+            [...rankable].sort(compareCheckpointGunRankOrder).forEach((runner: any) => {
+                const bib = String(runner?.bib || '');
+                const eventKey = eventKeyOf(runner);
+                const genderKey = `${eventKey}::${genderKeyOf(runner)}`;
+                overallCounters.set(eventKey, (overallCounters.get(eventKey) || 0) + 1);
+                genderCounters.set(genderKey, (genderCounters.get(genderKey) || 0) + 1);
+                overallRankMap.set(bib, overallCounters.get(eventKey)!);
+                genderRankMap.set(bib, genderCounters.get(genderKey)!);
             });
-            genderGroups.forEach((group) => {
-                group.sort(compareCheckpointRaceRankOrder).forEach((runner, index) => {
-                    genderRankMap.set(String(runner?.bib || ''), index + 1);
-                });
-            });
-            // Category (CAT) rank is scoped to gender + ageGroup so M and F rank separately.
+            // Category (CAT) rank by NET time, scoped to event + gender + ageGroup so
+            // M40-49 and F40-49 (and different distances) rank separately.
             const categoryRankMap = new Map<string, number>();
-            const categoryGroups = new Map<string, any[]>();
-            rankable.forEach((runner: any) => {
+            const categoryCounters = new Map<string, number>();
+            [...rankable].sort(compareCheckpointNetRankOrder).forEach((runner: any) => {
                 const ageGroup = String(runner?.ageGroup || '');
                 if (!ageGroup) return;
-                const gender = String(runner?.gender || '').toUpperCase();
-                const catKey = `${gender}::${ageGroup}`;
-                if (!categoryGroups.has(catKey)) categoryGroups.set(catKey, []);
-                categoryGroups.get(catKey)!.push(runner);
-            });
-            categoryGroups.forEach((group) => {
-                group.sort(compareCheckpointRaceRankOrder).forEach((runner, index) => {
-                    categoryRankMap.set(String(runner?.bib || ''), index + 1);
-                });
+                const catKey = `${eventKeyOf(runner)}::${genderKeyOf(runner)}::${ageGroup}`;
+                categoryCounters.set(catKey, (categoryCounters.get(catKey) || 0) + 1);
+                categoryRankMap.set(String(runner?.bib || ''), categoryCounters.get(catKey)!);
             });
             const applyRaceRanks = (record: any, bib: string) => {
                 record.overallRank = overallRankMap.get(bib) || 0;
