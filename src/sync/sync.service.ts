@@ -596,6 +596,26 @@ export class SyncService {
         }
         return eventResolver.fallbackEventId;
     }
+    /**
+     * Detect if a RaceTiger "Category" value is actually an age group rather than a
+     * race distance. Age group patterns: "XX-XX", "M XX-XX", "F XX-XX", "U18", "U19",
+     * "M U18", "70+", "Under 18", "60&Over", "60 & Up", "Over 60", "60 ขึ้นไป".
+     */
+    private isAgeGroupLabel(value: string): boolean {
+        return /^[MF]?\s*\d{1,2}\s*[-+]/.test(value)
+            || /^\d{1,2}\s*-\s*\d{1,2}$/.test(value)
+            || /^[MF]?\s*U\s*\d{1,2}\b/i.test(value)
+            || /^[MF]?\s*under\s*\d{1,3}\b/i.test(value)
+            || /^[MF]?\s*\d{1,3}\s*(?:&|and\b)?\s*(?:over|up|ขึ้นไป)/i.test(value)
+            || /^[MF]?\s*(?:over|above)\s*\d{1,3}\b/i.test(value);
+    }
+    /** Age group for a BIO row: prefer Category2, then AgeGroup field, then Category if it looks like an age group. */
+    private extractAgeGroupFromBioRow(row: any): string {
+        const rawCategory = this.toSafeString(row?.Category ?? row?.category);
+        return this.toSafeString(row?.Category2 ?? row?.category2)
+            || this.toSafeString(row?.AgeGroup ?? row?.ageGroup)
+            || (this.isAgeGroupLabel(rawCategory) ? rawCategory : '');
+    }
     private mapBioRowToRunner(
         row: any,
         eventResolver: EventResolver,
@@ -623,12 +643,7 @@ export class SyncService {
             : { firstName: '', lastName: '' };
         const parsedAge = this.parseDistanceValue(row?.Age ?? row?.age);
         const rawCategory = this.toSafeString(row?.Category ?? row?.category);
-        const rawCategory2 = this.toSafeString(row?.Category2 ?? row?.category2);
-        // Detect if RaceTiger "Category" is actually an age group (e.g. "45-49", "M 30-39", "F U18", "U19")
-        // Age group patterns: "XX-XX", "M XX-XX", "F XX-XX", "U18", "U19", "M U18", "70+", etc.
-        const isAgeGroupPattern = /^[MF]?\s*\d{1,2}\s*[-+]/.test(rawCategory)
-            || /^\d{1,2}\s*-\s*\d{1,2}$/.test(rawCategory)
-            || /^[MF]?\s*U\s*\d{1,2}\b/i.test(rawCategory);
+        const isAgeGroupPattern = this.isAgeGroupLabel(rawCategory);
         // Category (race distance) should ALWAYS come from the local event mapping, not from RaceTiger's Category field
         // because RaceTiger often puts age groups in Category and has no distance field per runner
         const eventCategory = eventResolver.categoryByEventId.get(eventId);
@@ -642,11 +657,7 @@ export class SyncService {
         } else {
             category = 'General';
         }
-        // Age group: prefer Category2, then AgeGroup field, then Category if it looks like an age group
-        const ageGroup = rawCategory2
-            || this.toSafeString(row?.AgeGroup ?? row?.ageGroup)
-            || (isAgeGroupPattern ? rawCategory : '')
-            || undefined;
+        const ageGroup = this.extractAgeGroupFromBioRow(row) || undefined;
         const chipCode = this.toSafeString(
             row?.ChipCode ?? row?.chipCode ?? row?.Chipcode ?? row?.chipcode
             ?? row?.chip_code ?? row?.Chip_Code ?? row?.CHIPCODE
@@ -941,6 +952,70 @@ export class SyncService {
             preview: latest.errorDetails?.preview,
         };
     }
+    /**
+     * Live per-age-group member counts straight from RaceTiger BIO (NOT from our DB),
+     * so admins can verify synced runner counts against RaceTiger's Categories screen
+     * (Number of members / men / women per age group).
+     */
+    async getRaceTigerCategoryCounts(campaignId: string): Promise<any> {
+        const campaign = await this.getSyncEnabledCampaign(campaignId);
+        const eventResolver = await this.buildEventResolver(campaignId);
+        const maxPages = Number(this.configService.get<string>('RACE_TIGER_MAX_BIO_PAGES') || 200);
+        type GroupCount = { ageGroup: string; members: number; men: number; women: number };
+        // category label -> ageGroup label -> counts
+        const byCategory = new Map<string, Map<string, GroupCount>>();
+        let totalExpected = Infinity;
+        let totalFetched = 0;
+        for (let page = 1; page <= maxPages; page++) {
+            const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page);
+            if (!response.ok) {
+                throw new BadGatewayException(`RaceTiger returned status ${response.status}`);
+            }
+            const rows = this.extractRowsFromPayload(parsedBody);
+            if (!rows.length) break;
+            const apiTotal = this.parseNumericValue(parsedBody?.total);
+            if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
+            totalFetched += rows.length;
+            for (const row of rows) {
+                const localEventId = this.resolveEventIdFromBioRow(row, eventResolver);
+                const raceTigerEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+                const categoryLabel = (localEventId ? eventResolver.categoryByEventId.get(localEventId) : '')
+                    || (raceTigerEventId !== null ? `Event ${raceTigerEventId}` : 'Unknown');
+                // Empty label = runner has no age group in RaceTiger; kept as its own row
+                const ageGroup = this.extractAgeGroupFromBioRow(row);
+                let groups = byCategory.get(categoryLabel);
+                if (!groups) {
+                    groups = new Map<string, GroupCount>();
+                    byCategory.set(categoryLabel, groups);
+                }
+                let group = groups.get(ageGroup);
+                if (!group) {
+                    group = { ageGroup, members: 0, men: 0, women: 0 };
+                    groups.set(ageGroup, group);
+                }
+                group.members += 1;
+                if (this.normalizeGender(row?.Gender ?? row?.gender) === 'F') group.women += 1;
+                else group.men += 1;
+            }
+            if (totalFetched >= totalExpected) break;
+        }
+        const categories = [...byCategory.entries()].map(([category, groups]) => {
+            const groupList = [...groups.values()];
+            return {
+                category,
+                members: groupList.reduce((sum, g) => sum + g.members, 0),
+                men: groupList.reduce((sum, g) => sum + g.men, 0),
+                women: groupList.reduce((sum, g) => sum + g.women, 0),
+                groups: groupList,
+            };
+        });
+        return {
+            fetchedAt: new Date().toISOString(),
+            totalRunners: totalFetched,
+            categories,
+        };
+    }
+
     async previewRaceTigerData(
         campaignId: string,
         type: RaceTigerRequestType = 'info',

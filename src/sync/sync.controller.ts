@@ -85,6 +85,16 @@ export class SyncController {
         return this.successResponse(data);
     }
 
+    /** Age groups + member counts per race category, straight from RaceTiger BIO (for verifying synced data) */
+    @Get('racetiger-category-counts')
+    async getRaceTigerCategoryCounts(
+        @Headers() headers: Record<string, string>,
+        @Query('id') id: string,
+    ) {
+        const data = await this.syncService.getRaceTigerCategoryCounts(id);
+        return this.successResponse(data);
+    }
+
     @Get('latest-payload')
     async getLatestPayload(
         @Headers() headers: Record<string, string>,
