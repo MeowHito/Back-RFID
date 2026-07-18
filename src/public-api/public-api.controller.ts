@@ -986,33 +986,66 @@ export class PublicApiController {
      * BIB is unique per event; findByAnyCodeGlobal scopes the lookup to the
      * campaign's events, so a BIB reused across distances still resolves.
      */
+    /** Shared BIB→runner resolver for the pretty e-slip routes. Returns the runner
+     *  doc (or null), scoped to the campaign's events, preferring a finished runner. */
+    private async resolveEslipRunner(slug: string, bib: string): Promise<any | null> {
+        const campaign = await this.campaignsService.findById(slug).catch(() => null);
+        if (!campaign) return null;
+        const campaignId = String((campaign as any)._id);
+        const cleanBib = (bib || '').trim();
+
+        // Exact-BIB match across every event (distance) in the campaign. BIB is
+        // unique per event but may repeat across distances, so prefer a finished
+        // runner (the one who actually has an e-slip) when there is a collision.
+        const events = await this.eventsService.findByCampaign(campaignId).catch(() => []);
+        let runner: any = null;
+        for (const event of events) {
+            const match = await this.runnersService.findByBib(String((event as any)._id), cleanBib);
+            if (!match) continue;
+            if (!runner) runner = match;
+            if (String((match as any).status || '').toLowerCase() === 'finished') { runner = match; break; }
+        }
+
+        // Fall back to the fuzzy code lookup (chipCode / printingCode / rfidTag)
+        // so QR/chip-style values still resolve when no exact BIB matches.
+        if (!runner) {
+            runner = await this.runnersService.findByAnyCodeGlobal(cleanBib, campaignId);
+        }
+        return runner;
+    }
+
     @Get('eslip/:slug/:bib')
     async getEslipByBib(@Param('slug') slug: string, @Param('bib') bib: string) {
         try {
-            const campaign = await this.campaignsService.findById(slug).catch(() => null);
-            if (!campaign) return this.errorResponse('404', 'Event not found');
-            const campaignId = String((campaign as any)._id);
-            const cleanBib = (bib || '').trim();
-
-            // Exact-BIB match across every event (distance) in the campaign. BIB is
-            // unique per event but may repeat across distances, so prefer a finished
-            // runner (the one who actually has an e-slip) when there is a collision.
-            const events = await this.eventsService.findByCampaign(campaignId).catch(() => []);
-            let runner: any = null;
-            for (const event of events) {
-                const match = await this.runnersService.findByBib(String((event as any)._id), cleanBib);
-                if (!match) continue;
-                if (!runner) runner = match;
-                if (String((match as any).status || '').toLowerCase() === 'finished') { runner = match; break; }
-            }
-
-            // Fall back to the fuzzy code lookup (chipCode / printingCode / rfidTag)
-            // so QR/chip-style values still resolve when no exact BIB matches.
-            if (!runner) {
-                runner = await this.runnersService.findByAnyCodeGlobal(cleanBib, campaignId);
-            }
+            const runner = await this.resolveEslipRunner(slug, bib);
             if (!runner) return this.errorResponse('404', 'Runner not found');
             return this.getRunnerProfile(String((runner as any)._id));
+        } catch (error) {
+            return this.errorResponse('500', error.message);
+        }
+    }
+
+    /** Record that a runner's e-slip was downloaded/saved. Called by the client when
+     *  the user saves or shares their e-slip image. Bumps a per-runner counter. */
+    @Post('runner/:id/eslip-download')
+    async recordEslipDownload(@Param('id') id: string) {
+        try {
+            const count = await this.runnersService.incrementEslipDownload(id);
+            return this.successResponse({ downloadCount: count });
+        } catch (error) {
+            return this.errorResponse('500', error.message);
+        }
+    }
+
+    /** Aggregate e-slip download stats for a whole campaign (all distances).
+     *  Used by the /event results page to show how many people saved their e-slip. */
+    @Get('eslip-stats/:slug')
+    async getEslipStats(@Param('slug') slug: string) {
+        try {
+            const campaign = await this.campaignsService.findById(slug).catch(() => null);
+            if (!campaign) return this.errorResponse('404', 'Event not found');
+            const stats = await this.runnersService.getEslipDownloadStats(String((campaign as any)._id));
+            return this.successResponse(stats);
         } catch (error) {
             return this.errorResponse('500', error.message);
         }

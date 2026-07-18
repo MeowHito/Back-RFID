@@ -563,6 +563,46 @@ export class RunnersService {
         });
     }
 
+    /** Record an e-slip download for a runner: bump the counter and stamp the time.
+     *  Returns the new download count (0 if the runner id is invalid/not found). */
+    async incrementEslipDownload(runnerId: string): Promise<number> {
+        if (!runnerId || !Types.ObjectId.isValid(runnerId)) return 0;
+        const updated = await this.runnerModel
+            .findByIdAndUpdate(
+                runnerId,
+                { $inc: { eslipDownloadCount: 1 }, $set: { eslipLastDownloadedAt: new Date() } },
+                { new: true },
+            )
+            .select('eslipDownloadCount')
+            .lean()
+            .exec();
+        return (updated as any)?.eslipDownloadCount || 0;
+    }
+
+    /** Aggregate e-slip download stats across every event in a campaign (or a single event).
+     *  totalDownloads = sum of all downloads; uniqueRunners = distinct runners downloaded ≥1. */
+    async getEslipDownloadStats(
+        campaignOrEventId: string,
+    ): Promise<{ totalDownloads: number; uniqueRunners: number }> {
+        const eventIds = await this.resolveLookupEventIds(campaignOrEventId);
+        if (!eventIds.length) return { totalDownloads: 0, uniqueRunners: 0 };
+        const result = await this.runnerModel.aggregate([
+            { $match: { eventId: { $in: eventIds }, eslipDownloadCount: { $gt: 0 } } },
+            {
+                $group: {
+                    _id: null,
+                    totalDownloads: { $sum: '$eslipDownloadCount' },
+                    uniqueRunners: { $sum: 1 },
+                },
+            },
+        ]);
+        const row = result[0] || {};
+        return {
+            totalDownloads: row.totalDownloads || 0,
+            uniqueRunners: row.uniqueRunners || 0,
+        };
+    }
+
     /** Global lookup: find runner by BIB, chipCode, printingCode or rfidTag (case-insensitive).
      *  RFID scanners output the full tag (e.g. 24 hex chars) but the DB may store
      *  only the last 8 chars as chipCode. Handles both directions of partial matching.

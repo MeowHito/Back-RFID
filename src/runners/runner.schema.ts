@@ -220,6 +220,13 @@ export class Runner {
 
     @Prop()
     lastEditedAt: Date; // when the last manual edit happened
+
+    // === E-Slip download tracking ===
+    @Prop({ default: 0 })
+    eslipDownloadCount: number; // how many times this runner's e-slip was downloaded/saved
+
+    @Prop()
+    eslipLastDownloadedAt: Date; // timestamp of the most recent e-slip download
 }
 
 export const RunnerSchema = SchemaFactory.createForClass(Runner);
