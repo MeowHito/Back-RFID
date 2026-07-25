@@ -33,7 +33,7 @@ export class RouteTrack {
     @Prop()
     fileName: string;
 
-    /** [[lat, lng, cumulativeKm], ...] */
+    /** [[lat, lng, cumulativeKm, elevationM?], ...] — elevation only when the GPX had one. */
     @Prop({ type: [[Number]], default: [] })
     coords: number[][];
 

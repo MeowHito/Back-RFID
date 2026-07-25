@@ -14,7 +14,11 @@ export class RoutesService {
         private routeModel: Model<RouteTrackDocument>,
     ) { }
 
-    /** Keep only well-formed [lat, lng, km?] triples inside real-world ranges. */
+    /**
+     * Keep only well-formed [lat, lng, km?, ele?] points inside real-world ranges.
+     * The optional 4th slot is elevation in metres — it drives the 2D course
+     * profile, and is simply absent for files (or older uploads) without one.
+     */
     private sanitizeCoords(coords: unknown): number[][] {
         if (!Array.isArray(coords)) return [];
         const out: number[][] = [];
@@ -23,9 +27,13 @@ export class RoutesService {
             const lat = Number(p[0]);
             const lng = Number(p[1]);
             const km = p.length > 2 ? Number(p[2]) : 0;
+            const ele = p.length > 3 ? Number(p[3]) : NaN;
             if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
             if (lat < -90 || lat > 90 || lng < -180 || lng > 180) continue;
-            out.push([lat, lng, Number.isFinite(km) ? km : 0]);
+            const point = [lat, lng, Number.isFinite(km) ? km : 0];
+            // Guard against nonsense altitudes (Dead Sea to above Everest).
+            if (Number.isFinite(ele) && ele > -500 && ele < 9000) point.push(ele);
+            out.push(point);
             if (out.length >= MAX_POINTS) break;
         }
         return out;
