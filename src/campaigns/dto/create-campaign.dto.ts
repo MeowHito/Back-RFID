@@ -241,6 +241,9 @@ export class CreateCampaignDto {
     eslipV2Layout?: any;
 
     @IsOptional()
+    bibCheck2Layout?: any;
+
+    @IsOptional()
     excludeOverallFromAgeGroup?: number;
 
     @IsOptional()

@@ -316,6 +316,11 @@ export class Campaign {
     @Prop()
     scanningBgImagePortrait: string;
 
+    /** Check BIB 2 — Canva-like scanning display design.
+     *  JSON: { version, stageColor, landscape: {...}, portrait: {...} } */
+    @Prop({ type: Object })
+    bibCheck2Layout: any;
+
     /** E-Slip scan display template: 'template3' (Default) | 'template2' (Photo) */
     @Prop({ default: 'template3' })
     slipScanTemplate: string;
