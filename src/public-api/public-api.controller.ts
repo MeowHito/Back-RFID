@@ -953,6 +953,7 @@ export class PublicApiController {
                     // Award config — used by the AWARD column / e-slip to compute
                     // Overall + Age-group winners consistently with the winner boards.
                     overallDisplayCount: (campaign as any).overallDisplayCount ?? null,
+                    overallDisplayCountByCategory: (campaign as any).overallDisplayCountByCategory || [],
                     ageGroupDisplayCount: (campaign as any).ageGroupDisplayCount ?? null,
                     excludeOverallFromAgeGroup: (campaign as any).excludeOverallFromAgeGroup ?? null,
                     excludeOverallThaiFromAgeGroup: (campaign as any).excludeOverallThaiFromAgeGroup ?? null,

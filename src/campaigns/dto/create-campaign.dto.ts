@@ -97,6 +97,14 @@ export class BestOfProvinceDto {
     count: number;
 }
 
+export class OverallDisplayCountByCategoryDto {
+    @IsString()
+    category: string;
+
+    @IsNumber()
+    count: number;
+}
+
 export class CreateCampaignDto {
     @IsString()
     name: string;
@@ -255,6 +263,12 @@ export class CreateCampaignDto {
 
     @IsOptional()
     overallDisplayCount?: number;
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => OverallDisplayCountByCategoryDto)
+    overallDisplayCountByCategory?: OverallDisplayCountByCategoryDto[];
 
     @IsOptional()
     bestOfDisplayCount?: number;

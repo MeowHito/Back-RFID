@@ -230,9 +230,18 @@ export class Campaign {
     @Prop({ default: 5 })
     ageGroupDisplayCount: number;
 
-    /** Number of top overall ranks to display on Overall-Winners page. Default 5. */
+    /** Number of top overall ranks to display on Overall-Winners page. Default 5.
+     *  Acts as the fallback for categories with no entry in
+     *  `overallDisplayCountByCategory`. */
     @Prop({ default: 5 })
     overallDisplayCount: number;
+
+    /** Per-category override of `overallDisplayCount` — each race distance can award a
+     *  different number of Overall ranks (e.g. 42K top 3, 21K top 5). `category` holds
+     *  the campaign category name; categories with no entry fall back to
+     *  `overallDisplayCount`. */
+    @Prop({ type: [{ category: String, count: Number }], default: [] })
+    overallDisplayCountByCategory: { category: string; count: number }[];
 
     /** Number of top ranks (per gender) to display on the Best-Of-Winners page
      *  (local-province "Best Of" award). Default 1. */
