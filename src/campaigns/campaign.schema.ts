@@ -297,6 +297,12 @@ export class Campaign {
     @Prop({ default: false })
     raceFinished: boolean;
 
+    /** 2D course profile: how many minutes apart two runners may be due at the next
+     *  checkpoint and still share one amber figure. Bigger = fewer, fatter clumps.
+     *  Default 10. Applies to /admin/general-chart and the public results popup. */
+    @Prop({ default: 10 })
+    profileClusterMinutes: number;
+
     /** Canva-like certificate layout — array of CertElement JSON objects */
     @Prop({ type: Object })
     certLayout: any;

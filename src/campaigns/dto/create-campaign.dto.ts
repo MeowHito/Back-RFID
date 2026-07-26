@@ -325,6 +325,11 @@ export class CreateCampaignDto {
     @IsBoolean()
     raceFinished?: boolean;
 
+    /** Minutes-wide clump window for the 2D course profile. */
+    @IsOptional()
+    @IsNumber()
+    profileClusterMinutes?: number;
+
     @IsOptional()
     certLayout?: any;
 
