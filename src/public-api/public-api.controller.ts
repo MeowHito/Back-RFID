@@ -91,7 +91,33 @@ export class PublicApiController {
         }
     }
 
+    /**
+     * Overall (RANK) + Gender (GEN) placings are decided by GUN time — prefer gun
+     * fields, fall back to net (locally-timed events store only net time). Mirrors
+     * getRunnerPrimaryTimeMs in /event/[id] and getCheckpointRankGunTimeMs in
+     * TimingService, so every surface places runners on the same clock.
+     */
     private getRunnerPrimaryTimeMs(runner: any): number {
+        const candidates = [
+            runner?.gunTimeMs,
+            runner?.totalGunTimeMs,
+            runner?.totalGunTime,
+            runner?.gunTime,
+            runner?.netTimeMs,
+            runner?.totalNetTimeMs,
+            runner?.totalNetTime,
+            runner?.netTime,
+            runner?.elapsedTime,
+        ];
+        for (const value of candidates) {
+            const num = Number(value || 0);
+            if (Number.isFinite(num) && num > 0) return num;
+        }
+        return 0;
+    }
+
+    /** Age-group (CAT) placings are decided by NET (chip) time — gun is the fallback. */
+    private getRunnerNetTimeMs(runner: any): number {
         const candidates = [
             runner?.netTimeMs,
             runner?.totalNetTimeMs,
@@ -121,14 +147,19 @@ export class PublicApiController {
         return String(a?._id || '').localeCompare(String(b?._id || ''));
     }
 
-    private comparePublicRankOrder(a: any, b: any): number {
+    /**
+     * Ranking comparator parametrized by the time extractor, so Overall/Gender can
+     * rank by GUN while Age-group ranks by NET without duplicating the tie-break
+     * chain (status → progress → time → scan time → bib).
+     */
+    private comparePublicRankOrderBy(getTime: (runner: any) => number, a: any, b: any): number {
         const statusOrder: Record<string, number> = { finished: 0, in_progress: 1, dnf: 2, dns: 3, dq: 4, not_started: 5 };
         const statusDiff = (statusOrder[a?.status] ?? 6) - (statusOrder[b?.status] ?? 6);
         if (statusDiff !== 0) return statusDiff;
 
         if (a?.status === 'finished' && b?.status === 'finished') {
-            const aTime = this.getRunnerPrimaryTimeMs(a);
-            const bTime = this.getRunnerPrimaryTimeMs(b);
+            const aTime = getTime(a);
+            const bTime = getTime(b);
             if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
             if (aTime > 0 && bTime <= 0) return -1;
             if (aTime <= 0 && bTime > 0) return 1;
@@ -142,8 +173,8 @@ export class PublicApiController {
             const aPassed = a?.passedCount ?? 0;
             const bPassed = b?.passedCount ?? 0;
             if (aPassed !== bPassed) return bPassed - aPassed;
-            const aTime = this.getRunnerPrimaryTimeMs(a);
-            const bTime = this.getRunnerPrimaryTimeMs(b);
+            const aTime = getTime(a);
+            const bTime = getTime(b);
             if (aTime > 0 && bTime > 0 && aTime !== bTime) return aTime - bTime;
             if (aTime > 0 && bTime <= 0) return -1;
             if (aTime <= 0 && bTime > 0) return 1;
@@ -154,6 +185,16 @@ export class PublicApiController {
         }
 
         return this.compareStableRunnerOrder(a, b);
+    }
+
+    /** Overall + Gender order — GUN time. */
+    private comparePublicRankOrder(a: any, b: any): number {
+        return this.comparePublicRankOrderBy((r) => this.getRunnerPrimaryTimeMs(r), a, b);
+    }
+
+    /** Age-group (CAT) order — NET (chip) time. */
+    private comparePublicNetRankOrder(a: any, b: any): number {
+        return this.comparePublicRankOrderBy((r) => this.getRunnerNetTimeMs(r), a, b);
     }
 
     private buildScopedPublicRankMaps(records: any[], nationalitySplitCategories: string[] = []) {
@@ -195,7 +236,8 @@ export class PublicApiController {
                 });
             });
 
-            // CAT rank is scoped to gender + ageGroup so M40-49 and F40-49 rank separately.
+            // CAT rank is scoped to gender + ageGroup so M40-49 and F40-49 rank
+            // separately, and is decided by NET (chip) time — not gun like the two above.
             const catGroups = new Map<string, any[]>();
             eventRecords.forEach((record: any) => {
                 const ageGroup = String(record?.ageGroup || '');
@@ -206,7 +248,7 @@ export class PublicApiController {
                 catGroups.get(catKey)!.push(record);
             });
             catGroups.forEach((group) => {
-                group.sort((a: any, b: any) => this.comparePublicRankOrder(a, b)).forEach((record, index) => {
+                group.sort((a: any, b: any) => this.comparePublicNetRankOrder(a, b)).forEach((record, index) => {
                     catRankMap.set(String(record._id), index + 1);
                 });
             });
