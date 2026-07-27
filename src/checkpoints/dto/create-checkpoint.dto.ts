@@ -42,6 +42,9 @@ export class CreateCheckpointDto {
     kmCumulative?: number;
 
     @IsOptional()
+    kmCumulativeByDistance?: Record<string, number>;
+
+    @IsOptional()
     @IsString()
     cutoffTime?: string;
 

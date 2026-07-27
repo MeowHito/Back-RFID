@@ -39,7 +39,10 @@ export class Checkpoint {
     longitude?: number;
 
     @Prop()
-    kmCumulative?: number;
+    kmCumulative?: number; // LEGACY (applies to all distances). Prefer kmCumulativeByDistance for per-distance scoping.
+
+    @Prop({ type: Object, default: {} })
+    kmCumulativeByDistance?: Record<string, number>; // key: category name (e.g. "21K"), value: cumulative KM
 
     @Prop()
     cutoffTime?: string; // LEGACY (applies to all distances). Prefer cutoffTimes for per-distance scoping.
