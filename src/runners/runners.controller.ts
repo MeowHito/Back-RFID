@@ -131,8 +131,32 @@ export class RunnersController {
     @Get('edit-logs')
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @RequirePermission('participants', 'create')
-    getAllEditLogs(@Query('campaignId') campaignId?: string, @Query('eventId') eventId?: string) {
-        return this.runnersService.getEditLogsByScope(campaignId, eventId);
+    getAllEditLogs(
+        @Query('campaignId') campaignId?: string,
+        @Query('eventId') eventId?: string,
+        @Query('limit') limit?: string,
+    ) {
+        return this.runnersService.getEditLogsByScope(campaignId, eventId, Number(limit) || 1000);
+    }
+
+    /** Per-runner rollup with drift detection — powers /admin/edit-history. */
+    @Get('edit-summary')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
+    getEditSummary(@Query('campaignId') campaignId?: string, @Query('eventId') eventId?: string) {
+        return this.runnersService.getEditSummaryByScope(campaignId, eventId);
+    }
+
+    /** Clear the audit trail for a campaign/event (or one entry) — the only path that deletes logs. */
+    @Delete('edit-logs')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'delete')
+    deleteEditLogs(
+        @Query('campaignId') campaignId?: string,
+        @Query('eventId') eventId?: string,
+        @Query('logId') logId?: string,
+    ) {
+        return this.runnersService.deleteEditLogsByScope(campaignId, eventId, logId);
     }
 
     @Get(':id')
@@ -154,7 +178,10 @@ export class RunnersController {
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @RequirePermission('participants', 'create')
     update(@Param('id') id: string, @Body() updateData: any, @Req() req: any) {
-        return this.runnersService.update(id, updateData, req.user?.email);
+        // Always pass a non-empty identity: the service uses `changedBy` to tell a human edit
+        // (audited, claims the field from RaceTiger sync) from an internal system update.
+        const changedBy: string = req.user?.email || req.user?.username || 'admin';
+        return this.runnersService.update(id, updateData, changedBy);
     }
 
     @Get(':id/edit-logs')
@@ -162,6 +189,18 @@ export class RunnersController {
     @RequirePermission('participants', 'create')
     getEditLogs(@Param('id') id: string) {
         return this.runnersService.getEditLogs(id);
+    }
+
+    /** Roll ONE runner back to the values the admin last saved (undo a sync overwrite). */
+    @Post(':id/restore-edits')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
+    restoreEdits(
+        @Param('id') id: string,
+        @Body() body: { fields?: string[] },
+        @Req() req: any,
+    ) {
+        return this.runnersService.restoreRunnerEdits(id, req.user?.email, body?.fields);
     }
 
     @Put(':id/status')

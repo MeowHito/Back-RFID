@@ -41,14 +41,35 @@ export class SyncService {
         private readonly checkpointsService: CheckpointsService,
         private readonly configService: ConfigService,
     ) { }
-    // Snapshot runners with manually-set DNF/DNS/DQ status or manually-edited bio fields
-    // before a clean-slate delete, so they can be restored after RaceTiger data is re-imported.
+    /**
+     * Automated actors that write `statusChangedBy`. A status stamped by one of these is a
+     * computed result, not an admin decision, so it must NOT be preserved across a clean slate —
+     * the re-imported RaceTiger data recomputes it.
+     */
+    private static readonly SYSTEM_STATUS_ACTORS = new Set([
+        'cutoff-scheduler', 'cutoff-extension', 'timing-scan', 'auto-dq-no-start',
+    ]);
+
+    /** True when a human (not an automated rule) last set this runner's status. */
+    private static isAdminSetStatus(snap: any): boolean {
+        const by = String(snap?.statusChangedBy || '').trim().toLowerCase();
+        if (by === '') return false;
+        return !SyncService.SYSTEM_STATUS_ACTORS.has(by) && !by.startsWith('auto-');
+    }
+
+    // Snapshot runners whose status or bio fields were touched by an admin before a clean-slate
+    // delete, so they can be restored after RaceTiger data is re-imported.
+    //
+    // Covers ANY admin-set status, not just DNF/DNS/DQ — an admin who hand-marked a runner
+    // 'finished' (or pushed one back to 'not_started') was previously losing that on every sync,
+    // because the clean-slate delete drops the row and BIO re-import defaults it to 'not_started'.
     private async snapshotProtectedRunners(eventOids: Types.ObjectId[]): Promise<any[]> {
         if (eventOids.length === 0) return [];
         const snapshots = await (this.runnerModel as any).find({
             eventId: { $in: eventOids },
             $or: [
-                { isManualStatus: true, status: { $in: ['dnf', 'dns', 'dq'] } },
+                { isManualStatus: true },
+                { statusChangedBy: { $exists: true, $nin: ['', null] } },
                 { manuallyEditedFields: { $exists: true, $ne: [] } },
             ],
         }).select(
@@ -64,14 +85,18 @@ export class SyncService {
         return snapshots;
     }
 
-    // Restore manually-set DNF/DNS/DQ status and manually-edited bio fields wiped by clean-slate delete+recreate
+    // Restore admin-set status and manually-edited bio fields wiped by clean-slate delete+recreate
     private async restoreProtectedRunners(snapshots: any[]): Promise<number> {
         if (!snapshots.length) return 0;
         const restoreOps = snapshots.map((snap: any) => {
             const setFields: Record<string, any> = {};
-            if (snap.isManualStatus && ['dnf', 'dns', 'dq'].includes(snap.status)) {
+            const isStopped = ['dnf', 'dns', 'dq'].includes(snap.status);
+            const statusIsAdminOwned = snap.isManualStatus || SyncService.isAdminSetStatus(snap);
+            if (statusIsAdminOwned && snap.status) {
                 setFields.status = snap.status;
-                setFields.isManualStatus = true;
+                // DNF/DNS/DQ always come back fully protected; other admin-set statuses keep
+                // whatever protection level they had (score sync may still promote them).
+                setFields.isManualStatus = isStopped ? true : !!snap.isManualStatus;
                 if (snap.statusCheckpoint) setFields.statusCheckpoint = snap.statusCheckpoint;
                 if (snap.statusNote) setFields.statusNote = snap.statusNote;
                 if (snap.statusChangedBy) setFields.statusChangedBy = snap.statusChangedBy;

@@ -14,7 +14,75 @@ export const PROTECTED_BIO_FIELDS = [
     'firstName', 'lastName', 'firstNameTh', 'lastNameTh', 'gender', 'category',
     'ageGroup', 'age', 'nationality', 'birthDate', 'idNo', 'team', 'teamName',
     'chipCode', 'rfidTag', 'printingCode', 'email', 'phone',
+    // Personal details — also admin-owned once hand-edited
+    'box', 'shirtSize', 'province', 'address', 'bloodType', 'chronicDiseases',
+    'medicalInfo', 'emergencyContact', 'emergencyPhone',
 ];
+
+// Race-status / result fields. Not part of manuallyEditedFields (sync owns them via its own
+// isManualStatus rules), but every admin change to them is written to the audit log.
+export const LOGGED_STATUS_FIELDS = [
+    'status', 'statusNote', 'statusCheckpoint',
+    'netTime', 'gunTime', 'elapsedTime', 'finishTime', 'startTime',
+];
+
+/** Every field whose manual change produces a RunnerEditLog entry. */
+export const LOGGED_FIELDS = [...PROTECTED_BIO_FIELDS, ...LOGGED_STATUS_FIELDS];
+
+/** Non-string fields need coercing back from their logged string form on restore. */
+const FIELD_VALUE_TYPES: Record<string, 'number' | 'date'> = {
+    age: 'number',
+    netTime: 'number',
+    gunTime: 'number',
+    elapsedTime: 'number',
+    birthDate: 'date',
+    finishTime: 'date',
+    startTime: 'date',
+};
+
+/**
+ * Canonical string form of a field value — used for logging AND drift comparison.
+ *
+ * Must be field-aware: the edit form submits a birth date as '2005-01-12' while Mongoose
+ * stores it as a Date ('2005-01-12T00:00:00.000Z'), and a time as '1234' vs the stored 1234.
+ * Comparing the raw forms would report a drift that isn't there, so date/number fields are
+ * normalised to one canonical representation on both sides.
+ */
+export function toLoggableValue(v: unknown, field?: string): string {
+    if (v === null || v === undefined || v === '') return '';
+    const type = field ? FIELD_VALUE_TYPES[field] : undefined;
+
+    if (type === 'date' || v instanceof Date) {
+        const d = v instanceof Date ? v : new Date(v as string | number);
+        if (!Number.isNaN(d.getTime())) return d.toISOString();
+    }
+    if (type === 'number') {
+        const n = Number(v);
+        if (Number.isFinite(n)) return String(n);
+    }
+
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    // Arrays/objects only reach here for unexpected payloads — keep them readable, never '[object Object]'.
+    try {
+        return JSON.stringify(v) ?? '';
+    } catch {
+        return '';
+    }
+}
+
+/** Turn a logged string back into the value type the Runner schema expects. */
+function coerceLoggedValue(field: string, raw: string): unknown {
+    const type = FIELD_VALUE_TYPES[field];
+    if (!type) return raw ?? '';
+    if (raw === '' || raw === undefined || raw === null) return type === 'number' ? 0 : null;
+    if (type === 'number') {
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : 0;
+    }
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
 
 export interface RunnerFilter {
     eventId?: string;
@@ -761,39 +829,46 @@ export class RunnersService {
         const before = await this.runnerModel.findById(id).lean().exec();
         if (!before) return null;
 
-        // Diff against the whitelist of fields RaceTiger sync would otherwise overwrite —
-        // only fields that actually changed get flagged as manually-edited & logged,
-        // since the edit form re-submits the whole record on every save.
+        // `changedBy` is the admin-edit marker: the PUT /runners/:id route always supplies it,
+        // while internal callers (TimingService scan ingestion, public-api bulk moves) never do.
+        // Only human edits are audited and allowed to claim ownership of a field from the sync.
+        const isAdminEdit = !!(changedBy && changedBy.trim());
+
+        // Diff against the whitelist of auditable fields — only fields that actually changed
+        // get logged (and, for bio fields, flagged as manually-edited), since the edit form
+        // re-submits the whole record on every save.
         const logChanges: { field: string; oldValue: string; newValue: string }[] = [];
-        const toComparable = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v ?? ''));
-        for (const field of PROTECTED_BIO_FIELDS) {
+        for (const field of (isAdminEdit ? LOGGED_FIELDS : [])) {
             if (!Object.prototype.hasOwnProperty.call(updateData, field)) continue;
-            const oldStr = toComparable((before as any)[field]);
-            const newStr = toComparable(updateData[field]);
+            const oldStr = toLoggableValue((before as any)[field], field);
+            const newStr = toLoggableValue(updateData[field], field);
             if (oldStr === newStr) continue;
             logChanges.push({ field, oldValue: oldStr, newValue: newStr });
         }
+        const bioChanges = logChanges.filter(c => PROTECTED_BIO_FIELDS.includes(c.field));
 
         const finalUpdate: Record<string, any> = { ...updateData };
-        if (logChanges.length > 0) {
+        if (bioChanges.length > 0) {
             const protectedFields = new Set<string>((before as any).manuallyEditedFields || []);
-            logChanges.forEach(c => protectedFields.add(c.field));
+            bioChanges.forEach(c => protectedFields.add(c.field));
             finalUpdate.manuallyEditedFields = [...protectedFields];
+        }
+        if (logChanges.length > 0) {
             finalUpdate.lastEditedBy = changedBy || 'admin';
             finalUpdate.lastEditedAt = new Date();
+        }
+        // An admin hand-setting the race status owns it from here on: mark it manual so the
+        // RaceTiger sync + cutoff scheduler stop promoting it back to a computed value.
+        if (logChanges.some(c => c.field === 'status')) {
+            finalUpdate.isManualStatus = true;
+            finalUpdate.statusChangedBy = changedBy || 'admin';
+            finalUpdate.statusChangedAt = new Date();
         }
 
         const updated = await this.runnerModel.findByIdAndUpdate(id, finalUpdate, { new: true }).exec();
 
         if (updated && logChanges.length > 0) {
-            try {
-                await this.runnerEditLogModel.create({
-                    runnerId: updated._id,
-                    bib: updated.bib,
-                    changedBy: changedBy || 'admin',
-                    changes: logChanges,
-                });
-            } catch { /* non-fatal */ }
+            await this.writeEditLog(updated, logChanges, changedBy, 'edit');
         }
 
         // When the runner's net/gun finish time is edited, mirror it onto the
@@ -894,6 +969,63 @@ export class RunnersService {
         return updated;
     }
 
+    /**
+     * Append one entry to the permanent runner audit trail.
+     *
+     * Never throws — an audit write must not be able to fail the edit that triggered it.
+     */
+    private async writeEditLog(
+        runner: { _id: any; bib: string; eventId?: any; firstName?: string; lastName?: string; firstNameTh?: string; lastNameTh?: string; category?: string },
+        changes: { field: string; oldValue: string; newValue: string }[],
+        changedBy?: string,
+        source: 'edit' | 'status' | 'bulk-status' | 'restore' = 'edit',
+        note?: string,
+    ): Promise<void> {
+        if (!changes.length) return;
+        try {
+            await this.runnerEditLogModel.create({
+                runnerId: runner._id,
+                eventId: runner.eventId,
+                bib: runner.bib,
+                runnerName: [runner.firstName, runner.lastName].filter(Boolean).join(' ').trim()
+                    || [runner.firstNameTh, runner.lastNameTh].filter(Boolean).join(' ').trim(),
+                category: runner.category,
+                changedBy: changedBy || 'admin',
+                source,
+                note: note || '',
+                changes,
+            });
+        } catch { /* non-fatal — audit must never block the edit */ }
+    }
+
+    /** Same as writeEditLog but for many runners at once (bulk status changes). */
+    private async writeEditLogsBulk(entries: Array<{
+        runner: any;
+        changes: { field: string; oldValue: string; newValue: string }[];
+        changedBy?: string;
+        source: 'edit' | 'status' | 'bulk-status' | 'restore';
+        note?: string;
+    }>): Promise<void> {
+        const docs = entries
+            .filter(e => e.changes.length > 0)
+            .map(e => ({
+                runnerId: e.runner._id,
+                eventId: e.runner.eventId,
+                bib: e.runner.bib,
+                runnerName: [e.runner.firstName, e.runner.lastName].filter(Boolean).join(' ').trim()
+                    || [e.runner.firstNameTh, e.runner.lastNameTh].filter(Boolean).join(' ').trim(),
+                category: e.runner.category,
+                changedBy: e.changedBy || 'admin',
+                source: e.source,
+                note: e.note || '',
+                changes: e.changes,
+            }));
+        if (!docs.length) return;
+        try {
+            await this.runnerEditLogModel.insertMany(docs, { ordered: false });
+        } catch { /* non-fatal */ }
+    }
+
     async getEditLogs(runnerId: string): Promise<RunnerEditLogDocument[]> {
         return this.runnerEditLogModel
             .find({ runnerId: new Types.ObjectId(runnerId) })
@@ -903,36 +1035,289 @@ export class RunnersService {
             .exec() as unknown as Promise<RunnerEditLogDocument[]>;
     }
 
-    /** All edit-log entries for every runner in a campaign (or a single event), newest first, with runner name/bib attached. */
-    async getEditLogsByScope(campaignId?: string, eventId?: string): Promise<any[]> {
-        let eventOidFilter: any;
+    /** Resolve a campaign/event scope to the list of event ObjectIds it covers. */
+    private async resolveScopeEventOids(campaignId?: string, eventId?: string): Promise<Types.ObjectId[] | null> {
+        if (eventId && Types.ObjectId.isValid(eventId)) {
+            return [new Types.ObjectId(eventId)];
+        }
         if (campaignId && Types.ObjectId.isValid(campaignId)) {
             const campaignOid = new Types.ObjectId(campaignId);
             const events = await (this.runnerModel.db.model('Event') as any)
-                .find({ $or: [{ campaignId: campaignOid }, { campaignId: campaignId }] })
+                .find({ $or: [{ campaignId: campaignOid }, { campaignId }] })
                 .select('_id').lean().exec();
-            const eventIds = events.map((e: any) => new Types.ObjectId(String(e._id)));
-            eventIds.push(campaignOid);
-            eventOidFilter = { $in: eventIds };
-        } else if (eventId && Types.ObjectId.isValid(eventId)) {
-            eventOidFilter = new Types.ObjectId(eventId);
-        } else {
-            return [];
+            const oids = events.map((e: any) => new Types.ObjectId(String(e._id)));
+            // Legacy rows stored the campaign id directly in eventId — keep them reachable.
+            oids.push(campaignOid);
+            return oids;
         }
+        return null;
+    }
+
+    /**
+     * Mongo filter matching every log entry inside a campaign/event scope.
+     *
+     * Matches on the log's own `eventId` (set on write) OR on the runners currently in
+     * scope — so history written before `eventId` existed on the schema is still found.
+     */
+    private async buildLogScopeFilter(campaignId?: string, eventId?: string): Promise<any | null> {
+        const eventOids = await this.resolveScopeEventOids(campaignId, eventId);
+        if (!eventOids || eventOids.length === 0) return null;
 
         const runnerIds = await this.runnerModel
-            .find({ eventId: eventOidFilter })
+            .find({ eventId: { $in: eventOids } })
             .select('_id')
             .lean()
             .exec();
 
+        return {
+            $or: [
+                { eventId: { $in: eventOids } },
+                { runnerId: { $in: runnerIds.map(r => r._id) } },
+            ],
+        };
+    }
+
+    /** All edit-log entries for every runner in a campaign (or a single event), newest first, with runner name/bib attached. */
+    async getEditLogsByScope(campaignId?: string, eventId?: string, limit = 1000): Promise<any[]> {
+        const filter = await this.buildLogScopeFilter(campaignId, eventId);
+        if (!filter) return [];
+
         return this.runnerEditLogModel
-            .find({ runnerId: { $in: runnerIds.map(r => r._id) } })
+            .find(filter)
             .sort({ changedAt: -1 })
-            .limit(500)
-            .populate('runnerId', 'bib firstName lastName firstNameTh lastNameTh category')
+            .limit(Math.min(Math.max(Number(limit) || 1000, 1), 5000))
+            .populate('runnerId', 'bib firstName lastName firstNameTh lastNameTh category status')
             .lean()
             .exec();
+    }
+
+    /**
+     * Per-runner rollup of the audit trail, with drift detection.
+     *
+     * For each runner that was ever hand-edited we take the newest logged value of every
+     * field ("expected" — what the admin last set) and compare it against what's on the
+     * Runner doc right now ("current"). A mismatch means something — almost always a
+     * RaceTiger sync — overwrote the admin's edit, and that runner can be restored.
+     */
+    async getEditSummaryByScope(campaignId?: string, eventId?: string): Promise<any[]> {
+        const filter = await this.buildLogScopeFilter(campaignId, eventId);
+        if (!filter) return [];
+
+        // Oldest → newest so later entries naturally overwrite earlier ones per field.
+        const logs = await this.runnerEditLogModel
+            .find(filter)
+            .sort({ changedAt: 1 })
+            .lean()
+            .exec() as any[];
+        if (!logs.length) return [];
+
+        const eventOids = (await this.resolveScopeEventOids(campaignId, eventId)) || [];
+        const runners = await this.runnerModel
+            .find({ eventId: { $in: eventOids } })
+            .select([...new Set([...LOGGED_FIELDS, 'bib', 'eventId', 'firstName', 'lastName', 'firstNameTh', 'lastNameTh', 'category', 'isManualStatus', 'manuallyEditedFields'])].join(' '))
+            .lean()
+            .exec() as any[];
+
+        const runnerById = new Map<string, any>();
+        const runnerByEventBib = new Map<string, any>();
+        for (const r of runners) {
+            runnerById.set(String(r._id), r);
+            runnerByEventBib.set(`${String(r.eventId)}:${String(r.bib)}`, r);
+        }
+
+        const eventNameById = new Map<string, string>();
+        try {
+            const events = await (this.runnerModel.db.model('Event') as any)
+                .find({ _id: { $in: eventOids } }).select('_id name').lean().exec();
+            for (const ev of events) eventNameById.set(String(ev._id), ev.name || '');
+        } catch { /* event names are cosmetic */ }
+
+        // Group by bib within an event — stable across the sync's delete/re-insert cycle.
+        const groups = new Map<string, any>();
+        for (const log of logs) {
+            // Prefer the live runner doc; fall back to bib matching when the log points at a
+            // runner id that a clean-slate sync has since replaced.
+            const live = runnerById.get(String(log.runnerId))
+                || (log.eventId ? runnerByEventBib.get(`${String(log.eventId)}:${String(log.bib)}`) : undefined);
+            const key = live ? String(live._id) : `orphan:${String(log.eventId || '')}:${log.bib}`;
+
+            let g = groups.get(key);
+            if (!g) {
+                g = {
+                    key,
+                    runnerId: live ? String(live._id) : null,
+                    exists: !!live,
+                    bib: log.bib,
+                    eventId: String(live?.eventId || log.eventId || ''),
+                    eventName: eventNameById.get(String(live?.eventId || log.eventId || '')) || '',
+                    name: '',
+                    category: live?.category || log.category || '',
+                    currentStatus: live?.status || '',
+                    editCount: 0,
+                    editors: [] as string[],
+                    firstEditedAt: log.changedAt,
+                    lastEditedAt: log.changedAt,
+                    fieldMap: new Map<string, any>(),
+                };
+                groups.set(key, g);
+            }
+
+            g.name = live
+                ? ([live.firstName, live.lastName].filter(Boolean).join(' ').trim()
+                    || [live.firstNameTh, live.lastNameTh].filter(Boolean).join(' ').trim())
+                : (log.runnerName || g.name);
+            g.editCount += 1;
+            g.lastEditedAt = log.changedAt;
+            g.lastEditedBy = log.changedBy;
+            if (log.changedBy && !g.editors.includes(log.changedBy)) g.editors.push(log.changedBy);
+
+            for (const c of (log.changes || [])) {
+                g.fieldMap.set(c.field, {
+                    field: c.field,
+                    // originalValue = the pre-edit value from the FIRST time this field was touched
+                    originalValue: g.fieldMap.get(c.field)?.originalValue ?? c.oldValue,
+                    expected: c.newValue,
+                    editedAt: log.changedAt,
+                    editedBy: log.changedBy,
+                    source: log.source || 'edit',
+                });
+            }
+        }
+
+        const out: any[] = [];
+        for (const g of groups.values()) {
+            const live = g.runnerId ? runnerById.get(g.runnerId) : null;
+            const fields = [...g.fieldMap.values()].map((f: any) => {
+                const current = live ? toLoggableValue(live[f.field], f.field) : '';
+                // Re-normalise the stored log value too — entries written before the
+                // field-aware canonicalisation hold raw form strings (e.g. '2005-01-12').
+                const expected = toLoggableValue(f.expected, f.field);
+                return {
+                    ...f,
+                    expected,
+                    current,
+                    // An orphaned runner (deleted, never re-imported) can't be compared — not drift.
+                    drifted: !!live && current !== expected,
+                };
+            });
+            const { fieldMap, ...rest } = g;
+            out.push({
+                ...rest,
+                fields,
+                driftedCount: fields.filter((f: any) => f.drifted).length,
+            });
+        }
+
+        // Runners whose edits were overwritten float to the top — that's what the admin came for.
+        out.sort((a, b) => (b.driftedCount - a.driftedCount)
+            || (new Date(b.lastEditedAt).getTime() - new Date(a.lastEditedAt).getTime()));
+        return out;
+    }
+
+    /**
+     * Re-apply the admin's last-saved values to ONE runner.
+     *
+     * Reads the newest logged value of every field for this runner and writes it back,
+     * re-arming the sync protection (manuallyEditedFields / isManualStatus) so the next
+     * RaceTiger sync leaves it alone. Only fields that currently differ are touched, and
+     * the restore itself is written to the audit trail as its own entry.
+     */
+    async restoreRunnerEdits(runnerId: string, restoredBy?: string, onlyFields?: string[]): Promise<{
+        restored: boolean;
+        bib: string;
+        applied: { field: string; from: string; to: string }[];
+    }> {
+        if (!Types.ObjectId.isValid(runnerId)) {
+            throw new NotFoundException(`Invalid runner id: ${runnerId}`);
+        }
+        const runner = await this.runnerModel.findById(runnerId).lean().exec() as any;
+        if (!runner) throw new NotFoundException(`Runner ${runnerId} not found`);
+
+        // Match this runner's history by id OR by event+bib, so history from before a
+        // clean-slate sync (which re-created the runner with a new _id) is still found.
+        const logs = await this.runnerEditLogModel
+            .find({
+                $or: [
+                    { runnerId: runner._id },
+                    { eventId: runner.eventId, bib: runner.bib },
+                ],
+                source: { $ne: 'restore' },
+            })
+            .sort({ changedAt: 1 })
+            .lean()
+            .exec() as any[];
+
+        const wanted = new Map<string, string>();
+        for (const log of logs) {
+            for (const c of (log.changes || [])) {
+                if (onlyFields && onlyFields.length > 0 && !onlyFields.includes(c.field)) continue;
+                if (!LOGGED_FIELDS.includes(c.field)) continue;
+                wanted.set(c.field, c.newValue);
+            }
+        }
+        if (wanted.size === 0) {
+            return { restored: false, bib: runner.bib, applied: [] };
+        }
+
+        const set: Record<string, unknown> = {};
+        const applied: { field: string; from: string; to: string }[] = [];
+        const logChanges: { field: string; oldValue: string; newValue: string }[] = [];
+        for (const [field, rawExpected] of wanted) {
+            const current = toLoggableValue(runner[field], field);
+            const expected = toLoggableValue(rawExpected, field);
+            if (current === expected) continue;
+            set[field] = coerceLoggedValue(field, expected);
+            applied.push({ field, from: current, to: expected });
+            logChanges.push({ field, oldValue: current, newValue: expected });
+        }
+        if (applied.length === 0) {
+            return { restored: false, bib: runner.bib, applied: [] };
+        }
+
+        // Re-arm sync protection for everything we just put back.
+        const protectedFields = new Set<string>(runner.manuallyEditedFields || []);
+        for (const { field } of applied) {
+            if (PROTECTED_BIO_FIELDS.includes(field)) protectedFields.add(field);
+        }
+        set.manuallyEditedFields = [...protectedFields];
+        set.lastEditedBy = restoredBy || 'admin';
+        set.lastEditedAt = new Date();
+        if (Object.prototype.hasOwnProperty.call(set, 'status')) {
+            set.isManualStatus = true;
+            set.statusChangedBy = restoredBy || 'admin';
+            set.statusChangedAt = new Date();
+        }
+
+        const updated = await this.runnerModel
+            .findByIdAndUpdate(runnerId, { $set: set }, { new: true })
+            .lean().exec() as any;
+
+        await this.writeEditLog(
+            { ...runner, _id: runner._id },
+            logChanges,
+            restoredBy,
+            'restore',
+            'กู้คืนค่าที่แอดมินแก้ไขไว้ (Restore admin edits)',
+        );
+
+        return { restored: true, bib: updated?.bib || runner.bib, applied };
+    }
+
+    /**
+     * Permanently clear the audit trail for a campaign/event (or a single log entry).
+     *
+     * The only way log entries are ever removed — nothing else in the system deletes them.
+     */
+    async deleteEditLogsByScope(campaignId?: string, eventId?: string, logId?: string): Promise<{ deleted: number }> {
+        if (logId) {
+            if (!Types.ObjectId.isValid(logId)) return { deleted: 0 };
+            const res = await this.runnerEditLogModel.deleteOne({ _id: new Types.ObjectId(logId) }).exec();
+            return { deleted: res.deletedCount || 0 };
+        }
+        const filter = await this.buildLogScopeFilter(campaignId, eventId);
+        if (!filter) return { deleted: 0 };
+        const res = await this.runnerEditLogModel.deleteMany(filter).exec();
+        return { deleted: res.deletedCount || 0 };
     }
 
     /**
@@ -950,26 +1335,31 @@ export class RunnersService {
 
         const logs = await this.runnerEditLogModel
             .find({ runnerId: { $in: oldRunnerIds } })
-            .select('_id bib')
+            .select('_id bib runnerId eventId')
             .lean()
             .exec();
         if (!logs.length) return 0;
 
         const runners = await this.runnerModel
             .find({ eventId: { $in: eventOids } })
-            .select('_id bib')
+            .select('_id bib eventId')
             .lean()
             .exec();
-        const bibToId = new Map<string, Types.ObjectId>();
+        const bibToRunner = new Map<string, { _id: Types.ObjectId; eventId: Types.ObjectId }>();
         for (const r of runners) {
-            if (r.bib != null) bibToId.set(String(r.bib), r._id as Types.ObjectId);
+            if (r.bib != null) bibToRunner.set(String(r.bib), { _id: r._id as Types.ObjectId, eventId: r.eventId as Types.ObjectId });
         }
 
         const ops: any[] = [];
         for (const log of logs) {
-            const newId = bibToId.get(String(log.bib));
-            if (newId && String((log as any).runnerId) !== String(newId)) {
-                ops.push({ updateOne: { filter: { _id: log._id }, update: { $set: { runnerId: newId } } } });
+            const match = bibToRunner.get(String(log.bib));
+            if (!match) continue;
+            const set: Record<string, unknown> = {};
+            if (String((log as any).runnerId) !== String(match._id)) set.runnerId = match._id;
+            // Backfill eventId on history written before the field existed on the schema.
+            if (!(log as any).eventId) set.eventId = match.eventId;
+            if (Object.keys(set).length > 0) {
+                ops.push({ updateOne: { filter: { _id: log._id }, update: { $set: set } } });
             }
         }
         if (!ops.length) return 0;
@@ -1283,7 +1673,33 @@ export class RunnersService {
                 }
             } catch { /* non-fatal */ }
         }
-        return this.runnerModel.findByIdAndUpdate(runnerId, { $set: update }, { new: true }).lean().exec() as Promise<RunnerDocument | null>;
+        const before = await this.runnerModel.findById(runnerId)
+            .select('bib eventId firstName lastName firstNameTh lastNameTh category status statusNote statusCheckpoint')
+            .lean().exec() as any;
+
+        const updated = await this.runnerModel
+            .findByIdAndUpdate(runnerId, { $set: update }, { new: true })
+            .lean().exec() as RunnerDocument | null;
+
+        if (updated && before) {
+            const statusChanges = ['status', 'statusNote', 'statusCheckpoint']
+                .filter(f => Object.prototype.hasOwnProperty.call(update, f))
+                .map(f => ({
+                    field: f,
+                    oldValue: toLoggableValue(before[f], f),
+                    newValue: toLoggableValue((update as any)[f], f),
+                }))
+                .filter(c => c.oldValue !== c.newValue);
+            await this.writeEditLog(
+                { ...before, _id: (updated as any)._id },
+                statusChanges,
+                data.changedBy,
+                'status',
+                data.statusNote || data.statusCheckpoint || '',
+            );
+        }
+
+        return updated;
     }
 
     /** Bulk-update status for multiple runners (admin bulk action) */
@@ -1347,6 +1763,13 @@ export class RunnersService {
         }
 
         const bulkOps: any[] = [];
+        const auditEntries: Array<{
+            runner: any;
+            changes: { field: string; oldValue: string; newValue: string }[];
+            changedBy?: string;
+            source: 'bulk-status';
+            note?: string;
+        }> = [];
         for (const u of updates) {
             if (!validStatuses.includes(u.status)) {
                 result.errors.push(`Invalid status "${u.status}" for runner ${u.id}`);
@@ -1408,11 +1831,30 @@ export class RunnersService {
                     update: { $set: update },
                 },
             });
+
+            const statusChanges = ['status', 'statusNote', 'statusCheckpoint']
+                .filter(f => Object.prototype.hasOwnProperty.call(update, f))
+                .map(f => ({
+                    field: f,
+                    oldValue: toLoggableValue(runner[f], f),
+                    newValue: toLoggableValue(update[f], f),
+                }))
+                .filter(c => c.oldValue !== c.newValue);
+            if (statusChanges.length > 0) {
+                auditEntries.push({
+                    runner,
+                    changes: statusChanges,
+                    changedBy: u.changedBy,
+                    source: 'bulk-status',
+                    note: u.statusNote || u.statusCheckpoint || '',
+                });
+            }
         }
 
         if (bulkOps.length > 0) {
             const res = await this.runnerModel.bulkWrite(bulkOps, { ordered: false });
             result.updated = res.modifiedCount || 0;
+            await this.writeEditLogsBulk(auditEntries);
         }
 
         return result;
