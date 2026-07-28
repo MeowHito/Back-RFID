@@ -243,6 +243,10 @@ export class CreateCampaignDto {
 
     @IsOptional()
     @IsString()
+    eslipLogoUrl?: string;
+
+    @IsOptional()
+    @IsString()
     eslipMode?: string;
 
     @IsOptional()

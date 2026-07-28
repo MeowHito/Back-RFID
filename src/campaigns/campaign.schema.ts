@@ -204,6 +204,12 @@ export class Campaign {
     @Prop({ type: [String], default: [] })
     eslipTemplates: string[];
 
+    /** Event logo shown at the top of the E-Slip 1 "Default" template. Stored as a
+     *  small base64 data URI (resized client-side) so html-to-image can rasterise it
+     *  without tainting the canvas. Empty = no logo block on the slip. */
+    @Prop()
+    eslipLogoUrl: string;
+
     /** Admin-controlled visibility of data fields on E-Slip.
      *  Array of field keys to display. Empty = show all.
      *  Keys: 'overallRank','genderRank','categoryRank','gunTime','netTime','distance','pace' */

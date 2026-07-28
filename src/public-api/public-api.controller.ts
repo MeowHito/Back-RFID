@@ -987,6 +987,8 @@ export class PublicApiController {
                     eslipTemplate: campaign.eslipTemplate || 'template1',
                     eslipTemplates: (campaign as any).eslipTemplates || [],
                     eslipVisibleFields: (campaign as any).eslipVisibleFields || [],
+                    // Small base64 logo drawn at the top of the E-Slip 1 default template.
+                    eslipLogoUrl: (campaign as any).eslipLogoUrl || null,
                     eslipMode: (campaign as any).eslipMode || 'v1',
                     eslipV2Layout: (campaign as any).eslipV2Layout || null,
                     slipScanTemplate: (campaign as any).slipScanTemplate || 'template3',
