@@ -125,6 +125,37 @@ export class SyncService {
         return restoreOps.length;
     }
 
+    /**
+     * A clean-slate re-import deletes and recreates every Runner doc with a fresh
+     * ObjectId, which orphans the manually-entered timing records we deliberately kept.
+     * Re-point them at the new runner with the same (eventId, bib).
+     */
+    private async relinkManualTimingRecords(eventOids: Types.ObjectId[]): Promise<number> {
+        if (!eventOids.length) return 0;
+        const manual = await this.timingRecordModel
+            .find({ eventId: { $in: eventOids }, isManualTime: true })
+            .select('_id eventId bib runnerId')
+            .lean()
+            .exec() as any[];
+        if (!manual.length) return 0;
+        const runners = await this.runnerModel
+            .find({ eventId: { $in: eventOids } })
+            .select('_id eventId bib')
+            .lean()
+            .exec() as any[];
+        const runnerIdByKey = new Map<string, any>();
+        for (const r of runners) runnerIdByKey.set(`${String(r.eventId)}:${String(r.bib)}`, r._id);
+        const ops: any[] = [];
+        for (const rec of manual) {
+            const newRunnerId = runnerIdByKey.get(`${String(rec.eventId)}:${String(rec.bib)}`);
+            if (!newRunnerId || String(newRunnerId) === String(rec.runnerId)) continue;
+            ops.push({ updateOne: { filter: { _id: rec._id }, update: { $set: { runnerId: newRunnerId } } } });
+        }
+        if (!ops.length) return 0;
+        await this.timingRecordModel.bulkWrite(ops, { ordered: false });
+        return ops.length;
+    }
+
     private toCampaignObjectId(campaignId: string): Types.ObjectId {
         if (!Types.ObjectId.isValid(campaignId)) {
             throw new BadRequestException('Invalid campaign id');
@@ -1303,7 +1334,10 @@ export class SyncService {
                 .select('_id').lean().exec()).map(r => r._id as Types.ObjectId);
             const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
             if (preCleanEventOids.length > 0) {
-                const trRemoved = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids } }).exec();
+                // Staff-entered times survive the clean slate — RaceTiger can't re-supply
+                // them. relinkManualTimingRecords() re-points them at the new Runner docs.
+                const trRemoved = await this.timingRecordModel
+                    .deleteMany({ eventId: { $in: preCleanEventOids }, isManualTime: { $ne: true } }).exec();
                 this.logger.log(`Clean slate: deleted ${trRemoved.deletedCount} orphaned timing records`);
             }
             this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
@@ -1356,6 +1390,9 @@ export class SyncService {
             // Re-link edit-log history to the freshly re-inserted runners so the "Edited List" survives sync
             const relinked = await this.runnersService.relinkEditLogsByBib(oldRunnerIds, preCleanEventOids);
             if (relinked > 0) this.logger.log(`Re-linked ${relinked} edit-log entries to re-imported runners`);
+            // The manual timing records we spared above still point at the deleted Runner docs.
+            const relinkedManual = await this.relinkManualTimingRecords(preCleanEventOids);
+            if (relinkedManual > 0) this.logger.log(`Re-linked ${relinkedManual} manually-entered timing records to re-imported runners`);
             // Post-import diagnostic: log runner counts per category for debugging
             this.logger.log('=== Post-Import Runner Category Diagnostics ===');
             for (const [localEventId, catLabel] of eventResolver.categoryByEventId.entries()) {
@@ -1730,7 +1767,9 @@ export class SyncService {
                 .select('_id').lean().exec()).map(r => r._id as Types.ObjectId);
             const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
             if (preCleanEventOids.length > 0) {
-                const trRemoved2 = await this.timingRecordModel.deleteMany({ eventId: { $in: preCleanEventOids } }).exec();
+                // Staff-entered times survive the clean slate (see syncAll's clean slate).
+                const trRemoved2 = await this.timingRecordModel
+                    .deleteMany({ eventId: { $in: preCleanEventOids }, isManualTime: { $ne: true } }).exec();
                 this.logger.log(`Clean slate: deleted ${trRemoved2.deletedCount} orphaned timing records`);
             }
             this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
@@ -1820,6 +1859,9 @@ export class SyncService {
             // Re-link edit-log history to the freshly re-inserted runners so the "Edited List" survives sync
             const relinked = await this.runnersService.relinkEditLogsByBib(oldRunnerIds, preCleanEventOids);
             if (relinked > 0) this.logger.log(`Re-linked ${relinked} edit-log entries to re-imported runners`);
+            // The manual timing records we spared above still point at the deleted Runner docs.
+            const relinkedManual = await this.relinkManualTimingRecords(preCleanEventOids);
+            if (relinkedManual > 0) this.logger.log(`Re-linked ${relinkedManual} manually-entered timing records to re-imported runners`);
             // Also fetch split/checkpoint timing records (split distance, split time, split pace, supplement, chip note)
             this.logger.log(`Fetching split timing data for campaign ${campaignId}...`);
             let splitUpserted = 0;
@@ -1927,6 +1969,35 @@ export class SyncService {
                 if (runner.bib) runnerByEventBib.set(`${evId}:${runner.bib}`, runner);
                 if ((runner as any).athleteId) runnerByEventAthleteId.set(`${evId}:${(runner as any).athleteId}`, runner);
             }
+
+            // Staff-entered checkpoint times win over RaceTiger. Load them up front so we
+            // can (a) drop any pass-time row that would overwrite one, and (b) still count
+            // them towards passedCount / latestCheckpoint below — otherwise a checkpoint an
+            // admin filled in by hand disappears from the runner's progress on every sync.
+            const manualRecords = allEventIds.length > 0
+                ? await this.timingRecordModel
+                    .find({
+                        eventId: { $in: allEventIds.map((id) => new Types.ObjectId(id)) },
+                        isManualTime: true,
+                    })
+                    .select('eventId runnerId checkpoint scanTime splitTime')
+                    .lean()
+                    .exec() as any[]
+                : [];
+            const manualKeys = new Set<string>();
+            const manualByRunner = new Map<string, any[]>();
+            for (const rec of manualRecords) {
+                const cpUp = String(rec.checkpoint || '').trim().toUpperCase();
+                if (!cpUp) continue;
+                const rId = String(rec.runnerId);
+                manualKeys.add(`${String(rec.eventId)}:${rId}:${cpUp}`);
+                if (!manualByRunner.has(rId)) manualByRunner.set(rId, []);
+                manualByRunner.get(rId)!.push(rec);
+            }
+            if (manualRecords.length > 0) {
+                this.logger.log(`  Split sync: protecting ${manualRecords.length} manually-entered timing records`);
+            }
+
             const bulkOps: any[] = [];
             for (const eid of eidsToFetch) {
                 try {
@@ -1964,6 +2035,8 @@ export class SyncService {
                             if (!runner) continue;
                             const tpName = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.CheckpointName ?? row?.checkpointName);
                             if (!tpName) continue;
+                            // Never overwrite (or duplicate) a checkpoint an admin filled in by hand.
+                            if (manualKeys.has(`${eventId}:${String(runner._id)}:${tpName.trim().toUpperCase()}`)) continue;
                             const passTimeStr = this.toSafeString(row?.PassTime ?? row?.passTime ?? row?.Time ?? row?.time ?? row?.ScanTime ?? row?.scanTime);
 
                             // Extract supplement/cutOff fields for storage (informational only — no status detection)
@@ -2058,7 +2131,7 @@ export class SyncService {
                 }
             }
             // DNF/DNS/DQ detection from splitScore is DISABLED — statuses are manual-only
-            if (bulkOps.length > 0) {
+            if (bulkOps.length > 0 || manualByRunner.size > 0) {
                 const batchSize = 1000;
                 for (let i = 0; i < bulkOps.length; i += batchSize) {
                     await this.timingRecordModel.bulkWrite(bulkOps.slice(i, i + batchSize), { ordered: false });
@@ -2096,6 +2169,27 @@ export class SyncService {
                         if (!acc.lastScanTime || t > acc.lastScanTime) {
                             acc.lastScanTime = t;
                             acc.lastSplitTime = $set.splitTime || null;
+                            acc.lastCheckpointName = cp;
+                        }
+                    }
+                }
+                // Fold in the staff-entered records. They were skipped above (RaceTiger has
+                // no row for them, or its row was dropped to protect the manual value), so
+                // without this a hand-filled checkpoint would be missing from passedCount.
+                for (const [rId, recs] of manualByRunner) {
+                    if (!lapAccByRunner.has(rId)) {
+                        lapAccByRunner.set(rId, { uniqueCps: new Set(), lapCount: 0, splitTimes: [], lastScanTime: null, lastSplitTime: null, lastCheckpointName: null, chipCode: null, printingCode: null });
+                    }
+                    const acc = lapAccByRunner.get(rId)!;
+                    for (const rec of recs) {
+                        const cp = String(rec.checkpoint || '').trim();
+                        if (!cp) continue;
+                        acc.uniqueCps.add(cp);
+                        acc.lapCount += 1;
+                        const t = rec.scanTime ? new Date(rec.scanTime) : null;
+                        if (t && !isNaN(t.getTime()) && (!acc.lastScanTime || t > acc.lastScanTime)) {
+                            acc.lastScanTime = t;
+                            acc.lastSplitTime = rec.splitTime || null;
                             acc.lastCheckpointName = cp;
                         }
                     }
@@ -2154,6 +2248,11 @@ export class SyncService {
                         id: new Types.ObjectId(rId),
                         data: {
                             passedCount: acc.uniqueCps.size,
+                            manualCheckpoints: [...new Set(
+                                (manualByRunner.get(rId) || [])
+                                    .map((rec: any) => String(rec.checkpoint || '').trim().toUpperCase())
+                                    .filter(Boolean),
+                            )],
                             lapCount: acc.lapCount,
                             ...(bestLap !== undefined ? { bestLapTime: bestLap } : {}),
                             ...(avgLap !== undefined ? { avgLapTime: avgLap } : {}),
@@ -2336,8 +2435,15 @@ export class SyncService {
                             }
                             // Parse timing fields from score row
                             const updateData: Record<string, any> = {};
+                            // Checkpoint times typed in by staff are the source of truth — RaceTiger
+                            // must not overwrite the finish time (or the checkpoint count) it derived.
+                            const manualCps: string[] = Array.isArray((existingRunner as any).manualCheckpoints)
+                                ? (existingRunner as any).manualCheckpoints.map((cp: any) => String(cp).toUpperCase())
+                                : [];
+                            const hasManualTimes = manualCps.length > 0;
+                            const hasManualFinish = manualCps.some((cp) => cp.includes('FINISH'));
                             // ── Net Time (store BOTH raw string and parsed ms) ──
-                            const netTimeRaw = row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime;
+                            const netTimeRaw = hasManualFinish ? null : (row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime);
                             if (netTimeRaw) {
                                 const netStr = this.toSafeString(netTimeRaw);
                                 if (netStr && netStr !== '-' && netStr !== '0') {
@@ -2347,8 +2453,8 @@ export class SyncService {
                                 if (netTimeMs !== null && netTimeMs > 0) updateData.netTime = netTimeMs;
                             }
                             // ── Gun Time (store BOTH raw string and parsed ms) ──
-                            const gunTimeRaw = row?.GunTime ?? row?.gunTime ?? row?.ElapsedTime ?? row?.elapsedTime
-                                ?? row?.RealTime ?? row?.realTime ?? row?.Time ?? row?.time;
+                            const gunTimeRaw = hasManualFinish ? null : (row?.GunTime ?? row?.gunTime ?? row?.ElapsedTime ?? row?.elapsedTime
+                                ?? row?.RealTime ?? row?.realTime ?? row?.Time ?? row?.time);
                             if (gunTimeRaw) {
                                 const gunStr = this.toSafeString(gunTimeRaw);
                                 if (gunStr && gunStr !== '-' && gunStr !== '0') {
@@ -2424,7 +2530,7 @@ export class SyncService {
                             if (genderFinishers !== null && genderFinishers > 0) updateData.genderFinishers = genderFinishers;
                             // Latest checkpoint
                             const latestCp = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.LastStation ?? row?.lastStation ?? row?.LatestCheckpoint);
-                            if (latestCp) updateData.latestCheckpoint = latestCp;
+                            if (latestCp && !hasManualFinish) updateData.latestCheckpoint = latestCp;
                             // Passed count (number of checkpoints passed)
                             const passedCount = this.parseNumericValue(
                                 row?.PassedCount ?? row?.passedCount ?? row?.PassCount ?? row?.passCount
@@ -2432,7 +2538,10 @@ export class SyncService {
                                 ?? row?.CheckpointCount ?? row?.checkpointCount
                                 ?? row?.TpCount ?? row?.tpCount
                             );
-                            if (passedCount !== null && passedCount >= 0) updateData.passedCount = passedCount;
+                            // RaceTiger's count knows nothing about checkpoints an admin filled
+                            // in by hand, so for those runners it would undo the manual entry.
+                            // Their count comes from the timing records (split sync) instead.
+                            if (passedCount !== null && passedCount >= 0 && !hasManualTimes) updateData.passedCount = passedCount;
                             if (Object.keys(updateData).length > 0) {
                                 bulkOps.push({
                                     updateOne: {

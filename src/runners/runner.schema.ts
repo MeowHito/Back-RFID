@@ -77,6 +77,12 @@ export class Runner {
     @Prop({ default: 0 })
     passedCount: number;
 
+    // Uppercased names of the checkpoints whose time was typed in by staff rather
+    // than captured by a mat. Kept on the Runner doc so the results table can flag
+    // manual times without joining the timing records.
+    @Prop({ type: [String], default: [] })
+    manualCheckpoints: string[];
+
     // New fields from reference
     @Prop()
     chipCode: string; // RFID chip code (from RaceTiger ChipCode)

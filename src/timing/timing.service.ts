@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { TimingRecord, TimingRecordDocument } from './timing-record.schema';
@@ -14,6 +14,14 @@ export interface ScanData {
     checkpoint: string;
     scanTime: Date;
     note?: string;
+    /** Staff typed this time in by hand (admin UI) instead of it coming off a mat. */
+    isManual?: boolean;
+}
+
+/** A scan is manual when the caller says so, or when its note marks it as such. */
+function isManualScan(scanData: ScanData): boolean {
+    if (scanData.isManual === true) return true;
+    return /manual/i.test(scanData.note || '');
 }
 
 function normalizeCheckpointRunnerValue(value?: string): string {
@@ -185,7 +193,7 @@ const compareCheckpointGunRankOrder = makeCheckpointRankComparator(getCheckpoint
 const compareCheckpointNetRankOrder = makeCheckpointRankComparator(getCheckpointRankPrimaryTimeMs);
 
 @Injectable()
-export class TimingService {
+export class TimingService implements OnModuleInit {
     // In-memory cache for getLatestPerRunner (TTL 5s)
     private latestPerRunnerCache = new Map<string, { data: any[]; expiry: number }>();
     // In-memory cache for getCheckpointRecordsByCampaign (TTL 5s)
@@ -204,6 +212,24 @@ export class TimingService {
         private eventsService: EventsService,
         private checkpointsService: CheckpointsService,
     ) { }
+
+    /**
+     * Backfill for records created before `isManualTime` existed: the admin UI has
+     * always stamped them with a "manual" note, so that note is the only evidence
+     * left that a time was typed in rather than captured. Runs once per boot and is
+     * a no-op afterwards.
+     */
+    async onModuleInit(): Promise<void> {
+        try {
+            const res = await this.timingModel.updateMany(
+                { isManualTime: { $ne: true }, note: /manual/i },
+                { $set: { isManualTime: true } },
+            ).exec();
+            if (res.modifiedCount > 0) {
+                console.log(`[timing] Backfilled isManualTime on ${res.modifiedCount} legacy manual records`);
+            }
+        } catch { /* non-fatal — flag stays off until the record is edited again */ }
+    }
 
     async processScan(scanData: ScanData): Promise<TimingRecordDocument> {
         // Find runner by BIB or RFID
@@ -231,6 +257,7 @@ export class TimingService {
         }
 
         // Create timing record
+        const manual = isManualScan(scanData);
         const record = new this.timingModel({
             eventId: new Types.ObjectId(scanData.eventId),
             runnerId: runner._id,
@@ -242,6 +269,8 @@ export class TimingService {
             note: scanData.note,
             splitTime,
             elapsedTime,
+            isManualTime: manual,
+            ...(manual ? { manualTimeAt: new Date() } : {}),
         });
 
         await record.save();
@@ -411,6 +440,12 @@ export class TimingService {
                     distanceFromStart: { $first: '$distanceFromStart' },
                     order: { $first: '$order' },
                     uniqueCheckpoints: { $addToSet: '$checkpoint' },
+                    // null placeholders for non-manual records; stripped in $project below
+                    manualCheckpointsRaw: {
+                        $addToSet: {
+                            $cond: [{ $eq: ['$isManualTime', true] }, { $toUpper: '$checkpoint' }, null],
+                        },
+                    },
                     splitNo: { $first: '$splitNo' },
                     splitDesc: { $first: '$splitDesc' },
                     netPace: { $first: '$netPace' },
@@ -462,6 +497,7 @@ export class TimingService {
                     status: '$runner.status',
                     latestCheckpoint: '$checkpoint',
                     passedCount: { $size: '$uniqueCheckpoints' },
+                    manualCheckpoints: { $setDifference: ['$manualCheckpointsRaw', [null]] },
                     scanTime: 1,
                     // Prefer the runner-stored value when an admin has manually edited it
                     // (e.g. /admin/results gun/net time edit). Fall back to the timing
@@ -993,7 +1029,9 @@ export class TimingService {
         const elapsedTime = startMs != null ? Math.max(0, newScan.getTime() - startMs) : 0;
         const splitTime = prev ? Math.max(0, newScan.getTime() - new Date(prev.scanTime).getTime()) : 0;
 
-        const update: any = { scanTime: newScan, elapsedTime, splitTime };
+        // Editing a scanTime always makes the record staff-owned: the sync must stop
+        // overwriting it, and the public table shows it in orange.
+        const update: any = { scanTime: newScan, elapsedTime, splitTime, isManualTime: true, manualTimeAt: new Date() };
         if (isFinish || (existing.netTime && existing.netTime > 0)) update.netTime = elapsedTime;
         if (existing.gunTime && existing.gunTime > 0) update.gunTime = elapsedTime;
 
@@ -1115,6 +1153,7 @@ export class TimingService {
             .exec() as any[];
 
         const uniqueCps = new Set<string>();
+        const manualCps = new Set<string>();
         let latestRecord: any = null;
         let finishRecord: any = null;
         let startRecord: any = null;
@@ -1122,6 +1161,7 @@ export class TimingService {
             const cp = String(r.checkpoint || '').trim();
             const cpUp = cp.toUpperCase();
             if (cp) uniqueCps.add(cp.toLowerCase());
+            if (cp && r.isManualTime === true) manualCps.add(cpUp);
             if (cpUp === 'START') startRecord = r;
             if (cpUp === 'FINISH') finishRecord = r;
             if (!latestRecord || new Date(r.scanTime).getTime() > new Date(latestRecord.scanTime).getTime()) {
@@ -1197,6 +1237,9 @@ export class TimingService {
 
         const update: Record<string, unknown> = {
             passedCount: uniqueCps.size,
+            // Which checkpoints carry a staff-typed time — drives the orange time
+            // styling on /event without the page having to load timing records.
+            manualCheckpoints: [...manualCps],
         };
         if (latestRecord) update.latestCheckpoint = latestRecord.checkpoint;
         if (startRecord?.scanTime) update.startTime = new Date(startRecord.scanTime);

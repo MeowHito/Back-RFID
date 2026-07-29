@@ -29,6 +29,16 @@ export class TimingRecord {
     @Prop()
     note: string; // e.g., 'Check-in', 'Manual entry'
 
+    // scanTime was typed in by staff (added or corrected in the admin UI) rather than
+    // captured by an RFID mat / imported from RaceTiger. Two things depend on it:
+    // the RaceTiger split sync must never overwrite such a record, and the public
+    // table renders these times in orange so a manual entry is visible at a glance.
+    @Prop({ default: false })
+    isManualTime: boolean;
+
+    @Prop()
+    manualTimeAt: Date;
+
     @Prop()
     splitTime: number; // Time from previous checkpoint in ms
 
@@ -111,4 +121,5 @@ TimingRecordSchema.index({ scanTime: -1 });
 TimingRecordSchema.index({ eventId: 1, checkpoint: 1, scanTime: -1 }); // Per-checkpoint queries
 TimingRecordSchema.index({ runnerId: 1, order: 1 }); // Runner timeline
 TimingRecordSchema.index({ eventId: 1, runnerId: 1, checkpoint: 1, order: 1 }, { unique: true }); // Upsert key (per-lap)
+TimingRecordSchema.index({ eventId: 1, isManualTime: 1 }); // Sync: load staff-entered records to protect them
 TimingRecordSchema.index({ eventId: 1, scanTime: -1, runnerId: 1 }); // Fast aggregation for getLatestPerRunner

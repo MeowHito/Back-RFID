@@ -270,6 +270,7 @@ export class PublicApiController {
         if (!target.totalGunTimeMs || target.totalGunTimeMs <= 0) target.totalGunTimeMs = timing.totalGunTimeMs || 0;
         if (!target.scanTime) target.scanTime = timing.scanTime;
         if (!target.passedCount || target.passedCount <= 0) target.passedCount = timing.passedCount || 0;
+        if (!target.manualCheckpoints?.length) target.manualCheckpoints = timing.manualCheckpoints || [];
         // Pass-time fields — needed so Results mode (raceFinished=true) keeps the same
         // column coverage as Live mode. Without these the Distance / Split* / Leg* /
         // Chip Code / Cut-off etc. columns render as "-" after raceFinished is toggled.
@@ -598,6 +599,7 @@ export class PublicApiController {
                 status: r.status,
                 latestCheckpoint: r.latestCheckpoint,
                 passedCount: r.passedCount || 0,
+                manualCheckpoints: r.manualCheckpoints || [],
                 netTime: r.netTime,
                 gunTime: r.gunTime,
                 overallRank: r.overallRank,
