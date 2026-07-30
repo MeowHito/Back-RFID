@@ -214,6 +214,22 @@ export class Runner {
     @Prop()
     statusChangedAt: Date; // When status was manually changed
 
+    // === "Returned home" safety flag for DNF/DQ runners ===
+    // A runner pulled off course is only accounted for once they are back at the finish
+    // area. A FINISH scan proves it on its own; this flag is the manual override for the
+    // ones who came back by other means (swept in, walked in without a chip).
+    @Prop({ default: false })
+    returnedHome: boolean;
+
+    @Prop()
+    returnedHomeNote: string; // Free-text detail (e.g. "รถ sweep ส่งกลับ")
+
+    @Prop()
+    returnedHomeBy: string; // Admin email/name who ticked the flag
+
+    @Prop()
+    returnedHomeAt: Date; // When the flag was set
+
     @Prop()
     photoUrl: string; // Base64 data URI of runner photo (uploaded via QR scan)
 

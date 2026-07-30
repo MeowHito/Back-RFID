@@ -24,13 +24,14 @@ export const PROTECTED_BIO_FIELDS = [
 export const LOGGED_STATUS_FIELDS = [
     'status', 'statusNote', 'statusCheckpoint',
     'netTime', 'gunTime', 'elapsedTime', 'finishTime', 'startTime',
+    'returnedHome', 'returnedHomeNote',
 ];
 
 /** Every field whose manual change produces a RunnerEditLog entry. */
 export const LOGGED_FIELDS = [...PROTECTED_BIO_FIELDS, ...LOGGED_STATUS_FIELDS];
 
 /** Non-string fields need coercing back from their logged string form on restore. */
-const FIELD_VALUE_TYPES: Record<string, 'number' | 'date'> = {
+const FIELD_VALUE_TYPES: Record<string, 'number' | 'date' | 'boolean'> = {
     age: 'number',
     netTime: 'number',
     gunTime: 'number',
@@ -38,6 +39,7 @@ const FIELD_VALUE_TYPES: Record<string, 'number' | 'date'> = {
     birthDate: 'date',
     finishTime: 'date',
     startTime: 'date',
+    returnedHome: 'boolean',
 };
 
 /**
@@ -49,8 +51,12 @@ const FIELD_VALUE_TYPES: Record<string, 'number' | 'date'> = {
  * normalised to one canonical representation on both sides.
  */
 export function toLoggableValue(v: unknown, field?: string): string {
-    if (v === null || v === undefined || v === '') return '';
     const type = field ? FIELD_VALUE_TYPES[field] : undefined;
+    // Booleans normalise before the empty check: an unset flag and an explicit `false`
+    // are the same state, so they must produce the same string or every save logs a
+    // change that never happened.
+    if (type === 'boolean') return String(v === true || v === 'true');
+    if (v === null || v === undefined || v === '') return '';
 
     if (type === 'date' || v instanceof Date) {
         const d = v instanceof Date ? v : new Date(v as string | number);
@@ -75,6 +81,7 @@ export function toLoggableValue(v: unknown, field?: string): string {
 function coerceLoggedValue(field: string, raw: string): unknown {
     const type = FIELD_VALUE_TYPES[field];
     if (!type) return raw ?? '';
+    if (type === 'boolean') return raw === 'true';
     if (raw === '' || raw === undefined || raw === null) return type === 'number' ? 0 : null;
     if (type === 'number') {
         const n = Number(raw);
@@ -863,6 +870,12 @@ export class RunnersService {
             finalUpdate.isManualStatus = true;
             finalUpdate.statusChangedBy = changedBy || 'admin';
             finalUpdate.statusChangedAt = new Date();
+        }
+        // Who vouched that a DNF/DQ runner is back, and when — the flag is a safety
+        // record, so it is worth nothing without the name attached.
+        if (logChanges.some(c => c.field === 'returnedHome' || c.field === 'returnedHomeNote')) {
+            finalUpdate.returnedHomeBy = changedBy || 'admin';
+            finalUpdate.returnedHomeAt = new Date();
         }
 
         const updated = await this.runnerModel.findByIdAndUpdate(id, finalUpdate, { new: true }).exec();

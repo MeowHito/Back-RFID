@@ -446,6 +446,24 @@ export class TimingService implements OnModuleInit {
                             $cond: [{ $eq: ['$isManualTime', true] }, { $toUpper: '$checkpoint' }, null],
                         },
                     },
+                    // Wall-clock time of this runner's FINISH scan, if they have one at
+                    // all. For a DNF/DQ it is the proof they made it back to the finish
+                    // area rather than being unaccounted for out on course. $max skips
+                    // the nulls the non-finish records contribute.
+                    finishScanTime: {
+                        $max: {
+                            $cond: [
+                                {
+                                    $regexMatch: {
+                                        input: { $toUpper: { $ifNull: ['$checkpoint', ''] } },
+                                        regex: /FINISH|^FIN$/,
+                                    },
+                                },
+                                '$scanTime',
+                                null,
+                            ],
+                        },
+                    },
                     splitNo: { $first: '$splitNo' },
                     splitDesc: { $first: '$splitDesc' },
                     netPace: { $first: '$netPace' },
@@ -520,6 +538,11 @@ export class TimingService implements OnModuleInit {
                     netPace: { $ifNull: ['$runner.netPace', '$netPace'] },
                     statusCheckpoint: '$runner.statusCheckpoint',
                     statusNote: '$runner.statusNote',
+                    finishScanTime: 1,
+                    returnedHome: '$runner.returnedHome',
+                    returnedHomeNote: '$runner.returnedHomeNote',
+                    returnedHomeBy: '$runner.returnedHomeBy',
+                    returnedHomeAt: '$runner.returnedHomeAt',
                     chipCode: { $ifNull: ['$runner.chipCode', '$chipCode'] },
                     printingCode: { $ifNull: ['$runner.printingCode', '$printingCode'] },
                     totalFinishers: '$runner.totalFinishers',

@@ -271,6 +271,7 @@ export class PublicApiController {
         if (!target.scanTime) target.scanTime = timing.scanTime;
         if (!target.passedCount || target.passedCount <= 0) target.passedCount = timing.passedCount || 0;
         if (!target.manualCheckpoints?.length) target.manualCheckpoints = timing.manualCheckpoints || [];
+        if (!target.finishScanTime) target.finishScanTime = timing.finishScanTime;
         // Pass-time fields — needed so Results mode (raceFinished=true) keeps the same
         // column coverage as Live mode. Without these the Distance / Split* / Leg* /
         // Chip Code / Cut-off etc. columns render as "-" after raceFinished is toggled.
@@ -615,6 +616,12 @@ export class PublicApiController {
                 netPace: r.netPace,
                 statusCheckpoint: r.statusCheckpoint,
                 statusNote: r.statusNote,
+                // No timing records at all, so there can be no FINISH scan — only the
+                // manual "returned home" flag can speak for these runners.
+                returnedHome: r.returnedHome,
+                returnedHomeNote: r.returnedHomeNote,
+                returnedHomeBy: r.returnedHomeBy,
+                returnedHomeAt: r.returnedHomeAt,
                 scanTime: r.scanTime,
                 elapsedTime: r.elapsedTime,
                 gunTimeMs: r.gunTimeMs,
