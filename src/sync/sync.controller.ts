@@ -3,7 +3,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { SyncService } from './sync.service';
 import { SyncSchedulerService } from './sync-scheduler.service';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
-import { AdminOnly } from '../auth/decorators/permissions.decorator';
+import { AdminOnly, RequirePermission } from '../auth/decorators/permissions.decorator';
 
 interface NormalizedResponse {
     status: {
@@ -82,6 +82,18 @@ export class SyncController {
         @Query('id') id: string,
     ) {
         const data = await this.syncService.syncAllRunners(id);
+        return this.successResponse(data);
+    }
+
+    /** Re-pull a single runner's BIO record from RaceTiger, leaving the rest of the field untouched */
+    @Post('runner')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
+    async syncSingleRunner(
+        @Headers() headers: Record<string, string>,
+        @Query('runnerId') runnerId: string,
+    ) {
+        const data = await this.syncService.syncSingleRunner(runnerId);
         return this.successResponse(data);
     }
 

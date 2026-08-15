@@ -276,6 +276,38 @@ export class RunnersService {
         return counts;
     }
 
+    /**
+     * Distinct ageGroup labels actually in use, grouped by category.
+     *
+     * RaceTiger labels the same real bracket differently per distance ("30 - 39"
+     * on 25K vs "30-39" on 15K), so the participants edit form has to offer the
+     * labels that the *target* distance uses — otherwise moving a runner between
+     * distances leaves them alone in a one-off bucket.
+     */
+    async getAgeGroupsByCategory(campaignId: string): Promise<Record<string, { label: string; count: number }[]>> {
+        const campaignOid = new Types.ObjectId(campaignId);
+        const events = await (this.runnerModel.db.model('Event') as any)
+            .find({ $or: [{ campaignId: campaignOid }, { campaignId: campaignId }] })
+            .select('_id').lean().exec();
+        const eventIds = events.map((e: any) => new Types.ObjectId(String(e._id)));
+        eventIds.push(campaignOid);
+
+        const results = await this.runnerModel.aggregate([
+            { $match: { eventId: { $in: eventIds }, ageGroup: { $nin: [null, ''] } } },
+            { $group: { _id: { category: '$category', ageGroup: '$ageGroup' }, count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+        ]).exec();
+
+        const byCategory: Record<string, { label: string; count: number }[]> = {};
+        for (const r of results) {
+            const cat = r._id?.category || '';
+            const label = r._id?.ageGroup || '';
+            if (!cat || !label) continue;
+            (byCategory[cat] ||= []).push({ label, count: r.count });
+        }
+        return byCategory;
+    }
+
     /** List runners by event – capped at 2000 to avoid slow responses. Use findByEventWithPaging for large lists. */
     async findByEvent(filter: RunnerFilter, limitCap: number = 2000): Promise<RunnerDocument[]> {
         const query: any = { eventId: new Types.ObjectId(filter.eventId) };
@@ -832,6 +864,51 @@ export class RunnersService {
         await this.runnerModel.findByIdAndUpdate(id, { $set: fields }).exec();
     }
 
+    /**
+     * The Event a runner must live on to actually race a given category.
+     *
+     * A campaign has one Event per race distance, and everything that decides a
+     * result — checkpoint mappings, TimingRecords, and the RANK/GEN/AGE pools on
+     * both the public results page and updateRankings() — is scoped by eventId,
+     * NOT by the category string. So relabelling a runner "25K" → "15K" without
+     * moving their eventId leaves them ranked against the field they no longer
+     * run, and inflates every 25K placing behind them by one.
+     *
+     * Resolved from the data rather than from campaign config: whichever sibling
+     * Event most of that category's runners already sit on is by definition the
+     * right one, and it stays correct however the RaceTiger mapping is set up.
+     * Returns null when the campaign has a single event (category is only a label
+     * there) or when the target category has no runners to learn from.
+     */
+    private async resolveEventIdForCategory(currentEventId: any, category: string): Promise<string | null> {
+        const target = String(category || '').trim();
+        if (!target) return null;
+        try {
+            const current = await this.eventModel.findById(currentEventId).select({ campaignId: 1 }).lean().exec();
+            const campaignId = (current as any)?.campaignId;
+            if (!campaignId) return null;
+
+            const siblings = await this.eventModel
+                .find({ $or: [{ campaignId }, { campaignId: String(campaignId) }] })
+                .select({ _id: 1 })
+                .lean()
+                .exec();
+            if (siblings.length < 2) return null;
+            const siblingIds = siblings.map((e: any) => new Types.ObjectId(String(e._id)));
+
+            const tally = await this.runnerModel.aggregate([
+                { $match: { eventId: { $in: siblingIds }, category: target } },
+                { $group: { _id: '$eventId', count: { $sum: 1 } } },
+                { $sort: { count: -1 } },
+                { $limit: 1 },
+            ]).exec();
+            const winner = tally[0]?._id;
+            return winner ? String(winner) : null;
+        } catch {
+            return null;
+        }
+    }
+
     async update(id: string, updateData: any, changedBy?: string): Promise<RunnerDocument | null> {
         const before = await this.runnerModel.findById(id).lean().exec();
         if (!before) return null;
@@ -878,7 +955,48 @@ export class RunnersService {
             finalUpdate.returnedHomeAt = new Date();
         }
 
+        // Moving a runner to another race distance is a move between Events, not a
+        // relabel — see resolveEventIdForCategory(). Reconciled on any admin edit that
+        // submits a category, not only when the value changes, so re-saving a runner
+        // whose label and event have already drifted apart is enough to repair them.
+        // Resolved before the write so the category and its event land in one update.
+        const submittedCategory = isAdminEdit && Object.prototype.hasOwnProperty.call(updateData, 'category')
+            ? String(updateData.category || '').trim()
+            : '';
+        const previousCategory = String((before as any).category || '');
+        const previousEventId = String((before as any).eventId || '');
+        // An eventId supplied by the caller (the single-runner sync hands over the
+        // event RaceTiger puts the runner on) wins; otherwise derive it from the
+        // submitted category.
+        const targetEventId = Object.prototype.hasOwnProperty.call(updateData, 'eventId') && updateData.eventId
+            ? String(updateData.eventId)
+            : (submittedCategory ? await this.resolveEventIdForCategory((before as any).eventId, submittedCategory) : null);
+        let movedToEventId: string | null = null;
+        if (targetEventId && targetEventId !== previousEventId) {
+            finalUpdate.eventId = new Types.ObjectId(targetEventId);
+            movedToEventId = targetEventId;
+        }
+
         const updated = await this.runnerModel.findByIdAndUpdate(id, finalUpdate, { new: true }).exec();
+
+        if (updated && movedToEventId) {
+            // Carry the runner's scan history across with them, otherwise their splits
+            // (and the START record that auto-DQ checks for) vanish from every screen,
+            // all of which read timing by the runner's *current* eventId.
+            try {
+                await this.timingModel.updateMany(
+                    { runnerId: updated._id, eventId: new Types.ObjectId(previousEventId) },
+                    { $set: { eventId: new Types.ObjectId(movedToEventId) } },
+                ).exec();
+            } catch { /* non-fatal — the runner has still moved */ }
+
+            // Both fields are now short one runner / one runner heavier, so refresh
+            // stored placings on each side rather than waiting for the next scan.
+            try {
+                await this.updateRankings(previousEventId, previousCategory);
+                await this.updateRankings(movedToEventId, String(updated.category || submittedCategory));
+            } catch { /* non-fatal */ }
+        }
 
         if (updated && logChanges.length > 0) {
             await this.writeEditLog(updated, logChanges, changedBy, 'edit');

@@ -43,6 +43,11 @@ export class RunnersController {
         return this.runnersService.countByEventGrouped(campaignId);
     }
 
+    @Get('age-groups')
+    getAgeGroups(@Query('campaignId') campaignId: string) {
+        return this.runnersService.getAgeGroupsByCategory(campaignId);
+    }
+
     @Get('paged')
     findByEventWithPaging(
         @Query('eventId') eventId: string,

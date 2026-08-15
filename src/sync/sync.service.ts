@@ -1717,6 +1717,161 @@ export class SyncService {
         }
         return syncResult;
     }
+    /**
+     * Re-pull one runner's BIO record from RaceTiger, touching nobody else.
+     *
+     * The full sync is a clean slate — it deletes and re-imports the whole field —
+     * which is unusable mid-race for fixing a single person. This walks the same
+     * BIO feed but writes back to exactly one runner.
+     *
+     * Two things it deliberately will not do:
+     *  • Race state (status / isStarted / times) is never taken from RaceTiger.
+     *    DNF/DNS/DQ are owned by checkpoint staff, and a bio refresh must not
+     *    resurrect a runner that staff pulled from the course.
+     *  • Fields in `manuallyEditedFields` stay as the admin left them, exactly as
+     *    the bulk sync respects them. They come back in `skipped` so the admin can
+     *    see what was left alone rather than wondering why nothing changed.
+     */
+    async syncSingleRunner(runnerId: string): Promise<{
+        found: boolean;
+        bib: string;
+        pagesFetched: number;
+        applied: string[];
+        skipped: string[];
+        movedEvent: boolean;
+    }> {
+        if (!Types.ObjectId.isValid(runnerId)) {
+            throw new BadRequestException('Invalid runner id');
+        }
+        const runner = await this.runnerModel.findById(runnerId).lean().exec() as any;
+        if (!runner) {
+            throw new NotFoundException('Runner not found');
+        }
+        const bib = this.toSafeString(runner.bib);
+        if (!bib) {
+            throw new BadRequestException('Runner has no BIB to match against RaceTiger');
+        }
+
+        const event = await this.eventModel.findById(runner.eventId).select('campaignId').lean().exec() as any;
+        const campaignId = String(event?.campaignId || '');
+        if (!campaignId) {
+            throw new BadRequestException('Runner is not attached to a campaign event');
+        }
+        const campaign = await this.getSyncEnabledCampaign(campaignId);
+        const eventResolver = await this.buildEventResolver(campaignId);
+        const maxPages = Number(this.configService.get<string>('RACE_TIGER_MAX_BIO_PAGES') || 200);
+
+        // RaceTiger's `eid` parameter does not actually filter the BIO feed (it
+        // returns every event's rows regardless), so the only way to reach one
+        // runner is to page through and match on BIB. Pages are 500 rows, and we
+        // stop at the first page containing the BIB rather than reading the field.
+        let matchedRow: any = null;
+        let pagesFetched = 0;
+        for (let page = 1; page <= maxPages; page += 1) {
+            const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page);
+            if (!response.ok) {
+                throw new BadGatewayException(`RaceTiger BIO page ${page} returned status ${response.status}`);
+            }
+            if (parsedBody === null || typeof parsedBody !== 'object') {
+                throw new BadGatewayException(`RaceTiger BIO page ${page} returned invalid JSON`);
+            }
+            const rows = this.extractRowsFromPayload(parsedBody);
+            if (!rows.length) break;
+            pagesFetched += 1;
+            const candidates = rows.filter(
+                r => this.toSafeString(r?.BIB ?? r?.Bib ?? r?.bib) === bib,
+            );
+            if (candidates.length) {
+                // A BIB can repeat across events in a multi-distance race, so prefer
+                // the row for the event this runner actually races.
+                matchedRow = candidates.find(r => {
+                    const rtId = this.resolveRaceTigerEventIdFromBioRow(r);
+                    return rtId !== null
+                        && eventResolver.eventIdByRaceTigerEventId.get(rtId) === String(runner.eventId);
+                }) || candidates[0];
+                break;
+            }
+        }
+
+        if (!matchedRow) {
+            return { found: false, bib, pagesFetched, applied: [], skipped: [], movedEvent: false };
+        }
+
+        const mapped = this.mapBioRowToRunner(matchedRow, eventResolver, null) as any;
+        if (!mapped) {
+            return { found: false, bib, pagesFetched, applied: [], skipped: [], movedEvent: false };
+        }
+
+        const protectedFields = new Set<string>(runner.manuallyEditedFields || []);
+        const updates: Record<string, any> = {};
+        const applied: string[] = [];
+        const skipped: string[] = [];
+
+        for (const field of Object.keys(mapped)) {
+            if (SyncService.SINGLE_SYNC_EXCLUDED_FIELDS.has(field)) continue;
+            const value = mapped[field];
+            if (value === undefined) continue;
+            if (protectedFields.has(field)) {
+                if (!this.isSameSyncValue(runner[field], value)) skipped.push(field);
+                continue;
+            }
+            if (this.isSameSyncValue(runner[field], value)) continue;
+            updates[field] = value;
+            applied.push(field);
+        }
+
+        // A runner's distance and their Event are one decision, so the event only
+        // follows when the category itself is free to change (see
+        // RunnersService.resolveEventIdForCategory). If an admin hand-moved this
+        // runner, `category` is protected and both stay put.
+        let movedEvent = false;
+        if (
+            !protectedFields.has('category')
+            && mapped.eventId
+            && String(mapped.eventId) !== String(runner.eventId)
+        ) {
+            updates.eventId = new Types.ObjectId(String(mapped.eventId));
+            movedEvent = true;
+        }
+
+        if (Object.keys(updates).length > 0) {
+            // No `changedBy`: this is the sync writing, not a human, so it must not
+            // claim the fields as manually-edited and freeze them from later syncs.
+            await this.runnersService.update(runnerId, updates);
+        }
+
+        this.logger.log(
+            `Single-runner sync BIB ${bib}: ${applied.length} field(s) updated`
+            + `${skipped.length ? `, ${skipped.length} protected` : ''}`
+            + `${movedEvent ? ', moved event' : ''}`,
+        );
+        return { found: true, bib, pagesFetched, applied, skipped, movedEvent };
+    }
+
+    /**
+     * Fields the single-runner sync never writes. Race state belongs to checkpoint
+     * staff, `eventId` is decided alongside category, and the rest is bookkeeping
+     * that would be wrong to stamp onto an existing runner.
+     */
+    private static readonly SINGLE_SYNC_EXCLUDED_FIELDS = new Set([
+        'status', 'isStarted', 'allowRFIDSync', 'sourceFile', 'bib', 'eventId',
+    ]);
+
+    /** Compare a stored runner value with a freshly-mapped one across type differences. */
+    private isSameSyncValue(current: unknown, next: unknown): boolean {
+        if (current === next) return true;
+        if (current instanceof Date || next instanceof Date) {
+            const a = current instanceof Date ? current.getTime() : new Date(String(current ?? '')).getTime();
+            const b = next instanceof Date ? next.getTime() : new Date(String(next ?? '')).getTime();
+            if (Number.isNaN(a) && Number.isNaN(b)) return true;
+            return a === b;
+        }
+        if (typeof current === 'number' || typeof next === 'number') {
+            return Number(current) === Number(next);
+        }
+        return this.toSafeString(current) === this.toSafeString(next);
+    }
+
     async syncAllRunners(campaignId: string): Promise<any> {
         const startTime = new Date();
         const syncLog = await this.createSyncLog({
