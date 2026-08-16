@@ -1151,9 +1151,22 @@ export class SyncService {
             throw new BadGatewayException(errorMessage);
         }
     }
-    async importEventsFromRaceTiger(campaignId: string): Promise<any> {
+    /**
+     * Pull the INFO feed and rebuild the campaign from it.
+     *
+     * `checkpointsOnly` narrows this to the timing-point half of the job: checkpoints,
+     * their km marks, and the per-event checkpoint mappings. Events, categories, the
+     * runner clean-slate re-import, score/split timing and race-status detection are all
+     * left untouched, so the button on /admin/checkpoints/create can refresh checkpoints
+     * mid-race without wiping the field.
+     */
+    async importEventsFromRaceTiger(
+        campaignId: string,
+        options: { checkpointsOnly?: boolean } = {},
+    ): Promise<any> {
+        const checkpointsOnly = options.checkpointsOnly === true;
         this.logger.log(`\n========== IMPORT EVENTS FROM RACETIGER ==========`);
-        this.logger.log(`Campaign ID: ${campaignId}`);
+        this.logger.log(`Campaign ID: ${campaignId}${checkpointsOnly ? ' (CHECKPOINTS ONLY)' : ''}`);
         const campaign = await this.getSyncEnabledCampaign(campaignId);
         this.logger.log(`Campaign: "${campaign.name}" RaceId=${campaign.raceId} Token=${this.maskToken(campaign.rfidToken)}`);
         const { parsedBody, response, endpoint, rawBody } = await this.requestRaceTiger(campaign, 'info', 1);
@@ -1238,6 +1251,14 @@ export class SyncService {
             const existing = raceTigerEventId !== null
                 ? await this.eventModel.findOne({ campaignId: campaignObjId, rfidEventId: raceTigerEventId }).exec()
                 : null;
+            if (checkpointsOnly) {
+                // Checkpoint-only refresh: read the timing-point info off this row (already
+                // captured in the maps above) but never touch the Event document itself.
+                if (existing) {
+                    events.push({ action: 'unchanged', id: String(existing._id), name, rfidEventId: raceTigerEventId });
+                }
+                continue;
+            }
             if (existing) {
                 await this.eventModel.findByIdAndUpdate(existing._id, {
                     name,
@@ -1264,7 +1285,9 @@ export class SyncService {
             }
         }
         // Upsert campaign.categories from imported RaceTiger events
-        const campaignForCats = await this.campaignModel.findById(campaignObjId).exec();
+        const campaignForCats = checkpointsOnly
+            ? null
+            : await this.campaignModel.findById(campaignObjId).exec();
         if (campaignForCats) {
             const existingCategories: any[] = [...((campaignForCats as any).categories || [])];
             let categoriesChanged = false;
@@ -1309,98 +1332,100 @@ export class SyncService {
         }
         const syncResult: any = { imported, updated, events, runners: { inserted: 0, updated: 0, skipped: 0 }, checkpoints: { created: 0 } };
         if (events.length > 0) {
-            const eventResolver = await this.buildEventResolver(campaignId);
-            const maxPages = Number(this.configService.get<string>('RACE_TIGER_MAX_BIO_PAGES') || 200);
-            let bioInserted = 0;
-            let bioUpdated = 0;
-            let bioSkipped = 0;
-            let bioSkippedNoResult = 0;
             // Collect RaceTiger event IDs from imported events to fetch BIO per-event with eid
             const raceTigerEids = [...new Set(
                 events
                     .map(ev => ev.rfidEventId)
                     .filter((eid): eid is number => eid !== null && eid !== undefined),
             )];
-            // Import ALL runners from BIO — no score pre-filter.
-            // DNF/DNS runners have no score data but still need to be imported.
-            // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
-            const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
-            if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
-            const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
-            const protectedSnapshots = await this.snapshotProtectedRunners(preCleanEventOids);
-            // Capture the runner ids about to be deleted so we can re-link their edit logs afterwards.
-            const oldRunnerIds = (await this.runnerModel
-                .find({ eventId: { $in: preCleanEventOids } })
-                .select('_id').lean().exec()).map(r => r._id as Types.ObjectId);
-            const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
-            if (preCleanEventOids.length > 0) {
-                // Staff-entered times survive the clean slate — RaceTiger can't re-supply
-                // them. relinkManualTimingRecords() re-points them at the new Runner docs.
-                const trRemoved = await this.timingRecordModel
-                    .deleteMany({ eventId: { $in: preCleanEventOids }, isManualTime: { $ne: true } }).exec();
-                this.logger.log(`Clean slate: deleted ${trRemoved.deletedCount} orphaned timing records`);
-            }
-            this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
-            const fetchBioForEid = async (eid: number | undefined) => {
-                const forcedEventId = eid !== undefined
-                    ? (eventResolver.eventIdByRaceTigerEventId.get(eid) || null)
-                    : null;
-                let totalExpected = Infinity;
-                let totalFetched = 0;
-                for (let page = 1; page <= maxPages; page++) {
-                    const { response: bioRes, parsedBody: bioParsed } = await this.requestRaceTiger(campaign, 'bio', page, eid);
-                    if (!bioRes.ok) break;
-                    const bioRows = this.extractRowsFromPayload(bioParsed);
-                    if (!bioRows.length) break;
-                    // One-time diagnostic: log the BIO row field names so we can confirm which
-                    // RaceTiger column carries the province (for the "Best of Buriram" award).
-                    if (page === 1 && bioRows[0] && typeof bioRows[0] === 'object') {
-                        this.logger.log(`BIO row keys (eid=${eid ?? 'all'}): [${Object.keys(bioRows[0]).join(', ')}]`);
-                    }
-                    // Use total from API response to determine expected item count
-                    const apiTotal = this.parseNumericValue(bioParsed?.total);
-                    if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
-                    totalFetched += bioRows.length;
-                    const mapped: CreateRunnerDto[] = [];
-                    for (const row of bioRows) {
-                        const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
-                        if (runner) mapped.push(runner);
-                        else bioSkipped++;
-                    }
-                    if (mapped.length) {
-                        const pageResult = await this.runnersService.createMany(mapped, true);
-                        bioInserted += pageResult.inserted || 0;
-                        bioUpdated += pageResult.updated || 0;
-                    }
-                    // Stop if we've fetched all expected items
-                    if (totalFetched >= totalExpected) break;
+            if (!checkpointsOnly) {
+                const eventResolver = await this.buildEventResolver(campaignId);
+                const maxPages = Number(this.configService.get<string>('RACE_TIGER_MAX_BIO_PAGES') || 200);
+                let bioInserted = 0;
+                let bioUpdated = 0;
+                let bioSkipped = 0;
+                let bioSkippedNoResult = 0;
+                // Import ALL runners from BIO — no score pre-filter.
+                // DNF/DNS runners have no score data but still need to be imported.
+                // CLEAN SLATE: delete ALL existing RaceTiger runners AND orphaned timing records before re-importing
+                const preCleanEventIds = [...eventResolver.categoryByEventId.keys()];
+                if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
+                const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
+                const protectedSnapshots = await this.snapshotProtectedRunners(preCleanEventOids);
+                // Capture the runner ids about to be deleted so we can re-link their edit logs afterwards.
+                const oldRunnerIds = (await this.runnerModel
+                    .find({ eventId: { $in: preCleanEventOids } })
+                    .select('_id').lean().exec()).map(r => r._id as Types.ObjectId);
+                const preCleanRemoved = await this.runnersService.deleteAllBySource(preCleanEventIds, 'RaceTiger BIO sync');
+                if (preCleanEventOids.length > 0) {
+                    // Staff-entered times survive the clean slate — RaceTiger can't re-supply
+                    // them. relinkManualTimingRecords() re-points them at the new Runner docs.
+                    const trRemoved = await this.timingRecordModel
+                        .deleteMany({ eventId: { $in: preCleanEventOids }, isManualTime: { $ne: true } }).exec();
+                    this.logger.log(`Clean slate: deleted ${trRemoved.deletedCount} orphaned timing records`);
                 }
-            };
-            if (raceTigerEids.length > 0) {
-                for (const eid of raceTigerEids) {
-                    await fetchBioForEid(eid);
+                this.logger.log(`Clean slate: deleted ${preCleanRemoved} existing RaceTiger runners`);
+                const fetchBioForEid = async (eid: number | undefined) => {
+                    const forcedEventId = eid !== undefined
+                        ? (eventResolver.eventIdByRaceTigerEventId.get(eid) || null)
+                        : null;
+                    let totalExpected = Infinity;
+                    let totalFetched = 0;
+                    for (let page = 1; page <= maxPages; page++) {
+                        const { response: bioRes, parsedBody: bioParsed } = await this.requestRaceTiger(campaign, 'bio', page, eid);
+                        if (!bioRes.ok) break;
+                        const bioRows = this.extractRowsFromPayload(bioParsed);
+                        if (!bioRows.length) break;
+                        // One-time diagnostic: log the BIO row field names so we can confirm which
+                        // RaceTiger column carries the province (for the "Best of Buriram" award).
+                        if (page === 1 && bioRows[0] && typeof bioRows[0] === 'object') {
+                            this.logger.log(`BIO row keys (eid=${eid ?? 'all'}): [${Object.keys(bioRows[0]).join(', ')}]`);
+                        }
+                        // Use total from API response to determine expected item count
+                        const apiTotal = this.parseNumericValue(bioParsed?.total);
+                        if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
+                        totalFetched += bioRows.length;
+                        const mapped: CreateRunnerDto[] = [];
+                        for (const row of bioRows) {
+                            const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
+                            if (runner) mapped.push(runner);
+                            else bioSkipped++;
+                        }
+                        if (mapped.length) {
+                            const pageResult = await this.runnersService.createMany(mapped, true);
+                            bioInserted += pageResult.inserted || 0;
+                            bioUpdated += pageResult.updated || 0;
+                        }
+                        // Stop if we've fetched all expected items
+                        if (totalFetched >= totalExpected) break;
+                    }
+                };
+                if (raceTigerEids.length > 0) {
+                    for (const eid of raceTigerEids) {
+                        await fetchBioForEid(eid);
+                    }
+                } else {
+                    await fetchBioForEid(undefined);
                 }
-            } else {
-                await fetchBioForEid(undefined);
-            }
-            syncResult.runners = { inserted: bioInserted, updated: bioUpdated, skipped: bioSkipped, skippedNoResult: bioSkippedNoResult };
-            this.logger.log(`BIO import: inserted=${bioInserted}, updated=${bioUpdated}, skipped=${bioSkipped}, skippedNoResult=${bioSkippedNoResult}`);
-            // Restore manually-set DNF/DNS/DQ status + manually-edited bio fields wiped by the clean-slate delete+recreate
-            await this.restoreProtectedRunners(protectedSnapshots);
-            // Re-link edit-log history to the freshly re-inserted runners so the "Edited List" survives sync
-            const relinked = await this.runnersService.relinkEditLogsByBib(oldRunnerIds, preCleanEventOids);
-            if (relinked > 0) this.logger.log(`Re-linked ${relinked} edit-log entries to re-imported runners`);
-            // The manual timing records we spared above still point at the deleted Runner docs.
-            const relinkedManual = await this.relinkManualTimingRecords(preCleanEventOids);
-            if (relinkedManual > 0) this.logger.log(`Re-linked ${relinkedManual} manually-entered timing records to re-imported runners`);
-            // Post-import diagnostic: log runner counts per category for debugging
-            this.logger.log('=== Post-Import Runner Category Diagnostics ===');
-            for (const [localEventId, catLabel] of eventResolver.categoryByEventId.entries()) {
-                try {
-                    const count = await this.runnersService.countByEvent(localEventId);
-                    this.logger.log(`  Category "${catLabel}" (event ${localEventId}): ${count} runners`);
-                } catch { /* ignore */ }
-            }
+                syncResult.runners = { inserted: bioInserted, updated: bioUpdated, skipped: bioSkipped, skippedNoResult: bioSkippedNoResult };
+                this.logger.log(`BIO import: inserted=${bioInserted}, updated=${bioUpdated}, skipped=${bioSkipped}, skippedNoResult=${bioSkippedNoResult}`);
+                // Restore manually-set DNF/DNS/DQ status + manually-edited bio fields wiped by the clean-slate delete+recreate
+                await this.restoreProtectedRunners(protectedSnapshots);
+                // Re-link edit-log history to the freshly re-inserted runners so the "Edited List" survives sync
+                const relinked = await this.runnersService.relinkEditLogsByBib(oldRunnerIds, preCleanEventOids);
+                if (relinked > 0) this.logger.log(`Re-linked ${relinked} edit-log entries to re-imported runners`);
+                // The manual timing records we spared above still point at the deleted Runner docs.
+                const relinkedManual = await this.relinkManualTimingRecords(preCleanEventOids);
+                if (relinkedManual > 0) this.logger.log(`Re-linked ${relinkedManual} manually-entered timing records to re-imported runners`);
+                // Post-import diagnostic: log runner counts per category for debugging
+                this.logger.log('=== Post-Import Runner Category Diagnostics ===');
+                for (const [localEventId, catLabel] of eventResolver.categoryByEventId.entries()) {
+                    try {
+                        const count = await this.runnersService.countByEvent(localEventId);
+                        this.logger.log(`  Category "${catLabel}" (event ${localEventId}): ${count} runners`);
+                    } catch { /* ignore */ }
+                }
+            } // end !checkpointsOnly (runner / BIO import)
             // Extract TimingPoints PER EVENT from Info response (with km distances)
             const timingPointsPerEvent = this.extractTimingPointsPerEventFromInfoRows(rows);
             // Also extract merged timing points for checkpoint creation
@@ -1525,8 +1550,9 @@ export class SyncService {
                 if (mappingDocs.length) {
                     await this.checkpointsService.updateMappings(mappingDocs);
                 }
-                // Update Event document with startTime if available
-                const startTimeForEvent = rfidEid ? startTimeByRaceTigerId.get(String(rfidEid)) : undefined;
+                // Update Event document with startTime if available (not in checkpoints-only mode —
+                // start times belong to the event, not the checkpoint layout)
+                const startTimeForEvent = (!checkpointsOnly && rfidEid) ? startTimeByRaceTigerId.get(String(rfidEid)) : undefined;
                 if (startTimeForEvent) {
                     const startTimeDate = this.toDateFromTimeString(startTimeForEvent);
                     if (startTimeDate) {
@@ -1566,6 +1592,10 @@ export class SyncService {
                 );
             }
             syncResult.checkpoints = { created: checkpointsCreated, names: cps.map((cp: any) => cp.name) };
+            if (checkpointsOnly) {
+                this.logger.log('Checkpoints-only sync: skipping start-time, score, split and race-status steps');
+                return syncResult;
+            }
             // ---- Step 3.5: Fetch start times from /Dif/split (Passed time data) ----
             // The INFO endpoint may not include WaveTime, so we fetch actual passed-time
             // records and look for the START checkpoint timestamp as the wave/gun start time.

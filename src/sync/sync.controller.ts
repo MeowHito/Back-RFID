@@ -69,8 +69,11 @@ export class SyncController {
     async importEventsFromRaceTiger(
         @Headers() headers: Record<string, string>,
         @Query('id') id: string,
+        @Query('scope') scope?: string,
     ) {
-        const data = await this.syncService.importEventsFromRaceTiger(id);
+        const data = await this.syncService.importEventsFromRaceTiger(id, {
+            checkpointsOnly: scope === 'checkpoints',
+        });
         return this.successResponse(data);
     }
 
