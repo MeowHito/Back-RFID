@@ -17,6 +17,7 @@ import { CctvSettingsService } from '../cctv-cameras/cctv-settings.service';
 import { CctvBetaRecordingsService } from '../cctv-beta/cctv-beta-recordings.service';
 import { CreateUserDto, LoginStationDto, UpdatePasswordDto } from '../users/dto/user.dto';
 import { isThaiNationality, isNationalitySplitCategory } from '../common/nationality.util';
+import { buildCanonicalAgeGroupLookup, canonicalizeAgeGroup } from '../common/age-group.util';
 
 interface NormalizedResponse {
     status: {
@@ -236,20 +237,38 @@ export class PublicApiController {
                 });
             });
 
-            // CAT rank is scoped to gender + ageGroup so M40-49 and F40-49 rank
-            // separately, and is decided by NET (chip) time — not gun like the two above.
-            const catGroups = new Map<string, any[]>();
+            // CAT rank is scoped to category (distance) + gender + ageGroup, decided by
+            // NET (chip) time. One Event can hold several distances (Event.categories),
+            // so category must be part of the key or runners from different distances
+            // that happen to share an age-group label get ranked against each other —
+            // see MEMORY: project_category_move_event. Only `finished` runners count
+            // (matches frontend `computeAgeGroupRanks` in awards.ts), and raw ageGroup
+            // labels are canonicalized within each category+gender scope so a minority
+            // spelling variant (e.g. "F20-29" vs "20-29") doesn't fragment into its own
+            // one-off bucket and print a bogus low rank.
+            const catScopeGroups = new Map<string, any[]>();
             eventRecords.forEach((record: any) => {
                 const ageGroup = String(record?.ageGroup || '');
                 if (!ageGroup) return;
+                if (String(record?.status || '').toLowerCase() !== 'finished') return;
+                const category = String(record?.category || '');
                 const gender = String(record?.gender || '').toUpperCase();
-                const catKey = `${gender}::${ageGroup}`;
-                if (!catGroups.has(catKey)) catGroups.set(catKey, []);
-                catGroups.get(catKey)!.push(record);
+                const scopeKey = `${category}::${gender}`;
+                if (!catScopeGroups.has(scopeKey)) catScopeGroups.set(scopeKey, []);
+                catScopeGroups.get(scopeKey)!.push(record);
             });
-            catGroups.forEach((group) => {
-                group.sort((a: any, b: any) => this.comparePublicNetRankOrder(a, b)).forEach((record, index) => {
-                    catRankMap.set(String(record._id), index + 1);
+            catScopeGroups.forEach((scopeRecords) => {
+                const canonicalLabelOf = buildCanonicalAgeGroupLookup(scopeRecords.map((r: any) => r?.ageGroup));
+                const catGroups = new Map<string, any[]>();
+                scopeRecords.forEach((record: any) => {
+                    const ag = canonicalizeAgeGroup(record?.ageGroup, canonicalLabelOf);
+                    if (!catGroups.has(ag)) catGroups.set(ag, []);
+                    catGroups.get(ag)!.push(record);
+                });
+                catGroups.forEach((group) => {
+                    group.sort((a: any, b: any) => this.comparePublicNetRankOrder(a, b)).forEach((record, index) => {
+                        catRankMap.set(String(record._id), index + 1);
+                    });
                 });
             });
         });
