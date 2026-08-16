@@ -2184,6 +2184,14 @@ export class SyncService {
             }
 
             const bulkOps: any[] = [];
+            // Per-runner split rows, kept so we can read a finish time off the FINISH pass below.
+            // RaceTiger publishes /Dif/split rows for a distance well before that distance shows
+            // up in /Dif/score, so without this a runner sits at status=finished with no time.
+            const splitRowsByRunner = new Map<string, Array<{
+                cp: string; order: number;
+                gunMs: number | null; netMs: number | null;
+                gunStr: string; netStr: string;
+            }>>();
             for (const eid of eidsToFetch) {
                 try {
                     let totalExpected = Infinity;
@@ -2264,6 +2272,17 @@ export class SyncService {
                                 row?.DistanceFromStart ?? row?.distanceFromStart
                                 ?? row?.['Distance from start'] ?? row?.distancefromstart
                             );
+
+                            const runnerKey = String(runner._id);
+                            if (!splitRowsByRunner.has(runnerKey)) splitRowsByRunner.set(runnerKey, []);
+                            splitRowsByRunner.get(runnerKey)!.push({
+                                cp: tpName,
+                                order: sortOrder,
+                                gunMs: gunTimeMs,
+                                netMs: netTimeMs,
+                                gunStr: this.toSafeString(gunTimeRaw),
+                                netStr: this.toSafeString(netTimeRaw),
+                            });
 
                             bulkOps.push({
                                 updateOne: {
@@ -2429,6 +2448,38 @@ export class SyncService {
                     if (isStoppedManual) {
                         return { id: new Types.ObjectId(rId), data: {} as Record<string, any> };
                     }
+
+                    // Finish time from the FINISH split row — a fallback for while RaceTiger's
+                    // /Dif/score feed still has nothing for this distance. Only fills a blank:
+                    // once score sync supplies a time (it also carries the ranks) it owns the field,
+                    // and a staff-entered FINISH always wins over anything RaceTiger sends.
+                    const finishTimeUpdate: Record<string, any> = {};
+                    const scoreHasTime = Number((existingRunner as any)?.netTime) > 0
+                        || Number((existingRunner as any)?.gunTime) > 0;
+                    const manualFinish = (Array.isArray((existingRunner as any)?.manualCheckpoints)
+                        ? (existingRunner as any).manualCheckpoints
+                        : []).some((cp: any) => String(cp).toUpperCase().includes('FINISH'));
+                    if (hasFinishTiming && !scoreHasTime && !manualFinish) {
+                        const finishRow = (splitRowsByRunner.get(rId) || [])
+                            .filter(r => finishCpNames.has(r.cp.toUpperCase()))
+                            .sort((a, b) => b.order - a.order)[0];
+                        if (finishRow) {
+                            if (finishRow.netMs !== null && finishRow.netMs > 0) {
+                                finishTimeUpdate.netTime = finishRow.netMs;
+                                if (finishRow.netStr && finishRow.netStr !== '-' && finishRow.netStr !== '0') {
+                                    finishTimeUpdate.netTimeStr = finishRow.netStr;
+                                }
+                            }
+                            if (finishRow.gunMs !== null && finishRow.gunMs > 0) {
+                                finishTimeUpdate.gunTime = finishRow.gunMs;
+                                finishTimeUpdate.elapsedTime = finishRow.gunMs;
+                                if (finishRow.gunStr && finishRow.gunStr !== '-' && finishRow.gunStr !== '0') {
+                                    finishTimeUpdate.gunTimeStr = finishRow.gunStr;
+                                }
+                            }
+                        }
+                    }
+
                     return {
                         id: new Types.ObjectId(rId),
                         data: {
@@ -2445,6 +2496,7 @@ export class SyncService {
                             ...(acc.lastScanTime !== null ? { lastPassTime: acc.lastScanTime } : {}),
                             ...(acc.lastCheckpointName !== null ? { latestCheckpoint: acc.lastCheckpointName } : {}),
                             ...statusUpdate,
+                            ...finishTimeUpdate,
                             // Propagate chipCode/printingCode from passtime to runner
                             ...(acc.chipCode ? { chipCode: acc.chipCode, rfidTag: acc.chipCode } : {}),
                             ...(acc.printingCode ? { printingCode: acc.printingCode } : {}),
