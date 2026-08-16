@@ -70,7 +70,14 @@ export class SyncController {
         @Headers() headers: Record<string, string>,
         @Query('id') id: string,
         @Query('scope') scope?: string,
+        @Query('category') category?: string,
     ) {
+        // scope=checkpoints + category → refresh just that one distance's checkpoint layout,
+        // leaving every other distance (and every runner) untouched.
+        if (scope === 'checkpoints' && category) {
+            const scoped = await this.syncService.syncCheckpointsForCategory(id, category);
+            return this.successResponse({ checkpoints: scoped });
+        }
         const data = await this.syncService.importEventsFromRaceTiger(id, {
             checkpointsOnly: scope === 'checkpoints',
         });

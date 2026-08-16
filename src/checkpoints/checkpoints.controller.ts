@@ -106,6 +106,16 @@ export class CheckpointsController {
         return this.checkpointsService.findMappingsByCampaignAndEvent(campaignId, eventId);
     }
 
+    @Delete('mapping/unlink/:checkpointId/:eventId')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @AdminOnly()
+    deleteMapping(
+        @Param('checkpointId') checkpointId: string,
+        @Param('eventId') eventId: string,
+    ) {
+        return this.checkpointsService.deleteMapping(checkpointId, eventId);
+    }
+
     @Put('mapping/bulk')
     @UseGuards(AuthGuard('jwt'), PermissionsGuard)
     @AdminOnly()

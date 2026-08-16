@@ -288,4 +288,16 @@ export class CheckpointsService {
     async deleteMappingsByEvent(eventId: string): Promise<void> {
         await this.mappingModel.deleteMany({ eventId: new Types.ObjectId(eventId) }).exec();
     }
+
+    /**
+     * Unlink one checkpoint from one event. Used when an admin removes a checkpoint from a
+     * single distance — the Checkpoint doc is shared campaign-wide, so it must stay put for
+     * the other distances still using it.
+     */
+    async deleteMapping(checkpointId: string, eventId: string): Promise<void> {
+        await this.mappingModel.deleteOne({
+            checkpointId: new Types.ObjectId(checkpointId),
+            eventId: new Types.ObjectId(eventId),
+        }).exec();
+    }
 }

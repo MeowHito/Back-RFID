@@ -1747,6 +1747,184 @@ export class SyncService {
         }
         return syncResult;
     }
+
+    /**
+     * Refresh the checkpoint layout of ONE distance from RaceTiger's INFO feed.
+     *
+     * RaceTiger returns a separate TimingPoints list per event, and they genuinely differ
+     * — at Aokhanom, 55K runs START/A2/A4/A5/A6/FINISH while 15K runs START/A4/A5/A2/FINISH.
+     * The campaign-wide sync merges all of those into one list and rebuilds it wholesale,
+     * which is why syncing (or clearing) one distance used to drag the others with it:
+     * Checkpoint docs are shared across the campaign, so deleting "A2" for 15K deleted the
+     * A2 that 25K and 55K were also using.
+     *
+     * This never deletes a Checkpoint doc. It creates the ones this distance needs that
+     * don't exist yet, then edits only this distance's slice of each checkpoint:
+     * `distanceMappings` (add/remove this category), `kmCumulativeByDistance[category]`,
+     * and the CheckpointMapping rows of this distance's event. Every other distance's
+     * configuration — including hand-entered cutoffs and KM — is left exactly as it was.
+     */
+    async syncCheckpointsForCategory(
+        campaignId: string,
+        categoryName: string,
+    ): Promise<{
+        category: string;
+        checkpoints: string[];
+        created: number;
+        linked: number;
+        unlinked: number;
+        eventsMapped: number;
+    }> {
+        const wanted = this.toSafeString(categoryName);
+        if (!wanted) throw new BadRequestException('category is required');
+        this.logger.log(`\n===== SYNC CHECKPOINTS FOR CATEGORY "${wanted}" (campaign ${campaignId}) =====`);
+        const campaign = await this.getSyncEnabledCampaign(campaignId);
+        const campaignObjId = this.toCampaignObjectId(campaignId);
+
+        // Resolve the distance → its RaceTiger event number. Categories carry remoteEventNo,
+        // which the full import writes; without it we can't tell which TimingPoints list is ours.
+        const campaignDoc = await this.campaignModel.findById(campaignObjId).select('categories').lean().exec() as any;
+        const cats: any[] = campaignDoc?.categories || [];
+        const cat = cats.find(c => this.normalizeComparableText(c?.name) === this.normalizeComparableText(wanted));
+        if (!cat) {
+            throw new BadRequestException(`Distance "${wanted}" is not a category of this campaign`);
+        }
+        const categoryLabel = this.toSafeString(cat.name) || wanted;
+        const remoteNo = this.toSafeString(cat.remoteEventNo);
+        if (!remoteNo) {
+            throw new BadRequestException(
+                `Distance "${categoryLabel}" has no RaceTiger event number yet — run a full sync once so the distances get linked.`,
+            );
+        }
+
+        const { parsedBody, response, rawBody } = await this.requestRaceTiger(campaign, 'info', 1);
+        if (!response.ok) throw new BadGatewayException(`RaceTiger INFO returned status ${response.status}`);
+        if (!parsedBody || typeof parsedBody !== 'object') {
+            throw new BadGatewayException(`RaceTiger INFO returned invalid JSON: ${rawBody?.substring(0, 200)}`);
+        }
+        const rows = this.extractRowsFromPayload(parsedBody);
+        const timingPointsPerEvent = this.extractTimingPointsPerEventFromInfoRows(rows);
+        const tps = timingPointsPerEvent.get(remoteNo) || [];
+        if (tps.length === 0) {
+            throw new BadGatewayException(
+                `RaceTiger has no timing points for "${categoryLabel}" (event ${remoteNo}) right now.`,
+            );
+        }
+        this.logger.log(`  RaceTiger event ${remoteNo} → [${tps.map(t => `${t.name}(${t.km ?? '?'}km)`).join(', ')}]`);
+
+        // --- Checkpoints: create what's missing, never delete what other distances share ---
+        const existingCps = await this.checkpointsService.findByCampaign(campaignId);
+        const cpByName = new Map<string, any>(
+            existingCps.map((cp: any) => [this.normalizeComparableText(cp.name), cp]),
+        );
+        let nextOrderNum = existingCps.reduce((max, cp: any) => Math.max(max, Number(cp.orderNum) || 0), 0);
+        const missing = tps.filter(tp => !cpByName.has(this.normalizeComparableText(tp.name)));
+        if (missing.length > 0) {
+            const created = await this.checkpointsService.createMany(
+                missing.map(tp => ({
+                    campaignId,
+                    name: tp.name,
+                    type: tp.type,
+                    orderNum: ++nextOrderNum,
+                    distanceMappings: [categoryLabel],
+                })) as any,
+            );
+            for (const cp of created as any[]) {
+                cpByName.set(this.normalizeComparableText(cp.name), cp);
+            }
+            this.logger.log(`  Created ${missing.length} checkpoint(s): [${missing.map(t => t.name).join(', ')}]`);
+        }
+
+        // --- distanceMappings + per-distance KM: only this category's slice ---
+        const wantedCpIds = new Set<string>();
+        const cpUpdates: Array<{ id: string } & Record<string, any>> = [];
+        let linked = 0;
+        for (const tp of tps) {
+            const cp: any = cpByName.get(this.normalizeComparableText(tp.name));
+            if (!cp) continue;
+            wantedCpIds.add(String(cp._id));
+            const current: string[] = Array.isArray(cp.distanceMappings) ? cp.distanceMappings : [];
+            const update: Record<string, any> = {};
+            if (!current.includes(categoryLabel)) {
+                update.distanceMappings = [...current, categoryLabel];
+                linked++;
+            }
+            if (tp.km !== undefined && tp.km !== null) {
+                const kmMap = { ...(cp.kmCumulativeByDistance || {}) };
+                if (kmMap[categoryLabel] !== tp.km) {
+                    kmMap[categoryLabel] = tp.km;
+                    update.kmCumulativeByDistance = kmMap;
+                }
+            }
+            if (Object.keys(update).length > 0) cpUpdates.push({ id: String(cp._id), ...update });
+        }
+        // Checkpoints RaceTiger no longer lists for this distance lose only this distance.
+        // Their doc, their other distances, and any hand-entered cutoffs all survive.
+        let unlinked = 0;
+        const allCategoryNames = cats.map(c => this.toSafeString(c?.name)).filter(Boolean);
+        for (const cp of [...cpByName.values()]) {
+            if (wantedCpIds.has(String(cp._id))) continue;
+            const current: string[] = Array.isArray(cp.distanceMappings) ? cp.distanceMappings : [];
+            if (current.length === 0) {
+                // An empty list is the legacy "applies to every distance" marker. Spell it out
+                // as every OTHER distance so excluding this one doesn't silently include it again.
+                const materialized = allCategoryNames.filter(n => n !== categoryLabel);
+                if (materialized.length === 0) continue;
+                cpUpdates.push({ id: String(cp._id), distanceMappings: materialized });
+                unlinked++;
+                continue;
+            }
+            if (!current.includes(categoryLabel)) continue;
+            cpUpdates.push({
+                id: String(cp._id),
+                distanceMappings: current.filter(n => n !== categoryLabel),
+            });
+            unlinked++;
+        }
+        if (cpUpdates.length > 0) {
+            await this.checkpointsService.updateMany(cpUpdates as any);
+        }
+        this.logger.log(`  distanceMappings: +${linked} / -${unlinked} for "${categoryLabel}"`);
+
+        // --- CheckpointMapping rows: rebuild for this distance's event(s) only ---
+        const remoteNoNum = this.parseNumericValue(remoteNo);
+        const campaignEvents = await this.eventModel
+            .find({ $or: [{ campaignId }, { campaignId: campaignObjId }] })
+            .select('_id rfidEventId')
+            .lean()
+            .exec();
+        const targetEvents = campaignEvents.filter(
+            (ev: any) => this.parseNumericValue(ev.rfidEventId) === remoteNoNum,
+        );
+        for (const ev of targetEvents) {
+            const evId = String(ev._id);
+            const mappingDocs = tps
+                .map((tp, idx) => {
+                    const cp: any = cpByName.get(this.normalizeComparableText(tp.name));
+                    if (!cp) return null;
+                    return {
+                        checkpointId: String(cp._id),
+                        eventId: evId,
+                        orderNum: idx + 1,
+                        ...(tp.km !== undefined && tp.km !== null ? { distanceFromStart: tp.km } : {}),
+                    };
+                })
+                .filter((m): m is { checkpointId: string; eventId: string; orderNum: number } => m !== null);
+            await this.checkpointsService.deleteMappingsByEvent(evId);
+            if (mappingDocs.length) await this.checkpointsService.updateMappings(mappingDocs);
+        }
+        this.logger.log(`  Rebuilt checkpoint mappings for ${targetEvents.length} event(s)`);
+
+        return {
+            category: categoryLabel,
+            checkpoints: tps.map(t => t.name),
+            created: missing.length,
+            linked,
+            unlinked,
+            eventsMapped: targetEvents.length,
+        };
+    }
+
     /**
      * Re-pull one runner's BIO record from RaceTiger, touching nobody else.
      *
