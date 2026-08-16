@@ -36,6 +36,16 @@ function formatPaceMs(timeMs: number, distKm: number): string {
     return `${pm}:${String(ps).padStart(2, '0')}`;
 }
 
+/** ms → "H:MM:SS", the same shape RaceTiger sends in NetTime/GunTime strings. */
+function formatMsToHHMMSS(ms: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) return '';
+    const total = Math.floor(ms / 1000);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 function getCheckpointRunnerScanTimeValue(scanTime?: string | Date): number {
     if (!scanTime) return Number.POSITIVE_INFINITY;
     const value = new Date(scanTime).getTime();
@@ -1275,6 +1285,14 @@ export class TimingService implements OnModuleInit {
                 ? elapsed
                 : (Number(finishRecord.netTime) > 0 ? Number(finishRecord.netTime) : 0);
             update.elapsedTime = elapsed;
+            // When staff typed the START (or FINISH) time by hand, the net time we just derived
+            // is the source of truth — but several public pages print `netTimeStr` (RaceTiger's
+            // raw string) in preference to the number, so refresh it too or the old, wrong time
+            // keeps showing after the fix.
+            const anchorIsManual = startRecord?.isManualTime === true || finishRecord.isManualTime === true;
+            if (anchorIsManual && Number(update.netTime) > 0) {
+                update.netTimeStr = formatMsToHHMMSS(Number(update.netTime));
+            }
             // gunTime mirrors netTime by default (gun-time = net-time when there's no offset).
             // Preserve an explicit non-zero gunTime if it was already set on the record.
             update.gunTime = Number(finishRecord.gunTime) > 0

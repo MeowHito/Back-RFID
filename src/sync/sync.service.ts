@@ -2634,15 +2634,20 @@ export class SyncService {
                     const finishTimeUpdate: Record<string, any> = {};
                     const scoreHasTime = Number((existingRunner as any)?.netTime) > 0
                         || Number((existingRunner as any)?.gunTime) > 0;
-                    const manualFinish = (Array.isArray((existingRunner as any)?.manualCheckpoints)
+                    const manualCpNames = (Array.isArray((existingRunner as any)?.manualCheckpoints)
                         ? (existingRunner as any).manualCheckpoints
-                        : []).some((cp: any) => String(cp).toUpperCase().includes('FINISH'));
+                        : []).map((cp: any) => String(cp).toUpperCase());
+                    const manualFinish = manualCpNames.some((cp: string) => cp.includes('FINISH'));
+                    // Same rule as the score path: a staff-typed START owns the net time
+                    // (net = FINISH − START), so RaceTiger's split net must not write over it.
+                    // Gun time is measured from the gun and stays RaceTiger's to supply.
+                    const manualStart = manualCpNames.some((cp: string) => cp.includes('START'));
                     if (hasFinishTiming && !scoreHasTime && !manualFinish) {
                         const finishRow = (splitRowsByRunner.get(rId) || [])
                             .filter(r => finishCpNames.has(r.cp.toUpperCase()))
                             .sort((a, b) => b.order - a.order)[0];
                         if (finishRow) {
-                            if (finishRow.netMs !== null && finishRow.netMs > 0) {
+                            if (!manualStart && finishRow.netMs !== null && finishRow.netMs > 0) {
                                 finishTimeUpdate.netTime = finishRow.netMs;
                                 if (finishRow.netStr && finishRow.netStr !== '-' && finishRow.netStr !== '0') {
                                     finishTimeUpdate.netTimeStr = finishRow.netStr;
@@ -2857,8 +2862,16 @@ export class SyncService {
                                 : [];
                             const hasManualTimes = manualCps.length > 0;
                             const hasManualFinish = manualCps.some((cp) => cp.includes('FINISH'));
+                            // A staff-typed START also owns the net time: net = FINISH − START, so once
+                            // an admin fixes the start crossing, RaceTiger's NetTime (computed from its
+                            // own chip-start, which is exactly what was wrong) must not overwrite the
+                            // value recomputeRunnerAggregates() derived from the typed time.
+                            // Gun time is unaffected — it is measured from the gun, not the runner.
+                            const hasManualStart = manualCps.some((cp) => cp.includes('START'));
                             // ── Net Time (store BOTH raw string and parsed ms) ──
-                            const netTimeRaw = hasManualFinish ? null : (row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime);
+                            const netTimeRaw = (hasManualFinish || hasManualStart)
+                                ? null
+                                : (row?.NetTime ?? row?.netTime ?? row?.FinishTime ?? row?.finishTime);
                             if (netTimeRaw) {
                                 const netStr = this.toSafeString(netTimeRaw);
                                 if (netStr && netStr !== '-' && netStr !== '0') {
@@ -2866,6 +2879,20 @@ export class SyncService {
                                 }
                                 const netTimeMs = this.parseTimeToMs(netTimeRaw);
                                 if (netTimeMs !== null && netTimeMs > 0) updateData.netTime = netTimeMs;
+                            } else if (hasManualStart && !hasManualFinish) {
+                                // Heal runners whose net time an earlier sync already overwrote with
+                                // RaceTiger's value: rebuild it from the typed START and the FINISH
+                                // both held on the Runner doc.
+                                const startMs = (existingRunner as any).startTime
+                                    ? new Date((existingRunner as any).startTime).getTime() : NaN;
+                                const finishMs = (existingRunner as any).finishTime
+                                    ? new Date((existingRunner as any).finishTime).getTime() : NaN;
+                                const localNet = finishMs - startMs;
+                                if (Number.isFinite(localNet) && localNet > 0
+                                    && localNet !== Number((existingRunner as any).netTime)) {
+                                    updateData.netTime = localNet;
+                                    updateData.netTimeStr = this.formatMsToHHMMSS(localNet);
+                                }
                             }
                             // ── Gun Time (store BOTH raw string and parsed ms) ──
                             const gunTimeRaw = hasManualFinish ? null : (row?.GunTime ?? row?.gunTime ?? row?.ElapsedTime ?? row?.elapsedTime
@@ -3025,6 +3052,16 @@ export class SyncService {
         // Already has timezone info (Z, +HH:MM, -HH:MM)
         if (/[Zz]$/.test(isoStr) || /[+\-]\d{2}:\d{2}$/.test(isoStr)) return isoStr;
         return isoStr + '+07:00';
+    }
+
+    /** ms → "H:MM:SS", matching the shape RaceTiger sends in NetTime/GunTime. */
+    private formatMsToHHMMSS(ms: number): string {
+        if (!Number.isFinite(ms) || ms <= 0) return '';
+        const total = Math.floor(ms / 1000);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
 
     /**
