@@ -29,6 +29,15 @@ export class Applicant {
     fullName: string; // ชื่อ-นามสกุล (combined, used for searching)
 
     @Prop({ default: '' })
+    firstNameEn: string; // ชื่อ (ภาษาอังกฤษ)
+
+    @Prop({ default: '' })
+    lastNameEn: string; // นามสกุล (ภาษาอังกฤษ)
+
+    @Prop({ default: '' })
+    fullNameEn: string; // ชื่อ-นามสกุล ภาษาอังกฤษ (combined, used for searching)
+
+    @Prop({ default: '' })
     phone: string; // เบอร์โทร
 
     @Prop({ default: null })
@@ -66,3 +75,6 @@ ApplicantSchema.index({ campaignId: 1, phone: 1 });
 ApplicantSchema.index({ campaignId: 1, fullName: 1 });
 ApplicantSchema.index({ campaignId: 1, firstName: 1 });
 ApplicantSchema.index({ campaignId: 1, lastName: 1 });
+ApplicantSchema.index({ campaignId: 1, fullNameEn: 1 });
+ApplicantSchema.index({ campaignId: 1, firstNameEn: 1 });
+ApplicantSchema.index({ campaignId: 1, lastNameEn: 1 });

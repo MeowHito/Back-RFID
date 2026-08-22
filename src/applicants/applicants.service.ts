@@ -9,6 +9,9 @@ export interface ApplicantInput {
     firstName?: string;
     lastName?: string;
     fullName?: string;
+    firstNameEn?: string;
+    lastNameEn?: string;
+    fullNameEn?: string;
     phone?: string;
     age?: number | string | null;
     gender?: string;
@@ -36,6 +39,9 @@ export class ApplicantsService {
         const firstName = (row.firstName || '').toString().trim();
         const lastName = (row.lastName || '').toString().trim();
         const fullName = (row.fullName || `${firstName} ${lastName}`).toString().trim();
+        const firstNameEn = (row.firstNameEn || '').toString().trim();
+        const lastNameEn = (row.lastNameEn || '').toString().trim();
+        const fullNameEn = (row.fullNameEn || `${firstNameEn} ${lastNameEn}`).toString().trim();
         const ageRaw = row.age;
         const age = ageRaw === '' || ageRaw === null || ageRaw === undefined ? null : Number(ageRaw);
         return {
@@ -45,6 +51,9 @@ export class ApplicantsService {
             firstName,
             lastName,
             fullName,
+            firstNameEn,
+            lastNameEn,
+            fullNameEn,
             phone: (row.phone || '').toString().trim(),
             age: Number.isFinite(age as number) ? (age as number) : null,
             gender: (row.gender || '').toString().trim(),
@@ -106,6 +115,9 @@ export class ApplicantsService {
                     { firstName: rx },
                     { lastName: rx },
                     { fullName: rx },
+                    { firstNameEn: rx },
+                    { lastNameEn: rx },
+                    { fullNameEn: rx },
                 ],
             })
             .sort({ fullName: 1, bib: 1 })
