@@ -125,12 +125,28 @@ export class RunnersController {
     async lookupByCode(
         @Query('campaignId') campaignId: string,
         @Query('code') code: string,
+        @Query('checkIn') checkIn?: string,
     ) {
         if (!code) {
             return { found: false, runner: null };
         }
         const runner = await this.runnersService.findByAnyCodeGlobal(code.trim(), campaignId || undefined);
+        // Only the bib-check scanning screens pass checkIn=1 — other lookups
+        // (certificate search, bib-link, live monitor) must not stamp a check-in.
+        if (runner && checkIn === '1') {
+            await this.runnersService.markCheckedIn((runner as any)._id);
+        }
         return { found: !!runner, runner };
+    }
+
+    /** Roster of everyone scanned at a bib-check station — powers /admin/bib-check. */
+    @Get('checked-in')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'view')
+    async getCheckedIn(@Query('campaignId') campaignId: string) {
+        if (!campaignId) return { data: [], total: 0 };
+        const data = await this.runnersService.getCheckedIn(campaignId);
+        return { data, total: data.length };
     }
 
     @Get('edit-logs')

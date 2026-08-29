@@ -28,6 +28,26 @@ function escapeRegex(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Separators that carry no meaning inside an ID card / BIB / phone number. */
+const SEPARATORS = '\\s\\-\\u2010-\\u2015./_,()';
+const SEPARATOR_RE = new RegExp(`[${SEPARATORS}]+`, 'g');
+
+/**
+ * Build a regex that ignores separators on BOTH sides of the comparison:
+ * the query is stripped of them, and the stored value may carry them anywhere.
+ * So "1234567890123" finds a roster row saved as "1 2345 67890 12 3", and
+ * "0636493623" finds "063-649-3623" (and vice versa).
+ * Returns null when the term is nothing but separators.
+ */
+function looseRegex(term: string): RegExp | null {
+    const compact = term.replace(SEPARATOR_RE, '');
+    if (!compact) return null;
+    const pattern = Array.from(compact)
+        .map(escapeRegex)
+        .join(`[${SEPARATORS}]*`);
+    return new RegExp(pattern, 'i');
+}
+
 @Injectable()
 export class ApplicantsService {
     constructor(
@@ -104,7 +124,8 @@ export class ApplicantsService {
     async search(campaignId: string, query: string) {
         const term = (query || '').trim();
         if (!term) return [];
-        const rx = new RegExp(escapeRegex(term), 'i');
+        const rx = looseRegex(term);
+        if (!rx) return [];
         return this.applicantModel
             .find({
                 campaignId,

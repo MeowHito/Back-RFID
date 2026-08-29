@@ -48,7 +48,13 @@ export class Runner {
     rfidTag: string; // RFID chip ID
 
     @Prop()
-    checkInTime: Date;
+    checkInTime: Date; // first time this BIB was scanned at a bib-check station
+
+    @Prop()
+    lastCheckInTime: Date; // most recent bib-check scan
+
+    @Prop({ default: 0 })
+    checkInCount: number; // how many times the BIB has been scanned at bib-check
 
     @Prop()
     startTime: Date;

@@ -776,6 +776,43 @@ export class RunnersService {
         return null;
     }
 
+    /**
+     * Stamp a bib-check scan on a runner. `checkInTime` keeps the FIRST scan
+     * (that's the moment the athlete actually collected their BIB);
+     * `lastCheckInTime` / `checkInCount` track repeat scans.
+     */
+    async markCheckedIn(runnerId: any): Promise<void> {
+        if (!runnerId) return;
+        const now = new Date();
+        await this.runnerModel.updateOne(
+            { _id: runnerId },
+            [
+                {
+                    $set: {
+                        checkInTime: { $ifNull: ['$checkInTime', now] },
+                        lastCheckInTime: now,
+                        checkInCount: { $add: [{ $ifNull: ['$checkInCount', 0] }, 1] },
+                    },
+                },
+            ],
+        ).exec();
+    }
+
+    /** Everyone who has been scanned at a bib-check station, newest first. */
+    async getCheckedIn(campaignOrEventId: string) {
+        const eventIds = await this.resolveLookupEventIds(campaignOrEventId);
+        if (!eventIds.length) return [];
+        return this.runnerModel
+            .find({
+                eventId: { $in: eventIds },
+                checkInTime: { $exists: true, $ne: null },
+            })
+            .select('bib firstName lastName firstNameTh lastNameTh gender age ageGroup category team eventId checkInTime lastCheckInTime checkInCount')
+            .sort({ checkInTime: -1 })
+            .lean()
+            .exec();
+    }
+
     /** Batch-update timing/score fields for multiple runners in a single bulkWrite */
     async bulkUpdateTiming(ops: Array<{ id: any; data: Record<string, any> }>): Promise<number> {
         if (!ops.length) return 0;
