@@ -28,9 +28,16 @@ function escapeRegex(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Separators that carry no meaning inside an ID card / BIB / phone number. */
-const SEPARATORS = '\\s\\-\\u2010-\\u2015./_,()';
-const SEPARATOR_RE = new RegExp(`[${SEPARATORS}]+`, 'g');
+/**
+ * Separators that carry no meaning inside an ID card / BIB / phone number.
+ * Two flavours on purpose:
+ *  - QUERY_SEPARATOR_RE runs in Node, so it can use full unicode escapes
+ *    (typographic dashes, non-breaking space) to clean up what the user typed.
+ *  - STORED_SEPARATOR_CLASS goes into the regex MongoDB evaluates, and Mongo's
+ *    PCRE2 engine rejects \u escapes — keep it plain ASCII.
+ */
+const QUERY_SEPARATOR_RE = /[\s\u00A0\u2010-\u2015\u2212\-./_,()]+/g;
+const STORED_SEPARATOR_CLASS = '[\\s\\-./_,()]*';
 
 /**
  * Build a regex that ignores separators on BOTH sides of the comparison:
@@ -40,11 +47,11 @@ const SEPARATOR_RE = new RegExp(`[${SEPARATORS}]+`, 'g');
  * Returns null when the term is nothing but separators.
  */
 function looseRegex(term: string): RegExp | null {
-    const compact = term.replace(SEPARATOR_RE, '');
+    const compact = term.replace(QUERY_SEPARATOR_RE, '');
     if (!compact) return null;
     const pattern = Array.from(compact)
         .map(escapeRegex)
-        .join(`[${SEPARATORS}]*`);
+        .join(STORED_SEPARATOR_CLASS);
     return new RegExp(pattern, 'i');
 }
 
