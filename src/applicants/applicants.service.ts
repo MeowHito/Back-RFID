@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Applicant, ApplicantDocument } from './applicant.schema';
+import { ApplicantEditLog, ApplicantEditLogDocument } from './applicant-edit-log.schema';
 
 export interface ApplicantInput {
     idCard?: string;
@@ -60,6 +61,8 @@ export class ApplicantsService {
     constructor(
         @InjectModel(Applicant.name)
         private readonly applicantModel: Model<ApplicantDocument>,
+        @InjectModel(ApplicantEditLog.name)
+        private readonly editLogModel: Model<ApplicantEditLogDocument>,
     ) { }
 
     private normalize(campaignId: string, row: ApplicantInput) {
@@ -96,8 +99,10 @@ export class ApplicantsService {
     /**
      * Bulk import applicants for a campaign.
      * mode 'replace' clears existing rows first; 'append' keeps them.
+     * Logged as one summary entry per call — logging every row of a
+     * multi-hundred-row roster would drown out the manual edits it exists to track.
      */
-    async bulkImport(campaignId: string, rows: ApplicantInput[], mode: 'replace' | 'append' = 'replace') {
+    async bulkImport(campaignId: string, rows: ApplicantInput[], mode: 'replace' | 'append' = 'replace', changedBy = 'admin') {
         if (mode === 'replace') {
             await this.applicantModel.deleteMany({ campaignId }).exec();
         }
@@ -106,6 +111,12 @@ export class ApplicantsService {
             return { inserted: 0, mode };
         }
         const result = await this.applicantModel.insertMany(docs, { ordered: false });
+        await this.editLogModel.create({
+            campaignId,
+            changedBy,
+            source: 'bulk-import',
+            note: `${mode === 'replace' ? 'แทนที่ทั้งหมด' : 'เพิ่มต่อ'} ${result.length.toLocaleString()} รายการ`,
+        });
         return { inserted: result.length, mode };
     }
 
@@ -119,13 +130,22 @@ export class ApplicantsService {
         return this.applicantModel.countDocuments({ campaignId }).exec();
     }
 
-    async clearCampaign(campaignId: string) {
+    async clearCampaign(campaignId: string, changedBy = 'admin') {
         const res = await this.applicantModel.deleteMany({ campaignId }).exec();
+        await this.editLogModel.create({
+            campaignId,
+            changedBy,
+            source: 'clear-all',
+            note: `ล้างทั้งหมด ${(res.deletedCount || 0).toLocaleString()} รายการ`,
+        });
         return { deleted: res.deletedCount || 0 };
     }
 
     /** Patch a single field/set of fields on one applicant row (inline edit from the admin table). */
-    async updateOne(id: string, patch: Partial<ApplicantInput>) {
+    async updateOne(id: string, patch: Partial<ApplicantInput>, changedBy = 'admin') {
+        const before = await this.applicantModel.findById(id).lean();
+        if (!before) return null;
+
         const set: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(patch)) {
             if (key === 'age') {
@@ -135,17 +155,65 @@ export class ApplicantsService {
             }
         }
         if (set.firstName !== undefined || set.lastName !== undefined) {
-            const doc = await this.applicantModel.findById(id).lean();
-            const firstName = set.firstName !== undefined ? (set.firstName as string) : doc?.firstName || '';
-            const lastName = set.lastName !== undefined ? (set.lastName as string) : doc?.lastName || '';
+            const firstName = set.firstName !== undefined ? (set.firstName as string) : before.firstName || '';
+            const lastName = set.lastName !== undefined ? (set.lastName as string) : before.lastName || '';
             if (set.fullName === undefined) set.fullName = `${firstName} ${lastName}`.trim();
         }
-        return this.applicantModel.findByIdAndUpdate(id, { $set: set }, { new: true }).lean().exec();
+
+        const changes = Object.entries(set)
+            .filter(([field, newValue]) => String((before as unknown as Record<string, unknown>)[field] ?? '') !== String(newValue ?? ''))
+            .map(([field, newValue]) => ({
+                field,
+                oldValue: String((before as unknown as Record<string, unknown>)[field] ?? ''),
+                newValue: String(newValue ?? ''),
+            }));
+
+        const updated = await this.applicantModel.findByIdAndUpdate(id, { $set: set }, { new: true }).lean().exec();
+
+        if (changes.length > 0) {
+            await this.editLogModel.create({
+                campaignId: before.campaignId,
+                applicantId: id,
+                bib: updated?.bib || before.bib,
+                applicantName: updated?.fullName || before.fullName,
+                changedBy,
+                source: 'edit',
+                changes,
+            });
+        }
+
+        return updated;
     }
 
-    async deleteOne(id: string) {
-        const res = await this.applicantModel.findByIdAndDelete(id).exec();
+    async deleteOne(id: string, changedBy = 'admin') {
+        const res = await this.applicantModel.findByIdAndDelete(id).lean().exec();
+        if (res) {
+            await this.editLogModel.create({
+                campaignId: res.campaignId,
+                applicantId: id,
+                bib: res.bib,
+                applicantName: res.fullName,
+                changedBy,
+                source: 'delete',
+                note: `ลบ ${res.fullName || res.bib || 'รายการ'}`,
+            });
+        }
         return { deleted: res ? 1 : 0 };
+    }
+
+    async getEditLogs(campaignId: string, limit = 3000) {
+        return this.editLogModel
+            .find({ campaignId })
+            .sort({ changedAt: -1 })
+            .limit(limit)
+            .lean()
+            .exec();
+    }
+
+    async deleteEditLogs(campaignId: string, logId?: string) {
+        const filter = logId ? { _id: logId } : { campaignId };
+        const res = await this.editLogModel.deleteMany(filter).exec();
+        return { deleted: res.deletedCount || 0 };
     }
 
     /**
