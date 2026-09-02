@@ -124,6 +124,30 @@ export class ApplicantsService {
         return { deleted: res.deletedCount || 0 };
     }
 
+    /** Patch a single field/set of fields on one applicant row (inline edit from the admin table). */
+    async updateOne(id: string, patch: Partial<ApplicantInput>) {
+        const set: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(patch)) {
+            if (key === 'age') {
+                set.age = value === '' || value === null || value === undefined ? null : Number(value);
+            } else if (key !== 'extra') {
+                set[key] = (value ?? '').toString().trim();
+            }
+        }
+        if (set.firstName !== undefined || set.lastName !== undefined) {
+            const doc = await this.applicantModel.findById(id).lean();
+            const firstName = set.firstName !== undefined ? (set.firstName as string) : doc?.firstName || '';
+            const lastName = set.lastName !== undefined ? (set.lastName as string) : doc?.lastName || '';
+            if (set.fullName === undefined) set.fullName = `${firstName} ${lastName}`.trim();
+        }
+        return this.applicantModel.findByIdAndUpdate(id, { $set: set }, { new: true }).lean().exec();
+    }
+
+    async deleteOne(id: string) {
+        const res = await this.applicantModel.findByIdAndDelete(id).exec();
+        return { deleted: res ? 1 : 0 };
+    }
+
     /**
      * Public search across identifiers. Returns every matching row (duplicates included).
      * Matches idCard / bib / phone (substring), and name fields (substring, case-insensitive).

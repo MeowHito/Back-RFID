@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Query, UseGuards, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, NotFoundException, BadRequestException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApplicantsService, ApplicantInput } from './applicants.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
@@ -42,6 +42,20 @@ export class ApplicantsController {
     async clear(@Query('campaignId') campaignId: string) {
         if (!campaignId) throw new BadRequestException('campaignId is required');
         return this.applicantsService.clearCampaign(campaignId);
+    }
+
+    @Patch(':id')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'create')
+    async update(@Param('id') id: string, @Body() body: Partial<ApplicantInput>) {
+        return this.applicantsService.updateOne(id, body || {});
+    }
+
+    @Delete(':id')
+    @UseGuards(AuthGuard('jwt'), PermissionsGuard)
+    @RequirePermission('participants', 'delete')
+    async deleteOne(@Param('id') id: string) {
+        return this.applicantsService.deleteOne(id);
     }
 
     // ─── Public search (no auth) — resolves slug/uuid/id ─────────
