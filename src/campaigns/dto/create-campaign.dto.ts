@@ -105,6 +105,17 @@ export class OverallDisplayCountByCategoryDto {
     count: number;
 }
 
+export class TopRunnersRangeByCategoryDto {
+    @IsString()
+    category: string;
+
+    @IsNumber()
+    start: number;
+
+    @IsNumber()
+    end: number;
+}
+
 export class CreateCampaignDto {
     @IsString()
     name: string;
@@ -273,6 +284,17 @@ export class CreateCampaignDto {
     @ValidateNested({ each: true })
     @Type(() => OverallDisplayCountByCategoryDto)
     overallDisplayCountByCategory?: OverallDisplayCountByCategoryDto[];
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => TopRunnersRangeByCategoryDto)
+    topRunnersRangeByCategory?: TopRunnersRangeByCategoryDto[];
+
+    @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    topRunnersExcludeOverallCategories?: string[];
 
     @IsOptional()
     bestOfDisplayCount?: number;

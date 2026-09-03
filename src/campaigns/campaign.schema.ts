@@ -249,6 +249,22 @@ export class Campaign {
     @Prop({ type: [{ category: String, count: Number }], default: [] })
     overallDisplayCountByCategory: { category: string; count: number }[];
 
+    /** Per-category rank range shown on the Top Runners board
+     *  (/Top-Overall-Winners). `start`/`end` are inclusive 1-based overall ranks,
+     *  so `{ start: 1, end: 20 }` displays ranks 1-20 — Overall winners included,
+     *  never skipped. Categories with no entry fall back to
+     *  1..`overallDisplayCount`, the behavior before ranges existed. */
+    @Prop({ type: [{ category: String, start: Number, end: Number }], default: [] })
+    topRunnersRangeByCategory: { category: string; start: number; end: number }[];
+
+    /** Race categories (by name) whose Top Runners board drops the Overall winners,
+     *  for organizers who don't award the same runner twice. The dropped slots are
+     *  backfilled from further down the field, so the board still fills the row
+     *  count its range asks for. How many are dropped = that distance's
+     *  `overallDisplayCount`. */
+    @Prop({ type: [String], default: [] })
+    topRunnersExcludeOverallCategories: string[];
+
     /** Number of top ranks (per gender) to display on the Best-Of-Winners page
      *  (local-province "Best Of" award). Default 1. */
     @Prop({ default: 1 })

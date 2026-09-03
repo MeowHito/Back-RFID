@@ -1026,6 +1026,8 @@ export class PublicApiController {
                     // Overall + Age-group winners consistently with the winner boards.
                     overallDisplayCount: (campaign as any).overallDisplayCount ?? null,
                     overallDisplayCountByCategory: (campaign as any).overallDisplayCountByCategory || [],
+                    topRunnersRangeByCategory: (campaign as any).topRunnersRangeByCategory || [],
+                    topRunnersExcludeOverallCategories: (campaign as any).topRunnersExcludeOverallCategories || [],
                     ageGroupDisplayCount: (campaign as any).ageGroupDisplayCount ?? null,
                     excludeOverallFromAgeGroup: (campaign as any).excludeOverallFromAgeGroup ?? null,
                     excludeOverallThaiFromAgeGroup: (campaign as any).excludeOverallThaiFromAgeGroup ?? null,
