@@ -784,17 +784,17 @@ export class RunnersService {
     async markCheckedIn(runnerId: any): Promise<void> {
         if (!runnerId) return;
         const now = new Date();
+        // Plain update operators only — Mongoose 9 rejects an aggregation-pipeline
+        // update unless `updatePipeline` is set, and a throw here would turn a
+        // successful scan into a 500 ("Runner Not Found" on the scanning screen).
         await this.runnerModel.updateOne(
             { _id: runnerId },
-            [
-                {
-                    $set: {
-                        checkInTime: { $ifNull: ['$checkInTime', now] },
-                        lastCheckInTime: now,
-                        checkInCount: { $add: [{ $ifNull: ['$checkInCount', 0] }, 1] },
-                    },
-                },
-            ],
+            { $set: { lastCheckInTime: now }, $inc: { checkInCount: 1 } },
+        ).exec();
+        // checkInTime keeps the FIRST scan, so only stamp it while it is still empty
+        await this.runnerModel.updateOne(
+            { _id: runnerId, $or: [{ checkInTime: null }, { checkInTime: { $exists: false } }] },
+            { $set: { checkInTime: now } },
         ).exec();
     }
 

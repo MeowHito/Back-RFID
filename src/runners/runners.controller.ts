@@ -134,7 +134,13 @@ export class RunnersController {
         // Only the bib-check scanning screens pass checkIn=1 — other lookups
         // (certificate search, bib-link, live monitor) must not stamp a check-in.
         if (runner && checkIn === '1') {
-            await this.runnersService.markCheckedIn((runner as any)._id);
+            // Stamping the check-in must never break the scan itself — the screen
+            // only needs the runner back.
+            try {
+                await this.runnersService.markCheckedIn((runner as any)._id);
+            } catch (err) {
+                console.error('markCheckedIn failed for runner', (runner as any)._id, err);
+            }
         }
         return { found: !!runner, runner };
     }
