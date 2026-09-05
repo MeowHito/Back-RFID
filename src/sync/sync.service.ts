@@ -126,6 +126,44 @@ export class SyncService {
     }
 
     /**
+     * Bib-check stamps live on the Runner doc, so the clean-slate delete wipes them —
+     * the "นักกีฬาที่เช็คบิบแล้ว" counter drops to zero after every full sync even though
+     * the BIBs really were handed out. RaceTiger has no idea who collected their BIB,
+     * so we carry these across ourselves, keyed by (eventId, bib) like the other restores.
+     */
+    private async snapshotCheckIns(eventOids: Types.ObjectId[]): Promise<any[]> {
+        if (eventOids.length === 0) return [];
+        const snapshots = await (this.runnerModel as any).find({
+            eventId: { $in: eventOids },
+            checkInTime: { $exists: true, $ne: null },
+        }).select('bib eventId checkInTime lastCheckInTime checkInCount').lean().exec();
+        if (snapshots.length > 0) {
+            this.logger.log(`Snapshotted ${snapshots.length} bib-check stamps before clean slate`);
+        }
+        return snapshots;
+    }
+
+    /** Put the bib-check stamps back on the freshly re-imported runners. */
+    private async restoreCheckIns(snapshots: any[]): Promise<number> {
+        if (!snapshots.length) return 0;
+        const ops = snapshots.map((snap: any) => ({
+            updateOne: {
+                filter: { eventId: snap.eventId, bib: snap.bib },
+                update: {
+                    $set: {
+                        checkInTime: snap.checkInTime,
+                        lastCheckInTime: snap.lastCheckInTime || snap.checkInTime,
+                        checkInCount: snap.checkInCount || 1,
+                    },
+                },
+            },
+        }));
+        await (this.runnerModel as any).bulkWrite(ops, { ordered: false });
+        this.logger.log(`Restored ${ops.length} bib-check stamps after clean slate`);
+        return ops.length;
+    }
+
+    /**
      * A clean-slate re-import deletes and recreates every Runner doc with a fresh
      * ObjectId, which orphans the manually-entered timing records we deliberately kept.
      * Re-point them at the new runner with the same (eventId, bib).
@@ -1352,6 +1390,7 @@ export class SyncService {
                 if (eventResolver.fallbackEventId) preCleanEventIds.push(eventResolver.fallbackEventId);
                 const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
                 const protectedSnapshots = await this.snapshotProtectedRunners(preCleanEventOids);
+                const checkInSnapshots = await this.snapshotCheckIns(preCleanEventOids);
                 // Capture the runner ids about to be deleted so we can re-link their edit logs afterwards.
                 const oldRunnerIds = (await this.runnerModel
                     .find({ eventId: { $in: preCleanEventOids } })
@@ -1411,6 +1450,8 @@ export class SyncService {
                 this.logger.log(`BIO import: inserted=${bioInserted}, updated=${bioUpdated}, skipped=${bioSkipped}, skippedNoResult=${bioSkippedNoResult}`);
                 // Restore manually-set DNF/DNS/DQ status + manually-edited bio fields wiped by the clean-slate delete+recreate
                 await this.restoreProtectedRunners(protectedSnapshots);
+                // Bib-check stamps too — RaceTiger can't re-supply who collected their BIB.
+                await this.restoreCheckIns(checkInSnapshots);
                 // Re-link edit-log history to the freshly re-inserted runners so the "Edited List" survives sync
                 const relinked = await this.runnersService.relinkEditLogsByBib(oldRunnerIds, preCleanEventOids);
                 if (relinked > 0) this.logger.log(`Re-linked ${relinked} edit-log entries to re-imported runners`);
@@ -2124,6 +2165,7 @@ export class SyncService {
             // Snapshot manually-set DNF/DNS/DQ status + manually-edited bio fields before delete so we can restore them after re-import
             const preCleanEventOids = preCleanEventIds.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
             const protectedSnapshots = await this.snapshotProtectedRunners(preCleanEventOids);
+            const checkInSnapshots = await this.snapshotCheckIns(preCleanEventOids);
             // Capture the runner ids about to be deleted so we can re-link their edit logs afterwards.
             const oldRunnerIds = (await this.runnerModel
                 .find({ eventId: { $in: preCleanEventOids } })
@@ -2219,6 +2261,8 @@ export class SyncService {
             this.logger.log(`Pre-filter: skipped ${skippedNoResult} BIO rows with no race results in SCORE data`);
             // Restore manually-set DNF/DNS/DQ status + manually-edited bio fields wiped by the clean-slate delete+recreate
             await this.restoreProtectedRunners(protectedSnapshots);
+            // Bib-check stamps too — RaceTiger can't re-supply who collected their BIB.
+            await this.restoreCheckIns(checkInSnapshots);
             // Re-link edit-log history to the freshly re-inserted runners so the "Edited List" survives sync
             const relinked = await this.runnersService.relinkEditLogsByBib(oldRunnerIds, preCleanEventOids);
             if (relinked > 0) this.logger.log(`Re-linked ${relinked} edit-log entries to re-imported runners`);
