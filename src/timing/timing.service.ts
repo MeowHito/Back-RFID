@@ -46,6 +46,15 @@ function formatMsToHHMMSS(ms: number): string {
     return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+/** "H:MM:SS" / "HH:MM:SS(.mmm)" → ms. 0 when the string isn't a time. */
+function parseHHMMSSToMs(value?: string): number {
+    const m = String(value || '').trim().match(/^(\d+):([0-5]?\d):([0-5]?\d)(?:\.(\d{1,3}))?$/);
+    if (!m) return 0;
+    const ms = ((Number(m[1]) * 3600) + (Number(m[2]) * 60) + Number(m[3])) * 1000
+        + (m[4] ? Number(m[4].padEnd(3, '0')) : 0);
+    return Number.isFinite(ms) ? ms : 0;
+}
+
 function getCheckpointRunnerScanTimeValue(scanTime?: string | Date): number {
     if (!scanTime) return Number.POSITIVE_INFINITY;
     const value = new Date(scanTime).getTime();
@@ -1066,13 +1075,24 @@ export class TimingService implements OnModuleInit {
         // overwriting it, and the public table shows it in orange.
         const update: any = { scanTime: newScan, elapsedTime, splitTime, isManualTime: true, manualTimeAt: new Date() };
         if (isFinish || (existing.netTime && existing.netTime > 0)) update.netTime = elapsedTime;
-        if (existing.gunTime && existing.gunTime > 0) update.gunTime = elapsedTime;
+
+        // GUN time is measured from the official start-gun, NOT from this runner's own
+        // START crossing, so it must never be re-derived from the START anchor. Moving a
+        // scan time simply shifts it by the same delta (and editing START leaves it alone,
+        // since the START record carries no gun time of its own).
+        const oldScanMs = new Date(existing.scanTime).getTime();
+        const deltaMs = Number.isFinite(oldScanMs) ? newScan.getTime() - oldScanMs : 0;
+        const existingGunMs = Number(existing.gunTime) || 0;
+        if (existingGunMs > 0 && deltaMs !== 0) {
+            update.gunTime = Math.max(0, existingGunMs + deltaMs);
+        }
+        const gunMsAfter = Number(update.gunTime) > 0 ? Number(update.gunTime) : existingGunMs;
 
         const dist = existing.distanceFromStart;
         if (dist && dist > 0 && elapsedTime > 0) {
             const pace = formatPaceMs(elapsedTime, dist);
             update.netPace = pace;
-            if (update.gunTime) update.gunPace = pace;
+            if (gunMsAfter > 0) update.gunPace = formatPaceMs(gunMsAfter, dist);
         }
         if (existing.legDistance && existing.legDistance > 0 && splitTime > 0) {
             const segPace = formatPaceMs(splitTime, existing.legDistance);
@@ -1117,13 +1137,11 @@ export class TimingService implements OnModuleInit {
                 const rScanMs = new Date(r.scanTime).getTime();
                 const newElapsed = Math.max(0, rScanMs - newStartMs);
                 const rCpUp = (r.checkpoint || '').toUpperCase();
+                // Only chip/net time follows the START anchor — gunTime stays as it was.
                 const u: any = { elapsedTime: newElapsed };
                 if (rCpUp === 'FINISH' || (r.netTime && r.netTime > 0)) u.netTime = newElapsed;
-                if (r.gunTime && r.gunTime > 0) u.gunTime = newElapsed;
                 if (r.distanceFromStart && r.distanceFromStart > 0 && newElapsed > 0) {
-                    const pace = formatPaceMs(newElapsed, r.distanceFromStart);
-                    u.netPace = pace;
-                    if (u.gunTime) u.gunPace = pace;
+                    u.netPace = formatPaceMs(newElapsed, r.distanceFromStart);
                 }
                 await this.timingModel.findByIdAndUpdate(r._id, u).exec();
                 if (rCpUp === 'FINISH') {
@@ -1233,12 +1251,12 @@ export class TimingService implements OnModuleInit {
                 if (isFinishRec || (r.netTime && Number(r.netTime) > 0)) {
                     recUpdate.netTime = newElapsed;
                 }
-                // Recompute pace strings when distance is known.
+                // Recompute pace strings when distance is known. gunPace follows the
+                // record's own (untouched) gunTime — the START anchor only drives net.
                 const dist = Number(r.distanceFromStart) || 0;
                 if (dist > 0 && newElapsed > 0) {
-                    const pace = formatPaceMs(newElapsed, dist);
-                    recUpdate.netPace = pace;
-                    if (r.gunTime && Number(r.gunTime) > 0) recUpdate.gunPace = pace;
+                    recUpdate.netPace = formatPaceMs(newElapsed, dist);
+                    if (Number(r.gunTime) > 0) recUpdate.gunPace = formatPaceMs(Number(r.gunTime), dist);
                 }
                 const legDist = Number(r.legDistance) || 0;
                 if (legDist > 0 && splitTime > 0) {
@@ -1293,11 +1311,22 @@ export class TimingService implements OnModuleInit {
             if (anchorIsManual && Number(update.netTime) > 0) {
                 update.netTimeStr = formatMsToHHMMSS(Number(update.netTime));
             }
-            // gunTime mirrors netTime by default (gun-time = net-time when there's no offset).
-            // Preserve an explicit non-zero gunTime if it was already set on the record.
-            update.gunTime = Number(finishRecord.gunTime) > 0
-                ? Number(finishRecord.gunTime)
-                : elapsed;
+            // GUN time comes from the official start-gun, so a hand-typed START (or any
+            // other checkpoint edit) must NOT move it — only the chip/net time above.
+            // The one thing that legitimately shifts it is moving the FINISH scan itself:
+            // updateRecordScanTime() shifts the FINISH record's gunTime by the same delta,
+            // so that edited value wins. Otherwise trust RaceTiger's raw gun string, then
+            // the runner's stored gunTime, then the FINISH record's, and only fall back to
+            // the net elapsed when nothing at all knows a gun time.
+            const finishGunMs = Number(finishRecord.gunTime) || 0;
+            const finishGunIsEdited = finishRecord.isManualTime === true && finishGunMs > 0;
+            const knownGunMs = finishGunIsEdited
+                ? finishGunMs
+                : (parseHHMMSSToMs(runner?.gunTimeStr) || Number(runner?.gunTime) || finishGunMs);
+            update.gunTime = knownGunMs > 0 ? knownGunMs : elapsed;
+            if (finishGunIsEdited) {
+                update.gunTimeStr = formatMsToHHMMSS(finishGunMs);
+            }
             update.status = 'finished';
         }
 
