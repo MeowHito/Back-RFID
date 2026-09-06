@@ -124,3 +124,18 @@ export function formatCutoffForNote(cutoff: Date): string {
     }, {});
     return `${parts.day}/${parts.month}/${parts.year} ${parts.hour}:${parts.minute}`;
 }
+
+/**
+ * True when the cut-off rule (not a human) is what stopped this runner.
+ *
+ * Such a stop is owned by the cut-off evaluation alone: only the scheduler re-examining the
+ * crossings, an extended cut-off, or staff may lift it. In particular the RaceTiger sync must
+ * NOT promote these runners back to 'finished' just because a finish time exists — that is
+ * exactly the tug-of-war that made a late finisher flip between FINISH and DNF every minute.
+ */
+export function isCutoffStopped(runner: any): boolean {
+    if (runner?.isManualStatus === true) return false;
+    const status = String(runner?.status || '').toLowerCase();
+    if (status !== 'dnf' && status !== 'dns') return false;
+    return String(runner?.statusChangedBy || '').trim().toLowerCase() === 'cutoff-scheduler';
+}

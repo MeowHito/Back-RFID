@@ -23,6 +23,8 @@ interface Runner {
     finishTime?: Date | null;
     isManualStatus?: boolean;
     statusChangedBy?: string;
+    statusCheckpoint?: string;
+    statusNote?: string;
 }
 
 interface Record_ { runnerId: Types.ObjectId; checkpoint: string; scanTime: Date }
@@ -58,8 +60,15 @@ function buildService(opts: { cps: any[]; runners: Runner[]; records: Record_[] 
     };
     const runnerModel: any = {
         find: (query: any) => leanable(
-            opts.runners.filter(r => (query.status?.$in || []).includes(r.status)
-                && r.isManualStatus !== true && inScope(query, r)),
+            opts.runners.filter(r => {
+                const wanted = query.status?.$in || (query.status ? [query.status] : null);
+                if (wanted && !wanted.includes(r.status)) return false;
+                if (r.isManualStatus === true) return false;
+                if (query.statusChangedBy && r.statusChangedBy !== query.statusChangedBy) return false;
+                if (query.statusCheckpoint instanceof RegExp
+                    && !query.statusCheckpoint.test(r.statusCheckpoint || '')) return false;
+                return inScope(query, r);
+            }),
         ),
         countDocuments: (query: any) => thenable(
             opts.runners.filter(r => (query.status?.$in || [query.status]).includes(r.status)
@@ -229,5 +238,64 @@ describe('CheckpointSchedulerService — cut-off enforcement', () => {
 
         expect(result.processed).toBe(0);
         expect(running.status).toBe('in_progress');
+    });
+});
+
+describe('CheckpointSchedulerService — re-examining a cut-off DNF', () => {
+    /** A runner this rule already cut at the FINISH. */
+    const cutAtFinish = (over: Partial<Runner> = {}) => runner({
+        status: 'dnf',
+        statusChangedBy: 'cutoff-scheduler',
+        statusCheckpoint: 'FINISH',
+        statusNote: 'Auto DNF: missed the FINISH cut-off (06/09/2026 11:00)',
+        latestCheckpoint: 'FINISH',
+        ...over,
+    });
+
+    it('keeps the DNF while the crossing is still after the cut-off', async () => {
+        const late = cutAtFinish({ finishTime: day('12:39') });
+        const { service } = buildService({
+            cps: checkpoints(),
+            runners: [late],
+            records: [{ runnerId: late._id, checkpoint: 'FINISH', scanTime: day('12:39') }],
+        });
+
+        const result = await service.checkCutOffTimes();
+
+        expect(result.dnfCount).toBe(0);
+        expect(late.status).toBe('dnf');
+        expect(late.statusNote).toContain('Auto DNF');
+    });
+
+    it('reverts to finished once the crossing turns out to be in time', async () => {
+        // A corrected RaceTiger row / late upload / staff-typed time moves the FINISH crossing
+        // back before the cut-off — nothing else in the system re-opens that verdict.
+        const fixed = cutAtFinish({ finishTime: day('10:30') });
+        const { service } = buildService({
+            cps: checkpoints(),
+            runners: [fixed],
+            records: [{ runnerId: fixed._id, checkpoint: 'FINISH', scanTime: day('10:30') }],
+        });
+
+        await service.checkCutOffTimes();
+
+        expect(fixed.status).toBe('finished');
+        expect(fixed.statusNote).toBe('');
+        expect(fixed.statusCheckpoint).toBe('');
+    });
+
+    it('never reverts a DNF a human set', async () => {
+        const manual = cutAtFinish({
+            finishTime: day('10:30'), isManualStatus: true, statusChangedBy: 'admin@rfidtiming.com',
+        });
+        const { service } = buildService({
+            cps: checkpoints(),
+            runners: [manual],
+            records: [{ runnerId: manual._id, checkpoint: 'FINISH', scanTime: day('10:30') }],
+        });
+
+        await service.checkCutOffTimes();
+
+        expect(manual.status).toBe('dnf');
     });
 });

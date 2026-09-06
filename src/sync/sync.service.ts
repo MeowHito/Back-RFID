@@ -9,6 +9,7 @@ import { CreateRunnerDto } from '../runners/dto/create-runner.dto';
 import { RunnersService, PROTECTED_BIO_FIELDS } from '../runners/runners.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
 import { CheckpointSchedulerService } from '../checkpoints/checkpoint-scheduler.service';
+import { isCutoffStopped } from '../checkpoints/cutoff.util';
 import { SyncLog, SyncLogDocument } from './sync-log.schema';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
 type RaceTigerRequestType = 'info' | 'bio' | 'split' | 'score' | 'passedTime';
@@ -2667,8 +2668,12 @@ export class SyncService {
                     const curStatus = (existingRunner?.status || '').toLowerCase();
                     const isManuallySet = (existingRunner as any)?.isManualStatus === true;
                     const isStoppedManual = isManuallySet && ['dnf', 'dns', 'dq'].includes(curStatus);
+                    // A cut-off DNF is not RaceTiger's to undo: RaceTiger has no idea a cut-off
+                    // exists and hands us a finish time for the late finisher too, so promoting on
+                    // it would flip the runner back to FINISH until the scheduler cut them again.
+                    const isStoppedByCutoff = isCutoffStopped(existingRunner);
                     let statusUpdate: Record<string, any> = {};
-                    if (existingRunner && acc.lapCount > 0 && !isStoppedManual) {
+                    if (existingRunner && acc.lapCount > 0 && !isStoppedManual && !isStoppedByCutoff) {
                         if (hasFinishTiming && curStatus !== 'finished') {
                             statusUpdate = { status: 'finished', isStarted: true };
                         } else if (curStatus === 'not_started') {
@@ -2986,7 +2991,9 @@ export class SyncService {
                             const currentStatus = (existingRunner.status || '').toLowerCase();
                             const isManuallySet = (existingRunner as any).isManualStatus === true;
                             const isStoppedManual = isManuallySet && ['dnf', 'dns', 'dq'].includes(currentStatus);
-                            if (!isStoppedManual) {
+                            // Same rule as the split path: a cut-off DNF stands until the cut-off
+                            // scheduler (or staff) lifts it, never because a score row exists.
+                            if (!isStoppedManual && !isCutoffStopped(existingRunner)) {
                                 if (updateData.netTime && updateData.netTime > 0 && currentStatus !== 'finished') {
                                     // Has NetTime → runner crossed the finish line
                                     updateData.status = 'finished'; updateData.isStarted = true; result.statusChanges++;

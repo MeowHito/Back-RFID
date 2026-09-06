@@ -184,7 +184,7 @@ export class CheckpointSchedulerService implements OnModuleInit {
                             const applied = await this.applyNonStartCutoff({
                                 cp, cpDisplayName, cpName, cpOrder, cpOrderMap, entry, baseScope, eventOids, now,
                             });
-                            changed = applied.dnfCount + applied.dnsCount;
+                            changed = applied.dnfCount + applied.dnsCount + applied.revertedCount;
                             dnfCount += applied.dnfCount;
                             dnsCount += applied.dnsCount;
                         }
@@ -220,7 +220,7 @@ export class CheckpointSchedulerService implements OnModuleInit {
         baseScope: any;
         eventOids: Types.ObjectId[];
         now: Date;
-    }): Promise<{ dnfCount: number; dnsCount: number }> {
+    }): Promise<{ dnfCount: number; dnsCount: number; revertedCount: number }> {
         const { cp, cpDisplayName, cpName, cpOrder, cpOrderMap, entry, baseScope, eventOids, now } = params;
         const cutoffMs = entry.cutoff.getTime();
         const orders = [...cpOrderMap.values()];
@@ -240,8 +240,25 @@ export class CheckpointSchedulerService implements OnModuleInit {
             .exec())
             .filter((r: any) => !isAdminOwnedStatus(r));
 
+        // Runners this same rule already cut here. Their verdict is re-examined below: nothing
+        // else does it, so a DNF written from incomplete data (the crossing not yet uploaded,
+        // synced, or typed in) would otherwise stand for the rest of the race.
+        const previouslyCut = await this.runnerModel
+            .find({
+                ...baseScope,
+                status: 'dnf',
+                statusChangedBy: 'cutoff-scheduler',
+                statusCheckpoint: CheckpointSchedulerService.exactNameRegex(cpDisplayName),
+                isManualStatus: { $ne: true },
+            })
+            .select('_id finishTime')
+            .lean()
+            .exec();
+
         const dnfIds: Types.ObjectId[] = [];
-        if (candidates.length > 0) {
+        const revertFinishedIds: Types.ObjectId[] = [];
+        const revertRacingIds: Types.ObjectId[] = [];
+        if (candidates.length > 0 || previouslyCut.length > 0) {
             const crossings = await this.firstCrossings(cpName, cpOrderMap, cpOrder, eventOids);
             const prevCpNames = [...cpOrderMap.entries()]
                 .filter(([, order]) => order < cpOrder)
@@ -266,6 +283,45 @@ export class CheckpointSchedulerService implements OnModuleInit {
                     // Score-only events carry no FINISH split row; the finish time IS the crossing.
                     dnfIds.push(runner._id);
                 }
+            }
+
+            for (const runner of previouslyCut as any[]) {
+                const seen = crossings.get(String(runner._id));
+                const finishMs = runner.finishTime ? new Date(runner.finishTime).getTime() : NaN;
+                // In time here after all — either the crossing at this point now reads before the
+                // cut-off, or (score-only events, which carry no FINISH split row) the finish does.
+                const inTime = seen?.atCp
+                    ? seen.atCp.getTime() <= cutoffMs
+                    : (isFinishCp && Number.isFinite(finishMs) && finishMs <= cutoffMs);
+                if (!inTime) continue;
+                if (Number.isFinite(finishMs)) revertFinishedIds.push(runner._id);
+                else revertRacingIds.push(runner._id);
+            }
+        }
+
+        let revertModified = 0;
+        for (const [ids, status] of [
+            [revertFinishedIds, 'finished'] as const,
+            [revertRacingIds, 'in_progress'] as const,
+        ]) {
+            if (ids.length === 0) continue;
+            const result = await this.runnerModel.updateMany(
+                { _id: { $in: ids } },
+                {
+                    $set: {
+                        status,
+                        statusCheckpoint: '',
+                        statusNote: '',
+                        statusChangedAt: now,
+                        statusChangedBy: 'cutoff-scheduler',
+                    },
+                },
+            ).exec();
+            revertModified += result.modifiedCount;
+            if (result.modifiedCount > 0) {
+                this.logger.warn(
+                    `Cutoff "${cpDisplayName}"${entry.category ? ` [${entry.category}]` : ''} (${entry.cutoffStr}): ${result.modifiedCount} runners DNF → ${status} (crossed in time after all)`
+                );
             }
         }
 
@@ -308,7 +364,7 @@ export class CheckpointSchedulerService implements OnModuleInit {
             );
         }
 
-        return { dnfCount: dnfModified, dnsCount: dnsResult.modifiedCount };
+        return { dnfCount: dnfModified, dnsCount: dnsResult.modifiedCount, revertedCount: revertModified };
     }
 
     /**
