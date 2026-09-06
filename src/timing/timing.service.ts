@@ -230,6 +230,77 @@ export class TimingService implements OnModuleInit {
     // Debounce timers for updateRankings — prevents race condition when many runners finish simultaneously
     private rankingDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+    // Cumulative race clocks RaceTiger stamps on a synced pass. getLatestPerRunner keeps
+    // only the newest record per runner, so a record that lacks these (a hand-typed
+    // checkpoint, a plain mat scan) would report them as empty and wipe the Gun/Net
+    // columns of a runner still out on course. They are carried forward instead: the
+    // newest record that actually has a value wins. See carryForwardGroup/carryForward.
+    private static readonly CARRY_FORWARD_FIELDS = [
+        'netTime', 'gunTime', 'gunTimeMs', 'netTimeMs', 'totalGunTime', 'totalNetTime', 'netPace', 'gunPace',
+    ] as const;
+
+    /**
+     * $group accumulators collecting each carried field newest-first, as { v, t } pairs
+     * (the value and the scanTime it was measured at); a blank contributes null.
+     */
+    private static carryForwardGroup(): Record<string, any> {
+        return Object.fromEntries(TimingService.CARRY_FORWARD_FIELDS.map(field => [
+            `${field}Chain`,
+            {
+                // $ifNull first: a field the record simply does not have is "missing", which
+                // $eq against null does NOT match — without this every blank would be kept.
+                $push: {
+                    $let: {
+                        vars: { val: { $ifNull: [`$${field}`, null] } },
+                        in: {
+                            $cond: [
+                                { $or: [{ $eq: ['$$val', null] }, { $eq: ['$$val', 0] }, { $eq: ['$$val', ''] }] },
+                                null,
+                                { v: '$$val', t: '$scanTime' },
+                            ],
+                        },
+                    },
+                },
+            },
+        ]));
+    }
+
+    /** The newest non-empty { v, t } pair of a carried field. */
+    private static newestCarried(field: string): any {
+        return {
+            $arrayElemAt: [
+                { $filter: { input: `$${field}Chain`, cond: { $ne: ['$$this', null] } } },
+                0,
+            ],
+        };
+    }
+
+    /** $project expression for the newest non-empty value of a carried field, as stored. */
+    private static carryForward(field: string): any {
+        return { $ifNull: [{ $let: { vars: { base: TimingService.newestCarried(field) }, in: '$$base.v' } }, null] };
+    }
+
+    /**
+     * $project expression for a cumulative race clock (gun/net time). The clock runs from a
+     * fixed start, so when the newest record carries no value the newest one that does is
+     * wound forward by the wall-clock gap up to the newest scan — a hand-typed checkpoint
+     * then reports the time at ITS crossing, not at the checkpoint before it.
+     */
+    private static carryForwardClock(field: string): any {
+        return {
+            $let: {
+                vars: { base: TimingService.newestCarried(field) },
+                in: {
+                    $cond: [
+                        { $eq: [{ $ifNull: ['$$base.v', null] }, null] },
+                        null,
+                        { $add: ['$$base.v', { $max: [0, { $subtract: ['$scanTime', '$$base.t'] }] }] },
+                    ],
+                },
+            },
+        };
+    }
+
     constructor(
         @InjectModel(TimingRecord.name) private timingModel: Model<TimingRecordDocument>,
         private runnersService: RunnersService,
@@ -281,6 +352,26 @@ export class TimingService implements OnModuleInit {
             splitTime = new Date(scanData.scanTime).getTime() - new Date(lastRecord.scanTime).getTime();
         }
 
+        // Cumulative gun/net time for this crossing. RaceTiger stamps both on every
+        // synced pass, and the public table reads them off the runner's NEWEST record —
+        // so a hand-typed checkpoint that carried neither used to blank out the Gun/Net
+        // columns of someone still out on course. Anchor each clock on the newest record
+        // that does carry it (gun start = that record's scanTime - its gunTime) and
+        // measure this scan from there. A typed START owns the net clock, so
+        // runner.startTime wins for net when it is set.
+        const scanMs = new Date(scanData.scanTime).getTime();
+        const timeFromAnchor = (field: 'gunTime' | 'netTime'): number | null => {
+            const anchor = existingRecords
+                .filter(r => Number((r as any)[field]) > 0 && r.scanTime)
+                .sort((a, b) => new Date(b.scanTime).getTime() - new Date(a.scanTime).getTime())[0];
+            if (!anchor) return null;
+            const clockStartMs = new Date(anchor.scanTime).getTime() - Number((anchor as any)[field]);
+            const ms = scanMs - clockStartMs;
+            return Number.isFinite(ms) && ms > 0 ? ms : null;
+        };
+        const recordNetTime = elapsedTime > 0 ? elapsedTime : timeFromAnchor('netTime');
+        const recordGunTime = timeFromAnchor('gunTime');
+
         // Create timing record
         const manual = isManualScan(scanData);
         const record = new this.timingModel({
@@ -294,6 +385,8 @@ export class TimingService implements OnModuleInit {
             note: scanData.note,
             splitTime,
             elapsedTime,
+            ...(recordNetTime ? { netTime: recordNetTime } : {}),
+            ...(recordGunTime ? { gunTime: recordGunTime } : {}),
             isManualTime: manual,
             ...(manual ? { manualTimeAt: new Date() } : {}),
         });
@@ -315,7 +408,6 @@ export class TimingService implements OnModuleInit {
         // line past the cut-off is a DNF, not a finisher — whether the record comes off
         // the mat live or is typed in later.
         const campaignCps = await this.getCutoffCheckpoints(scanData.eventId);
-        const scanMs = new Date(scanData.scanTime).getTime();
         // START keeps its own semantics (missing START → DNS), so it is never "late" here.
         const cutoffHere = isStart ? null : this.cutoffFor(campaignCps, scanData.checkpoint, runner.category);
         const crossedLate = !!cutoffHere && scanMs > cutoffHere.getTime();
@@ -544,8 +636,7 @@ export class TimingService implements OnModuleInit {
                     runnerId: { $first: '$runnerId' },
                     checkpoint: { $first: '$checkpoint' },
                     scanTime: { $first: '$scanTime' },
-                    netTime: { $first: '$netTime' },
-                    gunTime: { $first: '$gunTime' },
+                    ...TimingService.carryForwardGroup(),
                     splitTime: { $first: '$splitTime' },
                     distanceFromStart: { $first: '$distanceFromStart' },
                     order: { $first: '$order' },
@@ -576,13 +667,7 @@ export class TimingService implements OnModuleInit {
                     },
                     splitNo: { $first: '$splitNo' },
                     splitDesc: { $first: '$splitDesc' },
-                    netPace: { $first: '$netPace' },
-                    gunPace: { $first: '$gunPace' },
                     splitPace: { $first: '$splitPace' },
-                    gunTimeMs: { $first: '$gunTimeMs' },
-                    netTimeMs: { $first: '$netTimeMs' },
-                    totalGunTime: { $first: '$totalGunTime' },
-                    totalNetTime: { $first: '$totalNetTime' },
                     chipCode: { $first: '$chipCode' },
                     printingCode: { $first: '$printingCode' },
                     supplement: { $first: '$supplement' },
@@ -630,8 +715,8 @@ export class TimingService implements OnModuleInit {
                     // Prefer the runner-stored value when an admin has manually edited it
                     // (e.g. /admin/results gun/net time edit). Fall back to the timing
                     // record's value when the runner has no override.
-                    netTime: { $cond: [{ $gt: ['$runner.netTime', 0] }, '$runner.netTime', '$netTime'] },
-                    gunTime: { $cond: [{ $gt: ['$runner.gunTime', 0] }, '$runner.gunTime', '$gunTime'] },
+                    netTime: { $cond: [{ $gt: ['$runner.netTime', 0] }, '$runner.netTime', TimingService.carryForwardClock('netTime')] },
+                    gunTime: { $cond: [{ $gt: ['$runner.gunTime', 0] }, '$runner.gunTime', TimingService.carryForwardClock('gunTime')] },
                     splitTime: 1,
                     distanceFromStart: 1,
                     order: 1,
@@ -644,8 +729,8 @@ export class TimingService implements OnModuleInit {
                     categoryNetRank: '$runner.categoryNetRank',
                     netTimeStr: '$runner.netTimeStr',
                     gunTimeStr: '$runner.gunTimeStr',
-                    gunPace: { $ifNull: ['$runner.gunPace', '$gunPace'] },
-                    netPace: { $ifNull: ['$runner.netPace', '$netPace'] },
+                    gunPace: { $ifNull: ['$runner.gunPace', TimingService.carryForward('gunPace')] },
+                    netPace: { $ifNull: ['$runner.netPace', TimingService.carryForward('netPace')] },
                     statusCheckpoint: '$runner.statusCheckpoint',
                     statusNote: '$runner.statusNote',
                     finishScanTime: 1,
@@ -660,10 +745,10 @@ export class TimingService implements OnModuleInit {
                     splitNo: 1,
                     splitDesc: 1,
                     splitPace: 1,
-                    gunTimeMs: 1,
-                    netTimeMs: 1,
-                    totalGunTime: 1,
-                    totalNetTime: 1,
+                    gunTimeMs: TimingService.carryForward('gunTimeMs'),
+                    netTimeMs: TimingService.carryForward('netTimeMs'),
+                    totalGunTime: TimingService.carryForwardClock('totalGunTime'),
+                    totalNetTime: TimingService.carryForwardClock('totalNetTime'),
                     totalGunTimeMs: 1,
                     totalNetTimeMs: 1,
                     supplement: 1,

@@ -187,3 +187,53 @@ describe('TimingService.recomputeRunnerAggregates — cut-off', () => {
         expect(runnersService.setAggregates.mock.calls[0][1].status).toBeUndefined();
     });
 });
+
+/**
+ * A hand-entered checkpoint has no RaceTiger gun/net time of its own, and it becomes the
+ * runner's newest record — which is where the public table reads those clocks from. The
+ * scan stamps them itself, anchored on the newest record that does carry them.
+ */
+describe('TimingService.processScan — gun/net time on the new record', () => {
+    it('stamps gun time measured from the gun and net time measured from the runner start', async () => {
+        const runner = runnerDoc(); // startTime 06:00
+        const { service } = buildService(runner);
+        // Gun went off at 05:55: A5 was crossed at 07:00 on a 01:05:00 gun clock.
+        jest.spyOn(service, 'getRunnerRecords').mockResolvedValue([
+            { checkpoint: 'A5', scanTime: day('07:00'), order: 1, gunTime: 65 * 60_000, netTime: 60 * 60_000 },
+        ] as any);
+
+        const record: any = await service.processScan({
+            eventId: EVENT_ID, bib: '1145', checkpoint: 'A6', scanTime: day('08:00'), isManual: true,
+        } as any);
+
+        expect(record.gunTime).toBe(125 * 60_000); // 08:00 − 05:55
+        expect(record.netTime).toBe(120 * 60_000); // 08:00 − 06:00 (typed START owns the net clock)
+        expect(record.isManualTime).toBe(true);
+    });
+
+    it('leaves gun time off when no earlier record carries one', async () => {
+        const runner = runnerDoc();
+        const { service } = buildService(runner);
+
+        const record: any = await service.processScan({
+            eventId: EVENT_ID, bib: '1145', checkpoint: 'A5', scanTime: day('07:30'),
+        });
+
+        expect(record.gunTime).toBeUndefined();
+        expect(record.netTime).toBe(90 * 60_000);
+    });
+
+    it('falls back to the net-time anchor when the runner has no start time', async () => {
+        const runner = runnerDoc({ startTime: undefined });
+        const { service } = buildService(runner);
+        jest.spyOn(service, 'getRunnerRecords').mockResolvedValue([
+            { checkpoint: 'A5', scanTime: day('07:00'), order: 1, netTime: 60 * 60_000 },
+        ] as any);
+
+        const record: any = await service.processScan({
+            eventId: EVENT_ID, bib: '1145', checkpoint: 'A6', scanTime: day('08:00'),
+        });
+
+        expect(record.netTime).toBe(120 * 60_000); // 08:00 − 06:00 (anchor 07:00 − 01:00:00)
+    });
+});
