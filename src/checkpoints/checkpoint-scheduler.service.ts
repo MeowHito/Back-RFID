@@ -4,6 +4,13 @@ import { Model, Types } from 'mongoose';
 import { Checkpoint, CheckpointDocument } from './checkpoint.schema';
 import { Runner, RunnerDocument } from '../runners/runner.schema';
 import { Event, EventDocument } from '../events/event.schema';
+import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
+import {
+    CutoffEntry,
+    formatCutoffForNote,
+    getCutoffEntries,
+    isAdminOwnedStatus,
+} from './cutoff.util';
 
 /**
  * CheckpointSchedulerService
@@ -12,7 +19,9 @@ import { Event, EventDocument } from '../events/event.schema';
  * Based on the diagram (section 4 — CutOff Time Auto-Detect):
  *
  * - START checkpoint cutoff → runners with no timing at START → DNS
- * - Non-START checkpoint cutoff → running runners who haven't reached this CP → DNF
+ * - Non-START checkpoint cutoff → runners who did not pass this CP in time → DNF, which
+ *   covers both those who never reached it and those whose crossing is stamped AFTER the
+ *   cut-off (a finisher who crossed the line late is a DNF, not a finisher).
  *
  * Respects isManualStatus: if staff manually set a status, auto-cutoff won't override it.
  * Runs every 60 seconds.
@@ -21,13 +30,17 @@ import { Event, EventDocument } from '../events/event.schema';
 export class CheckpointSchedulerService implements OnModuleInit {
     private readonly logger = new Logger(CheckpointSchedulerService.name);
     private intervalId: NodeJS.Timeout | null = null;
-    // Cache: cpId -> cutoffTime value last fully processed (no further mutations)
+    // Cache: cutoff cacheKey -> data fingerprint last evaluated with nothing left to change.
+    // The fingerprint carries the cut-off value AND how much data it was judged against, so a
+    // crossing that lands after the cut-off (late RFID upload, RaceTiger sync, staff-typed time)
+    // re-opens the check instead of being skipped forever.
     private settledCutoffs = new Map<string, string>();
 
     constructor(
         @InjectModel(Checkpoint.name) private checkpointModel: Model<CheckpointDocument>,
         @InjectModel(Runner.name) private runnerModel: Model<RunnerDocument>,
         @InjectModel(Event.name) private eventModel: Model<EventDocument>,
+        @InjectModel(TimingRecord.name) private timingRecordModel: Model<TimingRecordDocument>,
     ) { }
 
     onModuleInit() {
@@ -46,8 +59,10 @@ export class CheckpointSchedulerService implements OnModuleInit {
 
     /**
      * Check all checkpoints with cutoffTime and auto-mark DNS/DNF.
+     * `force` re-evaluates cut-offs the last run left settled (admin-triggered runs).
      */
-    async checkCutOffTimes(): Promise<{ processed: number; dnsCount: number; dnfCount: number }> {
+    async checkCutOffTimes(options: { force?: boolean } = {}): Promise<{ processed: number; dnsCount: number; dnfCount: number }> {
+        const force = options.force === true;
         const now = new Date();
         let processed = 0;
         let dnsCount = 0;
@@ -112,50 +127,39 @@ export class CheckpointSchedulerService implements OnModuleInit {
                 this.logger.debug(`Campaign ${campaignId}: found ${events.length} event(s), eventOids=[${eventOids.map(e => e.toString()).join(',')}]`);
 
                 for (const cp of campaignCps) {
-                    const cpId = String((cp as any)._id);
-                    const cpName = ((cp as any).name || '').toUpperCase();
+                    const cpDisplayName = (cp as any).name || '';
+                    const cpName = cpDisplayName.toUpperCase();
                     const cpOrder = cpOrderMap.get(cpName) ?? -1;
 
-                    // Expand into one or more cutoff entries.
-                    // If per-category `cutoffTimes` has any entry, it fully replaces the legacy
-                    // `cutoffTime` (so a user who migrated to per-distance cutoffs isn't double-billed
-                    // by the legacy global one). Otherwise fall back to legacy.
-                    const entries: Array<{ category: string | null; cutoffStr: string; cutoff: Date; cacheKey: string }> = [];
-                    const cutoffTimes = (cp as any).cutoffTimes || {};
-                    const cutoffTimesEntries = Object.entries(cutoffTimes).filter(
-                        ([, val]) => !!String(val || '').trim() && String(val) !== '-',
-                    );
-                    if (cutoffTimesEntries.length > 0) {
-                        for (const [cat, val] of cutoffTimesEntries) {
-                            const str = String(val);
-                            const d = this.parseCutoffTime(str);
-                            if (d) entries.push({ category: cat, cutoffStr: str, cutoff: d, cacheKey: `${cpId}:${cat}` });
-                        }
-                    } else {
-                        const legacyStr = (cp as any).cutoffTime;
-                        if (legacyStr && legacyStr !== '-' && legacyStr !== '') {
-                            const d = this.parseCutoffTime(legacyStr);
-                            if (d) entries.push({ category: null, cutoffStr: legacyStr, cutoff: d, cacheKey: cpId });
-                        }
-                    }
-
-                    for (const entry of entries) {
+                    for (const entry of getCutoffEntries(cp)) {
                         if (entry.cutoff > now) {
-                            this.logger.debug(`CP "${(cp as any).name}"${entry.category ? ` [${entry.category}]` : ''}: cutoff ${entry.cutoff.toISOString()} > now, not yet`);
+                            this.logger.debug(`CP "${cpDisplayName}"${entry.category ? ` [${entry.category}]` : ''}: cutoff ${entry.cutoff.toISOString()} > now, not yet`);
                             continue;
                         }
-                        if (this.settledCutoffs.get(entry.cacheKey) === entry.cutoffStr) continue;
-                        processed++;
 
                         // Build a runner-scope filter. When the entry is category-specific,
                         // restrict to runners whose `category` field matches (case-insensitive exact).
                         const baseScope: any = { eventId: { $in: eventOids } };
                         if (entry.category) {
-                            const esc = entry.category.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                            baseScope.category = { $regex: new RegExp(`^${esc}$`, 'i') };
+                            baseScope.category = { $regex: CheckpointSchedulerService.exactNameRegex(entry.category) };
+                        } else {
+                            // Legacy all-distance cut-off: still only the distances this checkpoint
+                            // is mapped to, so a cut-off on a 100K-only point can't cut a 10K runner.
+                            const mappings: string[] = Array.isArray((cp as any).distanceMappings)
+                                ? (cp as any).distanceMappings.filter(Boolean) : [];
+                            if (mappings.length > 0) {
+                                baseScope.category = { $in: mappings.map(m => CheckpointSchedulerService.exactNameRegex(m)) };
+                            }
                         }
 
-                        const isStart = ((cp as any).type === 'start') || isStartCp((cp as any).name || '');
+                        const isStart = ((cp as any).type === 'start') || isStartCp(cpDisplayName);
+                        // Skip a cut-off whose verdict can't have changed since the last run.
+                        const fingerprint = await this.cutoffFingerprint(entry, baseScope, eventOids,
+                            isStart ? [cpName] : this.cpNamesFrom(cpOrderMap, cpOrder, cpName));
+                        if (!force && this.settledCutoffs.get(entry.cacheKey) === fingerprint) continue;
+                        processed++;
+
+                        let changed = 0;
                         if (isStart) {
                             // START cutoff → not_started → DNS
                             const result = await this.runnerModel.updateMany(
@@ -163,74 +167,31 @@ export class CheckpointSchedulerService implements OnModuleInit {
                                 {
                                     $set: {
                                         status: 'dns',
-                                        statusCheckpoint: (cp as any).name || 'START',
+                                        statusCheckpoint: cpDisplayName || 'START',
                                         statusChangedAt: now,
                                         statusChangedBy: 'cutoff-scheduler',
                                     },
                                 },
                             ).exec();
-                            if (result.modifiedCount > 0) {
-                                dnsCount += result.modifiedCount;
+                            changed = result.modifiedCount;
+                            dnsCount += changed;
+                            if (changed > 0) {
                                 this.logger.warn(
-                                    `START cutoff "${(cp as any).name}"${entry.category ? ` [${entry.category}]` : ''} (${entry.cutoffStr}): ${result.modifiedCount} runners → DNS`
+                                    `START cutoff "${cpDisplayName}"${entry.category ? ` [${entry.category}]` : ''} (${entry.cutoffStr}): ${changed} runners → DNS`
                                 );
-                            } else {
-                                this.settledCutoffs.set(entry.cacheKey, entry.cutoffStr);
                             }
                         } else {
-                            // Non-START cutoff:
-                            //   in_progress runners who haven't reached this CP  → DNF
-                            //   not_started runners (never crossed START)         → DNS (never DNF)
-                            const prevCpNames: string[] = [];
-                            for (const [name, order] of cpOrderMap.entries()) {
-                                if (order < cpOrder) prevCpNames.push(name);
-                            }
-                            const dnfFilter: any = { ...baseScope, status: 'in_progress', isManualStatus: { $ne: true } };
-                            if (prevCpNames.length > 0) {
-                                dnfFilter.$or = [
-                                    { latestCheckpoint: { $exists: false } },
-                                    { latestCheckpoint: null },
-                                    { latestCheckpoint: '' },
-                                    { latestCheckpoint: { $in: prevCpNames.map(n => new RegExp(`^${n}$`, 'i')) } },
-                                ];
-                            }
-                            const result = await this.runnerModel.updateMany(
-                                dnfFilter,
-                                {
-                                    $set: {
-                                        status: 'dnf',
-                                        statusCheckpoint: (cp as any).name || '',
-                                        statusChangedAt: now,
-                                        statusChangedBy: 'cutoff-scheduler',
-                                    },
-                                },
-                            ).exec();
-                            const dnsResult = await this.runnerModel.updateMany(
-                                { ...baseScope, status: 'not_started', isManualStatus: { $ne: true } },
-                                {
-                                    $set: {
-                                        status: 'dns',
-                                        statusCheckpoint: 'START',
-                                        statusChangedAt: now,
-                                        statusChangedBy: 'cutoff-scheduler',
-                                    },
-                                },
-                            ).exec();
-                            if (dnsResult.modifiedCount > 0) {
-                                dnsCount += dnsResult.modifiedCount;
-                                this.logger.warn(
-                                    `Cutoff "${(cp as any).name}"${entry.category ? ` [${entry.category}]` : ''} (${entry.cutoffStr}): ${dnsResult.modifiedCount} not_started → DNS`
-                                );
-                            }
-                            if (result.modifiedCount > 0) {
-                                dnfCount += result.modifiedCount;
-                                this.logger.warn(
-                                    `Cutoff "${(cp as any).name}"${entry.category ? ` [${entry.category}]` : ''} (${entry.cutoffStr}): ${result.modifiedCount} runners → DNF`
-                                );
-                            } else if (dnsResult.modifiedCount === 0) {
-                                this.settledCutoffs.set(entry.cacheKey, entry.cutoffStr);
-                            }
+                            const applied = await this.applyNonStartCutoff({
+                                cp, cpDisplayName, cpName, cpOrder, cpOrderMap, entry, baseScope, eventOids, now,
+                            });
+                            changed = applied.dnfCount + applied.dnsCount;
+                            dnfCount += applied.dnfCount;
+                            dnsCount += applied.dnsCount;
                         }
+
+                        // Settle only when a full evaluation of this data changed nothing.
+                        if (changed === 0) this.settledCutoffs.set(entry.cacheKey, fingerprint);
+                        else this.settledCutoffs.delete(entry.cacheKey);
                     }
                 }
             }
@@ -242,11 +203,198 @@ export class CheckpointSchedulerService implements OnModuleInit {
     }
 
     /**
+     * Apply one non-START cut-off:
+     *   • crossed this checkpoint AFTER the cut-off        → DNF (a late finisher is not a finisher)
+     *   • never reached it and still racing                → DNF
+     *   • never crossed START                             → DNS (never DNF)
+     * A crossing further down the course that is itself late proves nothing about this point —
+     * the mat here may simply have missed the read — so those runners are left alone.
+     */
+    private async applyNonStartCutoff(params: {
+        cp: any;
+        cpDisplayName: string;
+        cpName: string;
+        cpOrder: number;
+        cpOrderMap: Map<string, number>;
+        entry: CutoffEntry;
+        baseScope: any;
+        eventOids: Types.ObjectId[];
+        now: Date;
+    }): Promise<{ dnfCount: number; dnsCount: number }> {
+        const { cp, cpDisplayName, cpName, cpOrder, cpOrderMap, entry, baseScope, eventOids, now } = params;
+        const cutoffMs = entry.cutoff.getTime();
+        const orders = [...cpOrderMap.values()];
+        const isFinishCp = String((cp as any).type || '').toLowerCase() === 'finish'
+            || (orders.length > 0 && cpOrder === Math.max(...orders));
+
+        // Everyone still counted as racing or finished is a candidate. Staff-owned statuses
+        // (manual stops, or anything a human last set) are never touched.
+        const candidates = (await this.runnerModel
+            .find({
+                ...baseScope,
+                status: { $in: ['in_progress', 'finished'] },
+                isManualStatus: { $ne: true },
+            })
+            .select('_id status statusChangedBy latestCheckpoint finishTime')
+            .lean()
+            .exec())
+            .filter((r: any) => !isAdminOwnedStatus(r));
+
+        const dnfIds: Types.ObjectId[] = [];
+        if (candidates.length > 0) {
+            const crossings = await this.firstCrossings(cpName, cpOrderMap, cpOrder, eventOids);
+            const prevCpNames = [...cpOrderMap.entries()]
+                .filter(([, order]) => order < cpOrder)
+                .map(([name]) => name);
+
+            for (const runner of candidates as any[]) {
+                const seen = crossings.get(String(runner._id));
+                if (seen?.atCp) {
+                    if (seen.atCp.getTime() > cutoffMs) dnfIds.push(runner._id);
+                    continue; // crossed here in time
+                }
+                if (seen?.beyond) {
+                    // Past this point already (in time) → fine. Past it late → missed read, leave alone.
+                    continue;
+                }
+                // No crossing recorded here or beyond it.
+                if (runner.status === 'in_progress') {
+                    const last = String(runner.latestCheckpoint || '').toUpperCase();
+                    if (!last || prevCpNames.includes(last)) dnfIds.push(runner._id);
+                } else if (isFinishCp && runner.finishTime
+                    && new Date(runner.finishTime).getTime() > cutoffMs) {
+                    // Score-only events carry no FINISH split row; the finish time IS the crossing.
+                    dnfIds.push(runner._id);
+                }
+            }
+        }
+
+        let dnfModified = 0;
+        if (dnfIds.length > 0) {
+            const result = await this.runnerModel.updateMany(
+                { _id: { $in: dnfIds } },
+                {
+                    $set: {
+                        status: 'dnf',
+                        statusCheckpoint: cpDisplayName,
+                        statusChangedAt: now,
+                        statusChangedBy: 'cutoff-scheduler',
+                        statusNote: `Auto DNF: missed the ${cpDisplayName} cut-off (${formatCutoffForNote(entry.cutoff)})`,
+                    },
+                },
+            ).exec();
+            dnfModified = result.modifiedCount;
+            if (dnfModified > 0) {
+                this.logger.warn(
+                    `Cutoff "${cpDisplayName}"${entry.category ? ` [${entry.category}]` : ''} (${entry.cutoffStr}): ${dnfModified} runners → DNF`
+                );
+            }
+        }
+
+        const dnsResult = await this.runnerModel.updateMany(
+            { ...baseScope, status: 'not_started', isManualStatus: { $ne: true } },
+            {
+                $set: {
+                    status: 'dns',
+                    statusCheckpoint: 'START',
+                    statusChangedAt: now,
+                    statusChangedBy: 'cutoff-scheduler',
+                },
+            },
+        ).exec();
+        if (dnsResult.modifiedCount > 0) {
+            this.logger.warn(
+                `Cutoff "${cpDisplayName}"${entry.category ? ` [${entry.category}]` : ''} (${entry.cutoffStr}): ${dnsResult.modifiedCount} not_started → DNS`
+            );
+        }
+
+        return { dnfCount: dnfModified, dnsCount: dnsResult.modifiedCount };
+    }
+
+    /**
+     * Per runner: the first crossing AT this checkpoint, and the first crossing BEYOND it.
+     * Both are needed to tell "arrived late" from "the mat here missed them".
+     */
+    private async firstCrossings(
+        cpName: string,
+        cpOrderMap: Map<string, number>,
+        cpOrder: number,
+        eventOids: Types.ObjectId[],
+    ): Promise<Map<string, { atCp: Date | null; beyond: Date | null }>> {
+        const names = this.cpNamesFrom(cpOrderMap, cpOrder, cpName);
+        const crossings = new Map<string, { atCp: Date | null; beyond: Date | null }>();
+        if (names.length === 0) return crossings;
+
+        const isThisCp = { $eq: [{ $toUpper: '$checkpoint' }, cpName] };
+        const rows = await this.timingRecordModel.aggregate([
+            {
+                $match: {
+                    eventId: { $in: eventOids },
+                    checkpoint: { $in: names.map(n => CheckpointSchedulerService.exactNameRegex(n)) },
+                },
+            },
+            {
+                $group: {
+                    _id: '$runnerId',
+                    atCp: { $min: { $cond: [isThisCp, '$scanTime', null] } },
+                    beyond: { $min: { $cond: [isThisCp, null, '$scanTime'] } },
+                },
+            },
+        ]).exec();
+
+        for (const row of rows as any[]) {
+            crossings.set(String(row._id), {
+                atCp: row.atCp ? new Date(row.atCp) : null,
+                beyond: row.beyond ? new Date(row.beyond) : null,
+            });
+        }
+        return crossings;
+    }
+
+    /**
+     * How much data this cut-off has been judged against. Any new crossing at (or beyond) the
+     * checkpoint, or any status flip in scope, changes the fingerprint and re-opens the check —
+     * which is what makes a late-arriving finish get caught instead of being skipped as settled.
+     */
+    private async cutoffFingerprint(
+        entry: CutoffEntry,
+        baseScope: any,
+        eventOids: Types.ObjectId[],
+        cpNames: string[],
+    ): Promise<string> {
+        const [records, racing] = await Promise.all([
+            this.timingRecordModel.countDocuments({
+                eventId: { $in: eventOids },
+                checkpoint: { $in: cpNames.map(n => CheckpointSchedulerService.exactNameRegex(n)) },
+            }).exec(),
+            this.runnerModel.countDocuments({
+                ...baseScope,
+                status: { $in: ['in_progress', 'finished', 'not_started'] },
+            }).exec(),
+        ]);
+        return `${entry.cutoffStr}|${records}|${racing}`;
+    }
+
+    /** Checkpoint names at or beyond `cpOrder` — where evidence of passing this point shows up. */
+    private cpNamesFrom(cpOrderMap: Map<string, number>, cpOrder: number, cpName: string): string[] {
+        const names = new Set<string>([cpName]);
+        for (const [name, order] of cpOrderMap.entries()) {
+            if (order >= cpOrder) names.add(name);
+        }
+        return [...names].filter(Boolean);
+    }
+
+    /** Case-insensitive exact-match regex for a checkpoint / category name. */
+    private static exactNameRegex(name: string): RegExp {
+        return new RegExp(`^${String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    }
+
+    /**
      * Manually trigger cut-off check (for admin API)
      */
     async triggerCutOffCheck(): Promise<{ processed: number; dnsCount: number; dnfCount: number }> {
         this.logger.log('Manual cut-off check triggered');
-        return this.checkCutOffTimes();
+        return this.checkCutOffTimes({ force: true });
     }
 
     /**
@@ -316,28 +464,34 @@ export class CheckpointSchedulerService implements OnModuleInit {
                     );
                 }
             } else {
-                // Revert DNF → in_progress for runners auto-DNF'd at this checkpoint
-                const result = await this.runnerModel.updateMany(
-                    {
-                        ...baseScope,
-                        status: 'dnf',
-                        statusChangedBy: 'cutoff-scheduler',
-                        statusCheckpoint: { $regex: new RegExp(`^${cpName}$`, 'i') },
-                        isManualStatus: { $ne: true },
-                    },
-                    {
-                        $set: {
-                            status: 'in_progress',
-                            statusCheckpoint: '',
-                            statusChangedAt: now,
-                            statusChangedBy: 'cutoff-extension',
-                        },
-                    },
+                // Revert DNF → finished/in_progress for runners auto-DNF'd at this checkpoint.
+                // Anyone who already has a finish time was cut for crossing the line late, so
+                // the longer cut-off makes them a finisher again — not a runner still out there.
+                const revertScope = {
+                    ...baseScope,
+                    status: 'dnf',
+                    statusChangedBy: 'cutoff-scheduler',
+                    statusCheckpoint: { $regex: new RegExp(`^${cpName}$`, 'i') },
+                    isManualStatus: { $ne: true },
+                };
+                const revertSet = {
+                    statusCheckpoint: '',
+                    statusNote: '',
+                    statusChangedAt: now,
+                    statusChangedBy: 'cutoff-extension',
+                };
+                const finishedRevert = await this.runnerModel.updateMany(
+                    { ...revertScope, finishTime: { $ne: null } },
+                    { $set: { ...revertSet, status: 'finished' } },
                 ).exec();
-                revertedCount = result.modifiedCount;
+                const result = await this.runnerModel.updateMany(
+                    { ...revertScope, finishTime: null },
+                    { $set: { ...revertSet, status: 'in_progress' } },
+                ).exec();
+                revertedCount = result.modifiedCount + finishedRevert.modifiedCount;
                 if (revertedCount > 0) {
                     this.logger.warn(
-                        `Cutoff extended "${cpName}"${category ? ` [${category}]` : ''}: ${revertedCount} runner(s) DNF → in_progress`
+                        `Cutoff extended "${cpName}"${category ? ` [${category}]` : ''}: ${result.modifiedCount} runner(s) DNF → in_progress, ${finishedRevert.modifiedCount} → finished`
                     );
                 }
                 // Also revert DNS → not_started runners that were flipped by the same non-START cutoff
@@ -370,28 +524,6 @@ export class CheckpointSchedulerService implements OnModuleInit {
         }
 
         return { revertedCount };
-    }
-
-    /**
-     * Parse cutoffTime string into a Date.
-     * Supports formats: ISO datetime "2026-02-15T10:30", or time-only "10:30" (today).
-     */
-    private parseCutoffTime(timeStr: string): Date | null {
-        if (!timeStr || timeStr === '-') return null;
-
-        // Try ISO datetime first
-        const isoDate = new Date(timeStr);
-        if (!isNaN(isoDate.getTime())) return isoDate;
-
-        // Try time-only format (HH:mm) - use today's date
-        const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})$/);
-        if (timeMatch) {
-            const now = new Date();
-            return new Date(now.getFullYear(), now.getMonth(), now.getDate(),
-                parseInt(timeMatch[1]), parseInt(timeMatch[2]));
-        }
-
-        return null;
     }
 
     onModuleDestroy() {

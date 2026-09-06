@@ -8,6 +8,7 @@ import { CheckpointMapping, CheckpointMappingSchema } from './checkpoint-mapping
 import { Runner, RunnerSchema } from '../runners/runner.schema';
 import { Event, EventSchema } from '../events/event.schema';
 import { User, UserSchema } from '../users/user.schema';
+import { TimingRecord, TimingRecordSchema } from '../timing/timing-record.schema';
 import { CampaignsModule } from '../campaigns/campaigns.module';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 
@@ -19,6 +20,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
             { name: Runner.name, schema: RunnerSchema },
             { name: Event.name, schema: EventSchema },
             { name: User.name, schema: UserSchema },
+            { name: TimingRecord.name, schema: TimingRecordSchema },
         ]),
         CampaignsModule,
     ],

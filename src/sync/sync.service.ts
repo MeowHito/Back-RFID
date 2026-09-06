@@ -8,6 +8,7 @@ import { Runner, RunnerDocument } from '../runners/runner.schema';
 import { CreateRunnerDto } from '../runners/dto/create-runner.dto';
 import { RunnersService, PROTECTED_BIO_FIELDS } from '../runners/runners.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
+import { CheckpointSchedulerService } from '../checkpoints/checkpoint-scheduler.service';
 import { SyncLog, SyncLogDocument } from './sync-log.schema';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
 type RaceTigerRequestType = 'info' | 'bio' | 'split' | 'score' | 'passedTime';
@@ -39,6 +40,7 @@ export class SyncService {
         @InjectModel(Runner.name) private runnerModel: Model<RunnerDocument>,
         private readonly runnersService: RunnersService,
         private readonly checkpointsService: CheckpointsService,
+        private readonly checkpointScheduler: CheckpointSchedulerService,
         private readonly configService: ConfigService,
     ) { }
     /**
@@ -2302,6 +2304,16 @@ export class SyncService {
                     dnsDetected: dnsUpdated,
                 },
             };
+            // Re-apply cut-offs over the freshly imported times: RaceTiger promotes anyone with a
+            // finish time to 'finished', including runners who crossed the line after the cut-off.
+            try {
+                const cutoff = await this.checkpointScheduler.checkCutOffTimes({ force: true });
+                if (cutoff.dnfCount > 0 || cutoff.dnsCount > 0) {
+                    this.logger.log(`Post-sync cut-off check: ${cutoff.dnfCount} DNF, ${cutoff.dnsCount} DNS`);
+                }
+            } catch (cutoffErr: any) {
+                this.logger.warn(`Post-sync cut-off check failed (non-fatal): ${cutoffErr?.message}`);
+            }
             await this.updateSyncLog(syncLog._id.toString(), {
                 status: 'success',
                 message: `RaceTiger full runner sync success (inserted ${inserted}, updated ${updated})`,

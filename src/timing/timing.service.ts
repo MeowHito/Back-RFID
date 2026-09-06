@@ -6,6 +6,7 @@ import { RunnersService } from '../runners/runners.service';
 import { TimingGateway } from './timing.gateway';
 import { EventsService } from '../events/events.service';
 import { CheckpointsService } from '../checkpoints/checkpoints.service';
+import { formatCutoffForNote, isAdminOwnedStatus, resolveCutoffForCategory } from '../checkpoints/cutoff.util';
 
 export interface ScanData {
     eventId: string;
@@ -219,8 +220,13 @@ export class TimingService implements OnModuleInit {
     private checkpointByCampaignCache = new Map<string, { data: any[]; expiry: number }>();
     // In-memory cache for allRunners by eventIds (TTL 10s)
     private allRunnersCache = new Map<string, { data: any[]; expiry: number }>();
+    // In-memory cache of a campaign's checkpoints, for the per-scan cut-off check (TTL 15s)
+    private cutoffCheckpointsCache = new Map<string, { data: any[]; expiry: number }>();
+    // eventId -> campaignId (an event never moves campaign)
+    private campaignIdByEvent = new Map<string, string>();
     private static readonly CACHE_TTL_MS = 5000;
     private static readonly RUNNERS_CACHE_TTL_MS = 10000;
+    private static readonly CUTOFF_CACHE_TTL_MS = 15000;
     // Debounce timers for updateRankings — prevents race condition when many runners finish simultaneously
     private rankingDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -303,18 +309,58 @@ export class TimingService implements OnModuleInit {
             elapsedTime,
         };
 
+        // ── Cut-off ──────────────────────────────────────────────────────────────────
+        // Same rule as the cut-off scheduler: a crossing stamped AFTER a checkpoint's
+        // cut-off does not take the runner through it. Someone who reaches the finish
+        // line past the cut-off is a DNF, not a finisher — whether the record comes off
+        // the mat live or is typed in later.
+        const campaignCps = await this.getCutoffCheckpoints(scanData.eventId);
+        const scanMs = new Date(scanData.scanTime).getTime();
+        // START keeps its own semantics (missing START → DNS), so it is never "late" here.
+        const cutoffHere = isStart ? null : this.cutoffFor(campaignCps, scanData.checkpoint, runner.category);
+        const crossedLate = !!cutoffHere && scanMs > cutoffHere.getTime();
+        // The cut-off that already stopped this runner, if any. A later scan lifts it only
+        // when this crossing proves they made that checkpoint in time (a mat read that
+        // reached us late) — otherwise the scan would quietly undo the DNF.
+        const stoppedAtCp = String((runner as any).statusCheckpoint || '');
+        const stoppedCutoff = stoppedAtCp ? this.cutoffFor(campaignCps, stoppedAtCp, runner.category) : null;
+        const clearsPriorCutoff = !stoppedCutoff
+            || (scanMs <= stoppedCutoff.getTime()
+                && this.cpOrder(campaignCps, scanData.checkpoint) >= this.cpOrder(campaignCps, stoppedAtCp));
+
         // Respect isManualStatus: if staff manually set DNF/DNS/DQ, don't override
         const isManuallySet = (runner as any).isManualStatus === true;
         const isStoppedStatus = ['dnf', 'dns', 'dq'].includes(runner.status);
+        const isCutoffStopped = !isManuallySet
+            && (runner.status === 'dns' || runner.status === 'dnf')
+            && (runner as any).statusChangedBy === 'cutoff-scheduler';
         // A DNS/DNF set by the cutoff scheduler is recoverable: if the runner shows up
         // and scans any checkpoint, treat it as a re-entry. We never override a manual
         // status, but we DO undo automatic ones.
-        const isAutoStoppedByScheduler = !isManuallySet
-            && (runner.status === 'dns' || runner.status === 'dnf')
-            && (runner as any).statusChangedBy === 'cutoff-scheduler';
+        const isAutoStoppedByScheduler = isCutoffStopped && clearsPriorCutoff;
 
         if (isManuallySet && isStoppedStatus) {
             // Staff manually set this status — record the timing but DON'T change status
+            updateData.isStarted = true;
+        } else if (crossedLate && !isAdminOwnedStatus(runner)) {
+            // Past the cut-off for this checkpoint → out of the race.
+            if (isFinish) {
+                updateData.finishTime = scanData.scanTime;
+                updateData.netTime = elapsedTime;
+            }
+            updateData.status = 'dnf';
+            updateData.statusCheckpoint = scanData.checkpoint;
+            updateData.statusChangedAt = new Date();
+            updateData.statusChangedBy = 'cutoff-scheduler';
+            updateData.statusNote = `Auto DNF: missed the ${scanData.checkpoint} cut-off (${formatCutoffForNote(cutoffHere!)})`;
+            updateData.isStarted = true;
+        } else if (isCutoffStopped && !clearsPriorCutoff) {
+            // Still cut at an earlier checkpoint — keep the DNF/DNS, just record the crossing.
+            if (isStart) updateData.startTime = scanData.scanTime;
+            if (isFinish) {
+                updateData.finishTime = scanData.scanTime;
+                updateData.netTime = elapsedTime;
+            }
             updateData.isStarted = true;
         } else if (isStart) {
             updateData.startTime = scanData.scanTime;
@@ -364,6 +410,49 @@ export class TimingService implements OnModuleInit {
         this.timingGateway.broadcastRunnerUpdate(scanData.eventId, { ...(runner as any), ...updateData });
 
         return record;
+    }
+
+    /**
+     * The campaign's checkpoints, cached briefly — every scan consults them for cut-offs.
+     * Returns [] when the event has no campaign or the lookup fails, which simply means
+     * "no cut-offs apply" and leaves scan handling as it was.
+     */
+    private async getCutoffCheckpoints(eventId: string): Promise<any[]> {
+        try {
+            let campaignId = this.campaignIdByEvent.get(eventId);
+            if (!campaignId) {
+                const event: any = await this.eventsService.findOne(eventId);
+                campaignId = event?.campaignId ? String(event.campaignId) : '';
+                if (!campaignId) return [];
+                this.campaignIdByEvent.set(eventId, campaignId);
+            }
+            const cached = this.cutoffCheckpointsCache.get(campaignId);
+            if (cached && cached.expiry > Date.now()) return cached.data;
+            const cps = await this.checkpointsService.findByCampaign(campaignId) as any[];
+            this.cutoffCheckpointsCache.set(campaignId, {
+                data: cps,
+                expiry: Date.now() + TimingService.CUTOFF_CACHE_TTL_MS,
+            });
+            return cps;
+        } catch {
+            return [];
+        }
+    }
+
+    /** Cut-off applying to `checkpoint` for a runner in `category`, or null when there is none. */
+    private cutoffFor(checkpoints: any[], checkpoint: string, category?: string): Date | null {
+        const target = String(checkpoint || '').trim().toUpperCase();
+        if (!target) return null;
+        const cp = checkpoints.find(c => String(c?.name || '').trim().toUpperCase() === target);
+        if (!cp || cp.active === false) return null;
+        return resolveCutoffForCategory(cp, category);
+    }
+
+    /** orderNum of a checkpoint by name; -1 when the campaign has no such checkpoint. */
+    private cpOrder(checkpoints: any[], checkpoint: string): number {
+        const target = String(checkpoint || '').trim().toUpperCase();
+        const cp = checkpoints.find(c => String(c?.name || '').trim().toUpperCase() === target);
+        return cp?.orderNum ?? -1;
     }
 
     private scheduleRankingUpdate(eventId: string, category: string): void {
@@ -1288,6 +1377,26 @@ export class TimingService implements OnModuleInit {
             }
         }
 
+        // ── Cut-off, again ───────────────────────────────────────────────────────────
+        // This runs after every scan and after every staff edit of a checkpoint time, and it
+        // is what actually writes 'finished'. Two statuses it must not overwrite: one staff
+        // set by hand, and a cut-off DNF that this data does not clear.
+        const campaignCps = await this.getCutoffCheckpoints(eventId);
+        const curStatus = String(runner?.status || '').toLowerCase();
+        const stoppedByStaff = ['dnf', 'dns', 'dq'].includes(curStatus) && isAdminOwnedStatus(runner);
+        const cutoffStopped = (runner as any)?.isManualStatus !== true
+            && ['dnf', 'dns'].includes(curStatus)
+            && (runner as any)?.statusChangedBy === 'cutoff-scheduler';
+        // A runner cut at an earlier checkpoint only races again if their crossing THERE
+        // turns out to have been in time.
+        const cutCpName = String((runner as any)?.statusCheckpoint || '');
+        const priorCutoff = cutCpName ? this.cutoffFor(campaignCps, cutCpName, runner?.category) : null;
+        const cutRecord = cutCpName
+            ? records.find(r => String(r.checkpoint || '').toUpperCase() === cutCpName.toUpperCase())
+            : null;
+        const priorCutStands = cutoffStopped && !!priorCutoff
+            && !(cutRecord && new Date(cutRecord.scanTime).getTime() <= priorCutoff.getTime());
+
         const update: Record<string, unknown> = {
             passedCount: uniqueCps.size,
             // Which checkpoints carry a staff-typed time — drives the orange time
@@ -1326,16 +1435,48 @@ export class TimingService implements OnModuleInit {
             const finishGunMs = Number(finishRecord.gunTime) || 0;
             const finishGunIsEdited = finishRecord.isManualTime === true && finishGunMs > 0;
             const wasFinished = String(runner?.status || '').toLowerCase() === 'finished';
+            // Staff typed the FINISH in themselves and RaceTiger never scored this runner,
+            // so no gun time exists to copy. Recover the wall-clock of the start gun from
+            // any checkpoint that DOES carry one (gunStart = scanTime − gunTime) and measure
+            // the finish against it — otherwise gun would silently fall back to the net
+            // time, and the sync won't correct it later (a manual FINISH stops gun writes).
+            const gunStartMs = (() => {
+                for (const r of records) {
+                    const g = Number(r.gunTime) || 0;
+                    const t = new Date(r.scanTime).getTime();
+                    if (g > 0 && Number.isFinite(t)) return t - g;
+                }
+                const runningGun = Number(runner?.gunTime) || 0;
+                const lastPass = runner?.lastPassTime ? new Date(runner.lastPassTime).getTime() : NaN;
+                if (runningGun > 0 && Number.isFinite(lastPass)) return lastPass - runningGun;
+                return NaN;
+            })();
+            const gunFromStartLine = Number.isFinite(gunStartMs)
+                ? Math.max(0, finishMs - gunStartMs)
+                : 0;
             const knownGunMs = finishGunIsEdited
                 ? finishGunMs
                 : (parseHHMMSSToMs(runner?.gunTimeStr)
                     || finishGunMs
+                    || gunFromStartLine
                     || (wasFinished ? Number(runner?.gunTime) || 0 : 0));
             update.gunTime = knownGunMs > 0 ? knownGunMs : elapsed;
             if (finishGunIsEdited) {
                 update.gunTimeStr = formatMsToHHMMSS(finishGunMs);
             }
-            update.status = 'finished';
+            const finishCutoff = this.cutoffFor(campaignCps, finishRecord.checkpoint, runner?.category);
+            const finishedLate = !!finishCutoff && finishMs > finishCutoff.getTime();
+            if (stoppedByStaff || priorCutStands) {
+                // Leave the status exactly as it is — the times above are still worth recording.
+            } else if (finishedLate) {
+                update.status = 'dnf';
+                update.statusCheckpoint = finishRecord.checkpoint;
+                update.statusChangedAt = new Date();
+                update.statusChangedBy = 'cutoff-scheduler';
+                update.statusNote = `Auto DNF: missed the ${finishRecord.checkpoint} cut-off (${formatCutoffForNote(finishCutoff!)})`;
+            } else {
+                update.status = 'finished';
+            }
         } else if (startRecord?.isManualTime === true && startMs != null && latestRecord) {
             // Still out on course. With no FINISH to anchor on, the running chip time is
             // "latest checkpoint − the START staff typed in". RaceTiger's own NetTime is
