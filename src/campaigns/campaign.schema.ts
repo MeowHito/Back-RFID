@@ -242,6 +242,14 @@ export class Campaign {
     @Prop({ default: 5 })
     overallDisplayCount: number;
 
+    /** Master switch for the whole Overall award on this campaign. Some events give
+     *  no Overall award at all — turning this off hides the Overall board, drops its
+     *  entry from the ranking menu, and stops the "Overall n" label from appearing in
+     *  the AWARD column / certificates / e-slips. Defaults to on so existing campaigns
+     *  are unchanged. */
+    @Prop({ default: true })
+    overallEnabled: boolean;
+
     /** Per-category override of `overallDisplayCount` — each race distance can award a
      *  different number of Overall ranks (e.g. 42K top 3, 21K top 5). `category` holds
      *  the campaign category name; categories with no entry fall back to

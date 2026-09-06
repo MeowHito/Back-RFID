@@ -280,6 +280,10 @@ export class CreateCampaignDto {
     overallDisplayCount?: number;
 
     @IsOptional()
+    @IsBoolean()
+    overallEnabled?: boolean;
+
+    @IsOptional()
     @IsArray()
     @ValidateNested({ each: true })
     @Type(() => OverallDisplayCountByCategoryDto)
