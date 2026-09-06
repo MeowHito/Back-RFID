@@ -236,6 +236,15 @@ export class Campaign {
     @Prop({ default: 5 })
     ageGroupDisplayCount: number;
 
+    /** Whether results are split into a male and a female board. Off for events that
+     *  don't race the genders separately (e.g. a dog race, where every entrant is
+     *  tagged the same gender) — the Result-Winners board then shows ONE combined
+     *  column per age group instead of an empty FEMALE column, and the age-group
+     *  award is taken from the whole field. Defaults to on so existing campaigns
+     *  are unchanged. */
+    @Prop({ default: true })
+    genderSplitEnabled: boolean;
+
     /** Number of top overall ranks to display on Overall-Winners page. Default 5.
      *  Acts as the fallback for categories with no entry in
      *  `overallDisplayCountByCategory`. */

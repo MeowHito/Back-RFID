@@ -277,6 +277,10 @@ export class CreateCampaignDto {
     ageGroupDisplayCount?: number;
 
     @IsOptional()
+    @IsBoolean()
+    genderSplitEnabled?: boolean;
+
+    @IsOptional()
     overallDisplayCount?: number;
 
     @IsOptional()
