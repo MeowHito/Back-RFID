@@ -297,6 +297,10 @@ export class CreateCampaignDto {
     topRunnersExcludeOverallCategories?: string[];
 
     @IsOptional()
+    @IsBoolean()
+    topRunnersEnabled?: boolean;
+
+    @IsOptional()
     bestOfDisplayCount?: number;
 
     @IsOptional()

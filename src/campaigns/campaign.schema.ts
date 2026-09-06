@@ -265,6 +265,14 @@ export class Campaign {
     @Prop({ type: [String], default: [] })
     topRunnersExcludeOverallCategories: string[];
 
+    /** Master switch for the whole Top Runners feature on this campaign. Some
+     *  events simply don't have a Top Runners board — turning this off hides the
+     *  board, drops its entry from the ranking menu, and stops the "TOP n" label
+     *  from appearing in the AWARD column / e-slips. Defaults to on so existing
+     *  campaigns are unchanged. */
+    @Prop({ default: true })
+    topRunnersEnabled: boolean;
+
     /** Number of top ranks (per gender) to display on the Best-Of-Winners page
      *  (local-province "Best Of" award). Default 1. */
     @Prop({ default: 1 })

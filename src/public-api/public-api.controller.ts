@@ -1028,6 +1028,7 @@ export class PublicApiController {
                     overallDisplayCountByCategory: (campaign as any).overallDisplayCountByCategory || [],
                     topRunnersRangeByCategory: (campaign as any).topRunnersRangeByCategory || [],
                     topRunnersExcludeOverallCategories: (campaign as any).topRunnersExcludeOverallCategories || [],
+                    topRunnersEnabled: (campaign as any).topRunnersEnabled !== false,
                     ageGroupDisplayCount: (campaign as any).ageGroupDisplayCount ?? null,
                     excludeOverallFromAgeGroup: (campaign as any).excludeOverallFromAgeGroup ?? null,
                     excludeOverallThaiFromAgeGroup: (campaign as any).excludeOverallThaiFromAgeGroup ?? null,
