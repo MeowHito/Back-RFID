@@ -23,13 +23,27 @@ export function normalizeAgeGroupLabel(value?: string | null): string {
         .trim();
 }
 
+/**
+ * Numeric bracket bounds, with the unit suffixes RaceTiger appends when a race
+ * brackets by something other than age. DOX RACE (dog trail) sends weight
+ * classes in the same Category field — "1-4KG", "4-13KG", "13KG+" — so the
+ * bracket parser has to survive a unit between the number and the -/+ and
+ * decimal bounds like "4.01-13 kg".
+ */
+const BOUND = String.raw`\d{1,3}(?:\.\d+)?`;
+const UNIT = String.raw`(?:\s*(?:kgs?|กก\.?|กิโลกรัม|กิโล))?`;
+
+const RANGE_RE = new RegExp(`(${BOUND})${UNIT}\\s*-\\s*(${BOUND})${UNIT}`, 'i');
+const PLUS_RE = new RegExp(`(${BOUND})${UNIT}\\s*\\+`, 'i');
+const OVER_RE = new RegExp(`(${BOUND})${UNIT}\\s*(?:&|and\\b)?\\s*(?:over|up|ขึ้นไป)`, 'i');
+
 export function parseAgeGroupBucket(value?: string | null): AgeGroupBucket | null {
     const label = normalizeAgeGroupLabel(value);
     if (!label) return null;
 
-    const rangeMatch = label.match(/(\d+)\s*-\s*(\d+)/);
+    const rangeMatch = label.match(RANGE_RE);
     if (rangeMatch) {
-        return { label, min: parseInt(rangeMatch[1]), max: parseInt(rangeMatch[2]) };
+        return { label, min: parseFloat(rangeMatch[1]), max: parseFloat(rangeMatch[2]) };
     }
 
     const underMatch = label.match(/(?:u|under)\s*(\d+)/i);
@@ -38,16 +52,17 @@ export function parseAgeGroupBucket(value?: string | null): AgeGroupBucket | nul
         return { label, min: 0, max: max >= 0 ? max : 0 };
     }
 
-    const plusMatch = label.match(/(\d+)\s*\+/);
+    // "70+", "13KG+"
+    const plusMatch = label.match(PLUS_RE);
     if (plusMatch) {
-        return { label, min: parseInt(plusMatch[1]), max: 999 };
+        return { label, min: parseFloat(plusMatch[1]), max: 999 };
     }
 
-    // "60&Over", "60 & Up", "60 and over", "60 ขึ้นไป", "Over 60"
-    const overMatch = label.match(/(\d+)\s*(?:&|and\b)?\s*(?:over|up|ขึ้นไป)/i)
+    // "60&Over", "60 & Up", "60 and over", "60 ขึ้นไป", "13.01 kg ขึ้นไป", "Over 60"
+    const overMatch = label.match(OVER_RE)
         || label.match(/\b(?:over|above)\s*(\d+)/i);
     if (overMatch) {
-        return { label, min: parseInt(overMatch[1]), max: 999 };
+        return { label, min: parseFloat(overMatch[1]), max: 999 };
     }
 
     return null;
@@ -74,7 +89,7 @@ export function buildCanonicalAgeGroupLookup(rawLabels: Array<string | undefined
 
     const dominant: { bucket: AgeGroupBucket; count: number }[] = [];
     for (const entry of entries) {
-        const overlapsExisting = dominant.some(d => overlapAmount(entry.bucket, d.bucket) >= 0);
+        const overlapsExisting = dominant.some(d => overlapAmount(entry.bucket, d.bucket) > 0);
         if (!overlapsExisting) dominant.push(entry);
     }
 
