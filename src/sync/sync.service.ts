@@ -2707,6 +2707,23 @@ export class SyncService {
                         }
                     }
 
+                    // Runner still out on course with a staff-typed START: keep the running
+                    // chip time in step with the latest pass (net = latest pass − typed START).
+                    // RaceTiger's own net counts from the runner's first chip read — the very
+                    // read that was missing at the start line — so it must not come back here.
+                    // Gun time is untouched: it is measured from the start gun.
+                    const runningNetUpdate: Record<string, any> = {};
+                    if (manualStart && !manualFinish && !hasFinishTiming && acc.lastScanTime) {
+                        const typedStartMs = (existingRunner as any)?.startTime
+                            ? new Date((existingRunner as any).startTime).getTime() : NaN;
+                        const runningNet = acc.lastScanTime.getTime() - typedStartMs;
+                        if (Number.isFinite(runningNet) && runningNet > 0) {
+                            runningNetUpdate.netTime = runningNet;
+                            runningNetUpdate.elapsedTime = runningNet;
+                            runningNetUpdate.netTimeStr = this.formatMsToHHMMSS(runningNet);
+                        }
+                    }
+
                     return {
                         id: new Types.ObjectId(rId),
                         data: {
@@ -2724,6 +2741,7 @@ export class SyncService {
                             ...(acc.lastCheckpointName !== null ? { latestCheckpoint: acc.lastCheckpointName } : {}),
                             ...statusUpdate,
                             ...finishTimeUpdate,
+                            ...runningNetUpdate,
                             // Propagate chipCode/printingCode from passtime to runner
                             ...(acc.chipCode ? { chipCode: acc.chipCode, rfidTag: acc.chipCode } : {}),
                             ...(acc.printingCode ? { printingCode: acc.printingCode } : {}),

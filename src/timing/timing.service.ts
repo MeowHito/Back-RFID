@@ -353,8 +353,10 @@ export class TimingService implements OnModuleInit {
         await this.recomputeRunnerAggregates(scanData.eventId, runner._id.toString())
             .catch(() => { /* non-fatal */ });
 
-        // Update rankings if finished — debounced to consolidate concurrent finish scans
-        if (isFinish) {
+        // Update rankings if finished — debounced to consolidate concurrent finish scans.
+        // A hand-typed START on someone who already finished changes their net time
+        // (net = FINISH − START), so the net-ranked pools must be recomputed too.
+        if (isFinish || (manual && isStart && runner.status === 'finished')) {
             this.scheduleRankingUpdate(scanData.eventId, runner.category);
         }
 
@@ -1315,19 +1317,40 @@ export class TimingService implements OnModuleInit {
             // other checkpoint edit) must NOT move it — only the chip/net time above.
             // The one thing that legitimately shifts it is moving the FINISH scan itself:
             // updateRecordScanTime() shifts the FINISH record's gunTime by the same delta,
-            // so that edited value wins. Otherwise trust RaceTiger's raw gun string, then
-            // the runner's stored gunTime, then the FINISH record's, and only fall back to
-            // the net elapsed when nothing at all knows a gun time.
+            // so that edited value wins. Otherwise: RaceTiger's raw gun string → the FINISH
+            // record's gun → the runner's stored gunTime → the net elapsed, which is only
+            // right when nothing at all knows a gun time.
+            // runner.gunTime comes last because it is only trustworthy once they have
+            // finished: while a runner is out on course RaceTiger keeps it as a *running*
+            // gun time (gun → last pass), so freezing that at the finish under-reports it.
             const finishGunMs = Number(finishRecord.gunTime) || 0;
             const finishGunIsEdited = finishRecord.isManualTime === true && finishGunMs > 0;
+            const wasFinished = String(runner?.status || '').toLowerCase() === 'finished';
             const knownGunMs = finishGunIsEdited
                 ? finishGunMs
-                : (parseHHMMSSToMs(runner?.gunTimeStr) || Number(runner?.gunTime) || finishGunMs);
+                : (parseHHMMSSToMs(runner?.gunTimeStr)
+                    || finishGunMs
+                    || (wasFinished ? Number(runner?.gunTime) || 0 : 0));
             update.gunTime = knownGunMs > 0 ? knownGunMs : elapsed;
             if (finishGunIsEdited) {
                 update.gunTimeStr = formatMsToHHMMSS(finishGunMs);
             }
             update.status = 'finished';
+        } else if (startRecord?.isManualTime === true && startMs != null && latestRecord) {
+            // Still out on course. With no FINISH to anchor on, the running chip time is
+            // "latest checkpoint − the START staff typed in". RaceTiger's own NetTime is
+            // exactly the wrong number for these runners (it counts from their first chip
+            // read, which is the read that was missing at the start line), and the sync
+            // stops sending net once a manual START exists — so without this the typed
+            // START saved fine but the Chip Time box snapped back to the old value.
+            // gunTime is deliberately untouched: it is measured from the start gun.
+            const latestMs = new Date(latestRecord.scanTime).getTime();
+            const elapsed = Number.isFinite(latestMs) ? Math.max(0, latestMs - startMs) : 0;
+            if (elapsed > 0) {
+                update.netTime = elapsed;
+                update.elapsedTime = elapsed;
+                update.netTimeStr = formatMsToHHMMSS(elapsed);
+            }
         }
 
         await this.runnersService.setAggregates(runnerId, update);
