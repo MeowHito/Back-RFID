@@ -1561,6 +1561,15 @@ export class TimingService implements OnModuleInit {
                 update.statusNote = `Auto DNF: missed the ${finishRecord.checkpoint} cut-off (${formatCutoffForNote(finishCutoff!)})`;
             } else {
                 update.status = 'finished';
+                // A cut-off DNF this data has just cleared must not leave its note behind:
+                // that is what produced rows reading "FINISH · Auto DNF: missed the FINISH
+                // cut-off" — a finisher carrying the reason they were once pulled.
+                if (!isAdminOwnedStatus(runner) && /^auto\s+(dnf|dns|dq)\s*:/i.test(String((runner as any)?.statusNote || ''))) {
+                    update.statusCheckpoint = '';
+                    update.statusNote = '';
+                    update.statusChangedAt = new Date();
+                    update.statusChangedBy = 'cutoff-scheduler';
+                }
             }
         } else if (startRecord?.isManualTime === true && startMs != null && latestRecord) {
             // Still out on course. With no FINISH to anchor on, the running chip time is
