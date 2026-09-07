@@ -276,6 +276,49 @@ export class PublicApiController {
         return { overallRankMap, genderRankMap, catRankMap };
     }
 
+    /**
+     * The public breakdown of a DNF, stamped onto result rows for /event/[id]:
+     *   dnfKind                 'withdraw' — staff pulled them (or they came in and retired)
+     *                           'cutoff'   — the cut-off rule pulled them
+     *   statusCheckpointArrived cut-off only: they did reach `statusCheckpoint`, just late
+     *
+     * The cut-off rule is the sole owner of `statusChangedBy: 'cutoff-scheduler'` (see
+     * checkpoint-scheduler / timing-scan), so anything else is a human decision. The
+     * "Auto DNF:" note is a second read on the same fact, for rows synced before that
+     * field was written.
+     *
+     * `rows` are the shaped result rows; `runnerDocs` the Runner documents they came from
+     * (the two are the same array in the results endpoint) — the status metadata below is
+     * deliberately not part of the public payload, so it is read from the documents.
+     */
+    private async applyDnfDetail(rows: any[], runnerDocs: any[]): Promise<void> {
+        const dnfRows = rows.filter((r) => String(r?.status || '').toLowerCase() === 'dnf');
+        if (dnfRows.length === 0) return;
+
+        const docById = new Map<string, any>();
+        for (const doc of runnerDocs || []) docById.set(String(doc?._id || ''), doc);
+
+        const arrivalEntries: { runnerId: string; checkpoint: string }[] = [];
+        for (const row of dnfRows) {
+            const runnerId = String(row?._id || '');
+            const doc = docById.get(runnerId) || row;
+            const changedBy = String(doc?.statusChangedBy || '').trim().toLowerCase();
+            const isCutoff = changedBy === 'cutoff-scheduler'
+                || /^auto\s+dnf\s*:/i.test(String(doc?.statusNote || ''));
+            row.dnfKind = isCutoff ? 'cutoff' : 'withdraw';
+            row.statusCheckpointArrived = false;
+            const checkpoint = String(row?.statusCheckpoint || doc?.statusCheckpoint || '').trim();
+            if (isCutoff && checkpoint) arrivalEntries.push({ runnerId, checkpoint });
+        }
+        if (arrivalEntries.length === 0) return;
+
+        const arrived = await this.timingService.getStoppedCheckpointArrivals(arrivalEntries);
+        for (const row of dnfRows) {
+            if (row.dnfKind !== 'cutoff') continue;
+            row.statusCheckpointArrived = arrived.has(String(row?._id || ''));
+        }
+    }
+
     private mergeTimingIntoRunner(target: any, timing: any): void {
         if (!timing) return;
         if (!target.netTime || target.netTime <= 0) target.netTime = timing.netTime || 0;
@@ -560,6 +603,8 @@ export class PublicApiController {
             if (!looksLikeFinish(r.splitDesc)) r.splitDesc = finishName;
         }
 
+        await this.applyDnfDetail(data as any[], data as any[]);
+
         const natSplitCategories = await this.getNationalitySplitCategories(id);
         const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(data as any[], natSplitCategories);
         for (const r of data as any[]) {
@@ -664,6 +709,8 @@ export class PublicApiController {
             if (!looksLikeFinish(r.latestCheckpoint)) r.latestCheckpoint = finishName;
             if (!looksLikeFinish(r.splitDesc)) r.splitDesc = finishName;
         }
+
+        await this.applyDnfDetail(merged as any[], allRunners as any[]);
 
         const natSplitCategories = await this.getNationalitySplitCategories(id);
         const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(merged as any[], natSplitCategories);

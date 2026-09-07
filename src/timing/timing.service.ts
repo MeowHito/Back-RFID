@@ -773,6 +773,42 @@ export class TimingService implements OnModuleInit {
         return result;
     }
 
+    /**
+     * Of the runners given, which ones actually have a scan at the checkpoint they were
+     * stopped at. A cut-off DNF comes in two flavours the public table has to tell apart:
+     * the runner who reached the checkpoint but after its cut-off (ARRIVED), and the one
+     * who never got there at all.
+     *
+     * Matching is by runnerId + checkpoint name (trimmed, case-insensitive), which is how
+     * `statusCheckpoint` is written by the cut-off rule and typed by staff.
+     */
+    async getStoppedCheckpointArrivals(
+        entries: { runnerId: string; checkpoint: string }[],
+    ): Promise<Set<string>> {
+        const wanted = new Map<string, string>();
+        for (const entry of entries) {
+            const runnerId = String(entry?.runnerId || '');
+            const checkpoint = String(entry?.checkpoint || '').trim().toUpperCase();
+            if (checkpoint && Types.ObjectId.isValid(runnerId)) wanted.set(runnerId, checkpoint);
+        }
+        const arrived = new Set<string>();
+        if (wanted.size === 0) return arrived;
+
+        const records = await this.timingModel
+            .find({ runnerId: { $in: [...wanted.keys()].map((id) => new Types.ObjectId(id)) } })
+            .select('runnerId checkpoint')
+            .lean()
+            .exec();
+
+        for (const record of records as any[]) {
+            const runnerId = String(record?.runnerId || '');
+            if (wanted.get(runnerId) === String(record?.checkpoint || '').trim().toUpperCase()) {
+                arrived.add(runnerId);
+            }
+        }
+        return arrived;
+    }
+
     async getCheckpointRecords(eventId: string, checkpoint: string): Promise<any[]> {
         const objectId = new Types.ObjectId(eventId);
         const records = await this.timingModel.aggregate([
