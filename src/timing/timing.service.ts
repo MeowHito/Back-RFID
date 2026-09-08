@@ -1403,6 +1403,93 @@ export class TimingService implements OnModuleInit {
      * cached values on the Runner doc (passedCount, latestCheckpoint, netTime,
      * gunTime, finishTime, status) stay in sync with the underlying records.
      */
+    /**
+     * True when a Runner doc froze mid-race behind a staff-typed checkpoint.
+     *
+     * Staff type a checkpoint while the runner is still out on course, so
+     * recomputeRunnerAggregates() runs against a doc that has no FINISH record yet:
+     * it writes the *running* chip time and deliberately leaves gunTime alone (gun is
+     * measured from the start gun, never from a typed time). When the real FINISH then
+     * arrives through the RaceTiger split sync — which does not re-anchor those fields —
+     * the doc stays stuck at that moment: no finishTime, gunTime 0, and a net time that
+     * stops at the checkpoint BEFORE the finish.
+     *
+     * /event never showed this because it derives Gun/Net from the timing records, but
+     * every winners board reads the Runner doc, so a frozen runner was ranked off a net
+     * time that was minutes too fast — and printed a blank Gun time.
+     */
+    static isFrozenMidRace(runner: any, opts: { hasFinishRecord: boolean; hasManualCheckpoint: boolean }): boolean {
+        if (!runner || !opts.hasFinishRecord || !opts.hasManualCheckpoint) return false;
+        if (!runner.finishTime) return true;
+        if (!(Number(runner.gunTime) > 0)) return true;
+        // With a typed START the chip time is START → FINISH. Anything else is the
+        // running value left over from before they crossed the line.
+        const manualCps: string[] = (Array.isArray(runner.manualCheckpoints) ? runner.manualCheckpoints : [])
+            .map((cp: any) => String(cp).toUpperCase());
+        const manualStart = manualCps.some(cp => cp.includes('START'));
+        const manualFinish = manualCps.some(cp => cp.includes('FINISH'));
+        if (manualStart && !manualFinish) {
+            const startedMs = new Date(runner.startTime ?? NaN).getTime();
+            const finishedMs = new Date(runner.finishTime ?? NaN).getTime();
+            const expectedNet = finishedMs - startedMs;
+            if (Number.isFinite(expectedNet) && expectedNet > 0
+                && Math.abs(expectedNet - Number(runner.netTime || 0)) > 1000) return true;
+        }
+        return false;
+    }
+
+    /**
+     * One-shot backfill for runners that froze before isFrozenMidRace() existed: re-anchor
+     * every frozen runner in these events off their own timing records. Idempotent — a
+     * runner it has already repaired no longer matches, so a second call is a no-op.
+     *
+     * Cut-off DNFs are skipped: their status belongs to the cut-off scheduler, and a
+     * recompute here could quietly lift it.
+     */
+    async repairFrozenRunners(eventIds: string[]): Promise<{
+        checked: number;
+        repaired: Array<{ bib: string; before: { gunTime: number; netTime: number }; after: { gunTime: number; netTime: number } }>;
+    }> {
+        const objectIds = eventIds.map(id => new Types.ObjectId(id));
+        // findByEventIds takes no arbitrary filter, so the manual-checkpoint narrowing
+        // happens here. This is a one-shot repair endpoint, not a hot path.
+        const allRunners = await this.runnersService
+            .findByEventIds(eventIds, {}, 100000)
+            .catch(() => [] as any[]);
+        const candidates = (allRunners as any[]).filter(
+            r => Array.isArray(r.manualCheckpoints) && r.manualCheckpoints.length > 0,
+        );
+
+        const finishBibs = new Set<string>();
+        const finishRecords = await this.timingModel
+            .find({ eventId: { $in: objectIds }, checkpoint: { $regex: /^FINISH$/i } })
+            .select('runnerId')
+            .lean()
+            .exec() as any[];
+        for (const rec of finishRecords) finishBibs.add(String(rec.runnerId));
+
+        const repaired: Array<{ bib: string; before: any; after: any }> = [];
+        for (const runner of candidates as any[]) {
+            const rid = String(runner._id);
+            const stopped = String(runner.status || '').toLowerCase();
+            if (['dnf', 'dns'].includes(stopped) && runner.statusChangedBy === 'cutoff-scheduler') continue;
+            const frozen = TimingService.isFrozenMidRace(runner, {
+                hasFinishRecord: finishBibs.has(rid),
+                hasManualCheckpoint: Array.isArray(runner.manualCheckpoints) && runner.manualCheckpoints.length > 0,
+            });
+            if (!frozen) continue;
+            const before = { gunTime: Number(runner.gunTime || 0), netTime: Number(runner.netTime || 0) };
+            await this.recomputeRunnerAggregates(String(runner.eventId), rid);
+            const after = await this.runnersService.findOne(rid).catch(() => null) as any;
+            repaired.push({
+                bib: runner.bib,
+                before,
+                after: { gunTime: Number(after?.gunTime || 0), netTime: Number(after?.netTime || 0) },
+            });
+        }
+        return { checked: candidates.length, repaired };
+    }
+
     async recomputeRunnerAggregates(eventId: string, runnerId: string): Promise<void> {
         // Load by scanTime ascending so we can derive splitTime/elapsedTime from neighbors.
         // (The persisted `order` field can be stale after manual edits; trust scanTime instead.)
@@ -1584,6 +1671,14 @@ export class TimingService implements OnModuleInit {
             update.gunTime = knownGunMs > 0 ? knownGunMs : elapsed;
             if (finishGunIsEdited) {
                 update.gunTimeStr = formatMsToHHMMSS(finishGunMs);
+            } else if (knownGunMs > 0 && !String((runner as any)?.gunTimeStr || '').trim()) {
+                // RaceTiger scored this runner with no gun time of its own (it happens when
+                // they had no START chip read), so the doc carries an empty gunTimeStr while
+                // the FINISH record knows the real value. Fill the blank from what we just
+                // derived — several public pages print gunTimeStr in preference to the
+                // number, and a blank there is what showed as "–" on the winners boards.
+                // A later score sync still overwrites it with RaceTiger's exact string.
+                update.gunTimeStr = formatMsToHHMMSS(knownGunMs);
             }
             const finishCutoff = this.cutoffFor(campaignCps, finishRecord.checkpoint, runner?.category);
             const finishedLate = !!finishCutoff && finishMs > finishCutoff.getTime();

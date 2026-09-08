@@ -237,3 +237,84 @@ describe('TimingService.processScan — gun/net time on the new record', () => {
         expect(record.netTime).toBe(120 * 60_000); // 08:00 − 06:00 (anchor 07:00 − 01:00:00)
     });
 });
+
+/**
+ * BIB 2143, Legacy Doi Chang 2026: staff typed his START at 06:00 while he was still on
+ * course, then RaceTiger delivered his FINISH 45 minutes later through the split sync.
+ * Nothing re-anchored the Runner doc, so it froze at that moment — no finishTime, gunTime
+ * 0, and a net time measured to A6 instead of the finish. /event hid it (it derives both
+ * clocks from these very records) while the winners boards ranked him off the stale net.
+ */
+describe('TimingService.isFrozenMidRace', () => {
+    const frozen = {
+        bib: '2143',
+        manualCheckpoints: ['START'],
+        startTime: day('06:00'),
+        netTime: 5 * 3600000,   // measured to A6, not to the finish
+        gunTime: 0,
+        gunTimeStr: '',
+    };
+    const opts = { hasFinishRecord: true, hasManualCheckpoint: true };
+
+    it('flags a doc with no finishTime', () => {
+        expect(TimingService.isFrozenMidRace(frozen, opts)).toBe(true);
+    });
+
+    it('flags a doc that has a finishTime but no gun time', () => {
+        expect(TimingService.isFrozenMidRace({ ...frozen, finishTime: day('12:12') }, opts)).toBe(true);
+    });
+
+    it('flags a typed START whose net time stops before the finish', () => {
+        expect(TimingService.isFrozenMidRace(
+            { ...frozen, finishTime: day('12:12'), gunTime: 6 * 3600000 + 14 * 60000 },
+            opts,
+        )).toBe(true);
+    });
+
+    // 06:00 → 12:12 is exactly what a re-anchored doc must record as its chip time.
+    const repaired = {
+        ...frozen,
+        finishTime: day('12:12'),
+        gunTime: 6 * 3600000 + 14 * 60000 + 42000,  // 6:14:42, off the FINISH record
+        netTime: 6 * 3600000 + 12 * 60000,          // 6:12:00 = FINISH − typed START
+    };
+
+    it('clears the same runner once the times are re-anchored', () => {
+        expect(TimingService.isFrozenMidRace(repaired, opts)).toBe(false);
+    });
+
+    it('ignores runners with no staff-typed checkpoint and runners still out on course', () => {
+        expect(TimingService.isFrozenMidRace(frozen, { ...opts, hasManualCheckpoint: false })).toBe(false);
+        expect(TimingService.isFrozenMidRace(frozen, { ...opts, hasFinishRecord: false })).toBe(false);
+        expect(TimingService.isFrozenMidRace(repaired, { ...opts, hasManualCheckpoint: false })).toBe(false);
+    });
+});
+
+/**
+ * The repair the frozen doc actually needs: net measured from the typed START to the
+ * FINISH, and gun lifted off the FINISH record rather than falling back to net.
+ */
+describe('TimingService.recomputeRunnerAggregates — re-anchoring a frozen runner', () => {
+    it('writes net = FINISH − typed START and gun from the FINISH record', async () => {
+        const RUNNER_ID = new Types.ObjectId().toHexString();
+        const runner = runnerDoc({
+            _id: RUNNER_ID, status: 'in_progress', manualCheckpoints: ['START'],
+            startTime: day('06:00'), netTime: 5 * 3600000, gunTime: 0, gunTimeStr: '',
+        });
+        const { service, runnersService } = buildService(runner, [
+            { _id: 'r1', checkpoint: 'START', scanTime: day('06:00'), order: 1, isManualTime: true },
+            { _id: 'r2', checkpoint: 'A6', scanTime: day('09:30'), order: 2, gunTime: 12900000 },
+            { _id: 'r3', checkpoint: 'FINISH', scanTime: day('10:30'), order: 3, gunTime: 16500000 },
+        ]);
+        jest.restoreAllMocks();
+
+        await service.recomputeRunnerAggregates(EVENT_ID, RUNNER_ID);
+
+        const [, update] = runnersService.setAggregates.mock.calls[0];
+        expect(update.finishTime).toEqual(day('10:30'));
+        expect(update.netTime).toBe(4 * 3600000 + 30 * 60000);   // 06:00 → 10:30
+        expect(update.gunTime).toBe(16500000);                    // 04:35:00, off the FINISH record
+        expect(update.gunTimeStr).toBe('4:35:00');               // the blank string gets filled too
+        expect(update.status).toBe('finished');
+    });
+});

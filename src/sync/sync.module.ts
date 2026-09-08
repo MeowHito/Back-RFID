@@ -8,6 +8,7 @@ import { TimingRecord, TimingRecordSchema } from '../timing/timing-record.schema
 import { Runner, RunnerSchema } from '../runners/runner.schema';
 import { RunnersModule } from '../runners/runners.module';
 import { CheckpointsModule } from '../checkpoints/checkpoints.module';
+import { TimingModule } from '../timing/timing.module';
 import { SyncController } from './sync.controller';
 import { SyncService } from './sync.service';
 import { SyncSchedulerService } from './sync-scheduler.service';
@@ -17,6 +18,10 @@ import { SyncLog, SyncLogSchema } from './sync-log.schema';
     imports: [
         RunnersModule,
         CheckpointsModule,
+        // For TimingService.recomputeRunnerAggregates() — the split sync re-derives a
+        // manual-checkpoint runner's Gun/Net/finish time once RaceTiger delivers their
+        // FINISH pass. TimingModule does not import SyncModule, so there is no cycle.
+        TimingModule,
         MongooseModule.forFeature([
             { name: SyncLog.name, schema: SyncLogSchema },
             { name: Campaign.name, schema: CampaignSchema },

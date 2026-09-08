@@ -12,6 +12,7 @@ import { CheckpointSchedulerService } from '../checkpoints/checkpoint-scheduler.
 import { isCutoffStopped } from '../checkpoints/cutoff.util';
 import { SyncLog, SyncLogDocument } from './sync-log.schema';
 import { TimingRecord, TimingRecordDocument } from '../timing/timing-record.schema';
+import { TimingService } from '../timing/timing.service';
 type RaceTigerRequestType = 'info' | 'bio' | 'split' | 'score' | 'passedTime';
 interface EventResolver {
     eventIdByRaceTigerEventId: Map<number, string>;
@@ -42,6 +43,7 @@ export class SyncService {
         private readonly runnersService: RunnersService,
         private readonly checkpointsService: CheckpointsService,
         private readonly checkpointScheduler: CheckpointSchedulerService,
+        private readonly timingService: TimingService,
         private readonly configService: ConfigService,
     ) { }
     /**
@@ -2659,6 +2661,9 @@ export class SyncService {
                 } catch { /* checkpoints may not exist yet */ }
                 if (startCpNames.size === 0) startCpNames.add('START');
 
+                // Runners whose Runner doc has to be re-derived from their own timing
+                // records — collected in the map below, applied after bulkUpdateTiming.
+                const needsAggregateRecompute: Array<{ runnerId: string; eventId: string }> = [];
                 const runnerPassedOps = Array.from(lapAccByRunner.entries()).map(([rId, acc]) => {
                     const validSplits = acc.splitTimes.filter(s => s > 0);
                     const bestLap = validSplits.length > 0 ? Math.min(...validSplits) : undefined;
@@ -2707,6 +2712,31 @@ export class SyncService {
                     // (net = FINISH − START), so RaceTiger's split net must not write over it.
                     // Gun time is measured from the gun and stays RaceTiger's to supply.
                     const manualStart = manualCpNames.some((cp: string) => cp.includes('START'));
+
+                    // ── A staff-typed checkpoint, then a FINISH that arrived afterwards ──
+                    // Staff type a checkpoint while the runner is still out on course, so
+                    // recomputeRunnerAggregates() ran against a doc with no FINISH record yet:
+                    // it wrote the *running* chip time and deliberately left gunTime alone.
+                    // RaceTiger then delivers the FINISH pass through THIS sync, which never
+                    // re-anchors those fields — so the Runner doc stays frozen mid-race (no
+                    // finishTime, gunTime 0, net measured to the checkpoint BEFORE the finish)
+                    // even though the timing records hold the real gun time all along. That is
+                    // why /event looked right (it derives Gun/Net from the records) while every
+                    // winners board, reading the Runner doc, ranked them off a net time that
+                    // stopped one checkpoint early.
+                    // Re-derive the doc from its records — but only while it still looks frozen,
+                    // so a healthy runner costs nothing on the next sync.
+                    // Cut-off DNFs are left out on purpose: their status belongs to the cut-off
+                    // scheduler, and a recompute here could quietly lift it.
+                    const frozenMidRace = !isStoppedByCutoff
+                        && TimingService.isFrozenMidRace(existingRunner, {
+                            hasFinishRecord: hasFinishTiming,
+                            hasManualCheckpoint: manualCpNames.length > 0 || manualByRunner.has(rId),
+                        });
+                    if (frozenMidRace && existingRunner) {
+                        needsAggregateRecompute.push({ runnerId: rId, eventId: String(existingRunner.eventId) });
+                    }
+
                     if (hasFinishTiming && !scoreHasTime && !manualFinish) {
                         const finishRow = (splitRowsByRunner.get(rId) || [])
                             .filter(r => finishCpNames.has(r.cp.toUpperCase()))
@@ -2772,6 +2802,23 @@ export class SyncService {
                 if (runnerPassedOps.length > 0) {
                     await this.runnersService.bulkUpdateTiming(runnerPassedOps);
                     this.logger.log(`  Split sync: updated passedCount + latestCheckpoint + lap stats on ${runnerPassedOps.length} runners`);
+                }
+
+                // Re-anchor the runners flagged above. recomputeRunnerAggregates() is the one
+                // place that knows how to derive net = FINISH − typed START and lift the gun
+                // time off the FINISH record, so the Runner doc ends up saying exactly what
+                // /event already computes from the same records. It runs after the bulk write
+                // (so its values win) and before the auto-DQ pass (so the DQ still has the
+                // last word).
+                for (const { runnerId, eventId } of needsAggregateRecompute) {
+                    try {
+                        await this.timingService.recomputeRunnerAggregates(eventId, runnerId);
+                    } catch (e: any) {
+                        this.logger.warn(`  Re-anchor after staff-typed checkpoint failed for runner ${runnerId}: ${e?.message}`);
+                    }
+                }
+                if (needsAggregateRecompute.length > 0) {
+                    this.logger.log(`  Split sync: re-anchored Gun/Net/finish time on ${needsAggregateRecompute.length} runner(s) with staff-typed checkpoints`);
                 }
 
                 // Auto-DQ: finishers who never crossed START. Runs last in the sync cycle (split
