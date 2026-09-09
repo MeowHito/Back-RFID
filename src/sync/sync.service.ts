@@ -712,17 +712,72 @@ export class SyncService {
             || /^[MF]?\s*\d{1,3}(?:\.\d+)?\s*(?:kgs?|กก\.?|กิโลกรัม|กิโล)?\s*(?:&|and\b)?\s*(?:over|up|ขึ้นไป)/i.test(value)
             || /^[MF]?\s*(?:over|above)\s*\d{1,3}\b/i.test(value);
     }
+    /** Which RaceTiger event a BIO row belongs to, as an age-group vocabulary key. */
+    private ageGroupVocabularyKey(row: any): string {
+        const raceTigerEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+        return raceTigerEventId === null ? '' : String(raceTigerEventId);
+    }
+
+    /**
+     * Per-RaceTiger-event verdict: does this event's `Category` column hold age
+     * groups, so a bare number in it ("30", "40", "50") is a bracket rather than
+     * a race distance?
+     *
+     * Khao Kradong Trail names its brackets "30 / 40 / 50 / 60+ / U29" and leaves
+     * RaceTiger's Age from / Age to columns at 0, so a bare number carries no
+     * evidence of its own — 286 of 373 runners landed with no age group at all.
+     * The evidence is the company it keeps: an event whose Category set also
+     * contains a label that can only be an age bracket ("60+", "U29") is
+     * bracketing by age throughout. An event whose Categories are all bare
+     * numbers is left alone, because there they are far more likely distances.
+     *
+     * Built from every row of the event up front, never row-by-row while
+     * importing — a page ordered by category would otherwise decide the early
+     * rows before the deciding label ever showed up.
+     */
+    private buildAgeGroupVocabulary(rows: any[]): Map<string, boolean> {
+        const vocab = new Map<string, boolean>();
+        for (const row of rows) {
+            const key = this.ageGroupVocabularyKey(row);
+            if (!vocab.has(key)) vocab.set(key, false);
+            const rawCategory = this.toSafeString(row?.Category ?? row?.category);
+            if (this.isAgeGroupLabel(rawCategory)) vocab.set(key, true);
+        }
+        return vocab;
+    }
+
+    /** Log which events accepted bare-number age groups, so an odd import can be traced afterwards. */
+    private logAgeGroupVocabulary(eid: number | undefined, vocab: Map<string, boolean>): void {
+        const accepting = [...vocab.entries()].filter(([, ok]) => ok).map(([key]) => key || 'unmapped');
+        if (accepting.length) {
+            this.logger.log(`Age-group vocabulary (eid=${eid ?? 'all'}): bare-number Category treated as age group for RaceTiger event(s) ${accepting.join(', ')}`);
+        }
+    }
+
+    /** A bare number is an age group only where `buildAgeGroupVocabulary` says the event brackets by age. */
+    private isBareAgeGroupNumber(value: string, row: any, vocab?: Map<string, boolean>): boolean {
+        if (!vocab) return false;
+        const match = value.match(/^\s*[MF]?\s*(\d{1,3})\s*$/i);
+        if (!match) return false;
+        const age = Number(match[1]);
+        if (age < 1 || age > 120) return false;
+        return vocab.get(this.ageGroupVocabularyKey(row)) === true;
+    }
+
     /** Age group for a BIO row: prefer Category2, then AgeGroup field, then Category if it looks like an age group. */
-    private extractAgeGroupFromBioRow(row: any): string {
+    private extractAgeGroupFromBioRow(row: any, vocab?: Map<string, boolean>): string {
         const rawCategory = this.toSafeString(row?.Category ?? row?.category);
+        const categoryIsAgeGroup = this.isAgeGroupLabel(rawCategory)
+            || this.isBareAgeGroupNumber(rawCategory, row, vocab);
         return this.toSafeString(row?.Category2 ?? row?.category2)
             || this.toSafeString(row?.AgeGroup ?? row?.ageGroup)
-            || (this.isAgeGroupLabel(rawCategory) ? rawCategory : '');
+            || (categoryIsAgeGroup ? rawCategory : '');
     }
     private mapBioRowToRunner(
         row: any,
         eventResolver: EventResolver,
         forcedEventId?: string | null,
+        ageGroupVocab?: Map<string, boolean>,
     ): CreateRunnerDto | null {
         const eventId = this.resolveEventIdFromBioRow(row, eventResolver, forcedEventId);
         if (!eventId) {
@@ -746,7 +801,8 @@ export class SyncService {
             : { firstName: '', lastName: '' };
         const parsedAge = this.parseDistanceValue(row?.Age ?? row?.age);
         const rawCategory = this.toSafeString(row?.Category ?? row?.category);
-        const isAgeGroupPattern = this.isAgeGroupLabel(rawCategory);
+        const isAgeGroupPattern = this.isAgeGroupLabel(rawCategory)
+            || this.isBareAgeGroupNumber(rawCategory, row, ageGroupVocab);
         // Category (race distance) should ALWAYS come from the local event mapping, not from RaceTiger's Category field
         // because RaceTiger often puts age groups in Category and has no distance field per runner
         const eventCategory = eventResolver.categoryByEventId.get(eventId);
@@ -760,7 +816,7 @@ export class SyncService {
         } else {
             category = 'General';
         }
-        const ageGroup = this.extractAgeGroupFromBioRow(row) || undefined;
+        const ageGroup = this.extractAgeGroupFromBioRow(row, ageGroupVocab) || undefined;
         const chipCode = this.toSafeString(
             row?.ChipCode ?? row?.chipCode ?? row?.Chipcode ?? row?.chipcode
             ?? row?.chip_code ?? row?.Chip_Code ?? row?.CHIPCODE
@@ -1069,6 +1125,10 @@ export class SyncService {
         const byCategory = new Map<string, Map<string, GroupCount>>();
         let totalExpected = Infinity;
         let totalFetched = 0;
+        // Fetch the whole field before counting: a bare-number Category ("40") only
+        // reads as an age group once the event's full label set is known, and this
+        // table exists precisely to be compared against RaceTiger's own counts.
+        const allRows: any[] = [];
         for (let page = 1; page <= maxPages; page++) {
             const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page);
             if (!response.ok) {
@@ -1079,28 +1139,30 @@ export class SyncService {
             const apiTotal = this.parseNumericValue(parsedBody?.total);
             if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
             totalFetched += rows.length;
-            for (const row of rows) {
-                const localEventId = this.resolveEventIdFromBioRow(row, eventResolver);
-                const raceTigerEventId = this.resolveRaceTigerEventIdFromBioRow(row);
-                const categoryLabel = (localEventId ? eventResolver.categoryByEventId.get(localEventId) : '')
-                    || (raceTigerEventId !== null ? `Event ${raceTigerEventId}` : 'Unknown');
-                // Empty label = runner has no age group in RaceTiger; kept as its own row
-                const ageGroup = this.extractAgeGroupFromBioRow(row);
-                let groups = byCategory.get(categoryLabel);
-                if (!groups) {
-                    groups = new Map<string, GroupCount>();
-                    byCategory.set(categoryLabel, groups);
-                }
-                let group = groups.get(ageGroup);
-                if (!group) {
-                    group = { ageGroup, members: 0, men: 0, women: 0 };
-                    groups.set(ageGroup, group);
-                }
-                group.members += 1;
-                if (this.normalizeGender(row?.Gender ?? row?.gender) === 'F') group.women += 1;
-                else group.men += 1;
-            }
+            allRows.push(...rows);
             if (totalFetched >= totalExpected) break;
+        }
+        const ageGroupVocab = this.buildAgeGroupVocabulary(allRows);
+        for (const row of allRows) {
+            const localEventId = this.resolveEventIdFromBioRow(row, eventResolver);
+            const raceTigerEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+            const categoryLabel = (localEventId ? eventResolver.categoryByEventId.get(localEventId) : '')
+                || (raceTigerEventId !== null ? `Event ${raceTigerEventId}` : 'Unknown');
+            // Empty label = runner has no age group in RaceTiger; kept as its own row
+            const ageGroup = this.extractAgeGroupFromBioRow(row, ageGroupVocab);
+            let groups = byCategory.get(categoryLabel);
+            if (!groups) {
+                groups = new Map<string, GroupCount>();
+                byCategory.set(categoryLabel, groups);
+            }
+            let group = groups.get(ageGroup);
+            if (!group) {
+                group = { ageGroup, members: 0, men: 0, women: 0 };
+                groups.set(ageGroup, group);
+            }
+            group.members += 1;
+            if (this.normalizeGender(row?.Gender ?? row?.gender) === 'F') group.women += 1;
+            else group.men += 1;
         }
         const categories = [...byCategory.entries()].map(([category, groups]) => {
             const groupList = [...groups.values()];
@@ -1419,6 +1481,10 @@ export class SyncService {
                         : null;
                     let totalExpected = Infinity;
                     let totalFetched = 0;
+                    // Every page is fetched before any is mapped: whether a bare-number
+                    // Category ("40") is an age group depends on the labels used across
+                    // the whole event, so the vocabulary has to be complete first.
+                    const bioPages: any[][] = [];
                     for (let page = 1; page <= maxPages; page++) {
                         const { response: bioRes, parsedBody: bioParsed } = await this.requestRaceTiger(campaign, 'bio', page, eid);
                         if (!bioRes.ok) break;
@@ -1433,9 +1499,16 @@ export class SyncService {
                         const apiTotal = this.parseNumericValue(bioParsed?.total);
                         if (apiTotal !== null && apiTotal > 0) totalExpected = apiTotal;
                         totalFetched += bioRows.length;
+                        bioPages.push(bioRows);
+                        // Stop if we've fetched all expected items
+                        if (totalFetched >= totalExpected) break;
+                    }
+                    const ageGroupVocab = this.buildAgeGroupVocabulary(bioPages.flat());
+                    this.logAgeGroupVocabulary(eid, ageGroupVocab);
+                    for (const bioRows of bioPages) {
                         const mapped: CreateRunnerDto[] = [];
                         for (const row of bioRows) {
-                            const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
+                            const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId, ageGroupVocab);
                             if (runner) mapped.push(runner);
                             else bioSkipped++;
                         }
@@ -1444,8 +1517,6 @@ export class SyncService {
                             bioInserted += pageResult.inserted || 0;
                             bioUpdated += pageResult.updated || 0;
                         }
-                        // Stop if we've fetched all expected items
-                        if (totalFetched >= totalExpected) break;
                     }
                 };
                 if (raceTigerEids.length > 0) {
@@ -2025,6 +2096,15 @@ export class SyncService {
         // stop at the first page containing the BIB rather than reading the field.
         let matchedRow: any = null;
         let pagesFetched = 0;
+        // Paging stops at the first page holding the BIB, so the rows seen here are
+        // only part of the field. Seed the age-group vocabulary with the brackets
+        // the last full sync already established for this event, so a lone
+        // bare-number Category ("40") isn't mistaken for a distance and dropped.
+        const scannedRows: any[] = [];
+        const knownAgeGroups: string[] = (await this.runnerModel
+            .distinct('ageGroup', { eventId: runner.eventId }).exec() as any[])
+            .map(label => this.toSafeString(label))
+            .filter(Boolean);
         for (let page = 1; page <= maxPages; page += 1) {
             const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page);
             if (!response.ok) {
@@ -2036,6 +2116,7 @@ export class SyncService {
             const rows = this.extractRowsFromPayload(parsedBody);
             if (!rows.length) break;
             pagesFetched += 1;
+            scannedRows.push(...rows);
             const candidates = rows.filter(
                 r => this.toSafeString(r?.BIB ?? r?.Bib ?? r?.bib) === bib,
             );
@@ -2055,7 +2136,11 @@ export class SyncService {
             return { found: false, bib, pagesFetched, applied: [], skipped: [], movedEvent: false };
         }
 
-        const mapped = this.mapBioRowToRunner(matchedRow, eventResolver, null) as any;
+        const ageGroupVocab = this.buildAgeGroupVocabulary(scannedRows);
+        if (knownAgeGroups.some(label => this.isAgeGroupLabel(label))) {
+            ageGroupVocab.set(this.ageGroupVocabularyKey(matchedRow), true);
+        }
+        const mapped = this.mapBioRowToRunner(matchedRow, eventResolver, null, ageGroupVocab) as any;
         if (!mapped) {
             return { found: false, bib, pagesFetched, applied: [], skipped: [], movedEvent: false };
         }
@@ -2194,6 +2279,10 @@ export class SyncService {
                 const forcedEventId = eid !== undefined
                     ? (eventResolver.eventIdByRaceTigerEventId.get(eid) || null)
                     : null;
+                // Every page is fetched before any is mapped: whether a bare-number
+                // Category ("40") is an age group depends on the labels used across
+                // the whole event, so the vocabulary has to be complete first.
+                const bioPages: { page: number; rows: any[] }[] = [];
                 for (let page = 1; page <= maxPages; page += 1) {
                     const { response, parsedBody } = await this.requestRaceTiger(campaign, 'bio', page, eid);
                     if (!response.ok) {
@@ -2208,10 +2297,15 @@ export class SyncService {
                         break;
                     }
                     rowsFetched += rows.length;
+                    bioPages.push({ page, rows });
+                }
+                const ageGroupVocab = this.buildAgeGroupVocabulary(bioPages.flatMap(p => p.rows));
+                this.logAgeGroupVocabulary(eid, ageGroupVocab);
+                for (const { page, rows } of bioPages) {
                     const mapped: CreateRunnerDto[] = [];
                     const skipReasons: Record<string, number> = {};
                     for (const row of rows) {
-                        const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId);
+                        const runner = this.mapBioRowToRunner(row, eventResolver, forcedEventId, ageGroupVocab);
                         if (runner) {
                             mapped.push(runner);
                         } else {
@@ -2236,7 +2330,7 @@ export class SyncService {
                         this.logger.warn(`  Page ${page} skip reasons: ${JSON.stringify(skipReasons)}`);
                         // Add first few skipped BIBs as sample for debugging
                         const skippedSamples = rows
-                            .filter(r => !this.mapBioRowToRunner(r, eventResolver, forcedEventId))
+                            .filter(r => !this.mapBioRowToRunner(r, eventResolver, forcedEventId, ageGroupVocab))
                             .slice(0, 3)
                             .map(r => {
                                 const bib = this.toSafeString(r?.BIB ?? r?.Bib ?? r?.bib);

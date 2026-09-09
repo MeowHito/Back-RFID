@@ -13,6 +13,12 @@ export interface AgeGroupBucket {
     label: string;
     min: number;
     max: number;
+    /**
+     * Set on a bare-number label ("40") whose upper bound isn't in the label at
+     * all. `buildCanonicalAgeGroups` stretches it up to the next bracket in the
+     * same field; until then the bucket is just the point it opens at.
+     */
+    openEnded?: boolean;
 }
 
 /** Strip gender prefix ("M30-39") and Thai "ปี" suffix so labels group consistently. */
@@ -65,6 +71,16 @@ export function parseAgeGroupBucket(value?: string | null): AgeGroupBucket | nul
         return { label, min: parseFloat(overMatch[1]), max: 999 };
     }
 
+    // "30", "40", "50" — some RaceTiger races name an age bracket by the age it
+    // opens at and nothing else (its Age from/Age to columns stay 0), so the
+    // label carries no upper bound to read. Treat it as a bracket opening at
+    // that age and let `buildCanonicalAgeGroups` work out where it ends.
+    const bareMatch = label.match(/^(\d{1,3})$/);
+    if (bareMatch) {
+        const min = parseInt(bareMatch[1], 10);
+        if (min >= 1 && min <= 120) return { label, min, max: min, openEnded: true };
+    }
+
     return null;
 }
 
@@ -83,6 +99,17 @@ export function buildCanonicalAgeGroupLookup(rawLabels: Array<string | undefined
         const existing = stats.get(key);
         if (existing) existing.count += 1;
         else stats.set(key, { bucket, count: 1 });
+    }
+
+    // A bare-number bracket ("40") ends where the next bracket begins, so its
+    // width comes from the field it sits in rather than from its own label:
+    // "30 / 40 / 50 / 60+" resolves to 30-39, 40-49, 50-59, 60-and-up. A bare
+    // number with nothing above it runs to the top.
+    const allMins = Array.from(stats.values()).map(s => s.bucket.min).sort((a, b) => a - b);
+    for (const { bucket } of stats.values()) {
+        if (!bucket.openEnded) continue;
+        const next = allMins.find(min => min > bucket.min);
+        bucket.max = next !== undefined ? next - 1 : 999;
     }
 
     const entries = Array.from(stats.values()).sort((a, b) => b.count - a.count);
