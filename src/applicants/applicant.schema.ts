@@ -61,6 +61,22 @@ export class Applicant {
     @Prop({ default: '' })
     challenge: string; // เลือกเวลาในการลงแข่งขัน Challenge (optional, only some rosters have it)
 
+    // RaceTiger athlete-import columns (CHIPCODE1 / PRINTCODE1 / BLOOD_TYPE / WAVENAME / COUNTRYREGION)
+    @Prop({ default: '' })
+    chipCode: string; // CHIPCODE1
+
+    @Prop({ default: '' })
+    printingCode: string; // PRINTCODE1 (code printed on the chip)
+
+    @Prop({ default: '' })
+    bloodType: string; // กรุ๊ปเลือด
+
+    @Prop({ default: '' })
+    wave: string; // กลุ่มปล่อยตัว
+
+    @Prop({ default: '' })
+    nationality: string; // สัญชาติ (3-letter code, e.g. THA)
+
     // Any extra columns from the uploaded sheet that don't map to a known field.
     @Prop({ type: Object, default: {} })
     extra: Record<string, string>;
