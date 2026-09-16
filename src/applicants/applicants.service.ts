@@ -21,6 +21,7 @@ export interface ApplicantInput {
     category?: string;
     team?: string;
     challenge?: string;
+    birthDate?: string;
     chipCode?: string;
     printingCode?: string;
     bloodType?: string;
@@ -97,6 +98,7 @@ export class ApplicantsService {
             category: (row.category || '').toString().trim(),
             team: (row.team || '').toString().trim(),
             challenge: (row.challenge || '').toString().trim(),
+            birthDate: (row.birthDate || '').toString().trim(),
             chipCode: (row.chipCode || '').toString().trim(),
             printingCode: (row.printingCode || '').toString().trim(),
             bloodType: (row.bloodType || '').toString().trim(),

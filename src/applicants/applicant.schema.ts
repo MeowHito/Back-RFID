@@ -61,6 +61,9 @@ export class Applicant {
     @Prop({ default: '' })
     challenge: string; // เลือกเวลาในการลงแข่งขัน Challenge (optional, only some rosters have it)
 
+    @Prop({ default: '' })
+    birthDate: string; // วันเกิด, stored as yyyy-mm-dd (C.E.)
+
     // RaceTiger athlete-import columns (CHIPCODE1 / PRINTCODE1 / BLOOD_TYPE / WAVENAME / COUNTRYREGION)
     @Prop({ default: '' })
     chipCode: string; // CHIPCODE1
