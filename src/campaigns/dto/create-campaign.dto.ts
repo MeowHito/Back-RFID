@@ -365,6 +365,10 @@ export class CreateCampaignDto {
 
     @IsOptional()
     @IsArray()
+    customAwards?: any[];
+
+    @IsOptional()
+    @IsArray()
     displayColumns?: string[];
 
     @IsOptional()

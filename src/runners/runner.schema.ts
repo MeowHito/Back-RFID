@@ -157,6 +157,13 @@ export class Runner {
     @Prop()
     athleteId: string; // RaceTiger AthleteId — used to match splitScore/score timing records
 
+    // Every scalar field of the athlete's RaceTiger BIO row, as RaceTiger sent it
+    // (WaveName, City, MiddleName, spare chips, club, ...). Most of these have no
+    // dedicated column; the award builder (/admin/award-builder) reads them so it can
+    // offer every column of the RaceTiger athlete template. Refreshed on each BIO sync.
+    @Prop({ type: Object })
+    raceTigerBio: Record<string, string | number | boolean>;
+
     // === RaceTiger Score/Finish fields ===
     @Prop()
     gunTime: number; // Gun time in milliseconds (枪时间)

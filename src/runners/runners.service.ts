@@ -182,6 +182,7 @@ export class RunnersService {
                 if (r.idNo) bioFields.idNo = r.idNo;
                 if (r.email) bioFields.email = r.email;
                 if ((r as any).athleteId) bioFields.athleteId = (r as any).athleteId;
+                if (r.raceTigerBio && Object.keys(r.raceTigerBio).length) bioFields.raceTigerBio = { $literal: r.raceTigerBio };
                 if (r.sourceFile) bioFields.sourceFile = r.sourceFile;
 
                 // Pipeline update: skip any field an admin has manually edited (tracked in
@@ -443,6 +444,11 @@ export class RunnersService {
             bloodType: 1, chronicDiseases: 1, address: 1, province: 1, sourceFile: 1,
             netTime: 1, gunTime: 1, netTimeStr: 1, gunTimeStr: 1, finishTime: 1, lastPassTime: 1,
             overallRank: 1, genderRank: 1, ageGroupRank: 1, categoryRank: 1,
+            // Award builder (/admin/award-builder): net-time placings, paces, and the
+            // eventId it needs to pull a runner's split records.
+            eventId: 1, passedCount: 1, latestCheckpoint: 1,
+            athleteId: 1, raceTigerBio: 1,
+            genderNetRank: 1, ageGroupNetRank: 1, categoryNetRank: 1, netPace: 1, gunPace: 1,
         };
 
         // --- FAST PATH: skipStatusCounts & no runnerStatus filter → 1 DB call ---

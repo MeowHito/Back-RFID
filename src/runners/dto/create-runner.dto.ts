@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsNumber, IsEnum, IsDate, IsBoolean, IsEmail } from 'class-validator';
+import { IsString, IsOptional, IsNumber, IsEnum, IsDate, IsBoolean, IsEmail, IsObject } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateRunnerDto {
@@ -163,4 +163,9 @@ export class CreateRunnerDto {
     @IsOptional()
     @IsNumber()
     genderFinishers?: number;
+
+    /** Raw scalar fields of the RaceTiger BIO row — set by sync only. */
+    @IsOptional()
+    @IsObject()
+    raceTigerBio?: Record<string, string | number | boolean>;
 }

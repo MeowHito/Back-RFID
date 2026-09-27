@@ -893,7 +893,28 @@ export class SyncService {
             allowRFIDSync: true,
             sourceFile: 'RaceTiger BIO sync',
             ...(athleteId ? { athleteId } : {}),
+            raceTigerBio: this.pickBioScalars(row),
         };
+    }
+
+    /** The BIO row's non-empty scalar fields, keyed exactly as RaceTiger sent them.
+     *  Nested objects/arrays are dropped and strings capped so a malformed row
+     *  can't bloat the runner document. */
+    private pickBioScalars(row: any): Record<string, string | number | boolean> {
+        const out: Record<string, string | number | boolean> = {};
+        if (!row || typeof row !== 'object') return out;
+        for (const [key, value] of Object.entries(row)) {
+            if (!key || key.startsWith('$') || key.includes('.')) continue;
+            if (typeof value === 'string') {
+                const v = value.trim();
+                if (v) out[key] = v.slice(0, 500);
+            } else if (typeof value === 'number' && Number.isFinite(value)) {
+                out[key] = value;
+            } else if (typeof value === 'boolean') {
+                out[key] = value;
+            }
+        }
+        return out;
     }
     private async buildEventResolver(campaignId: string): Promise<EventResolver> {
         const campaignQuery: any[] = [{ campaignId }];
@@ -2203,6 +2224,11 @@ export class SyncService {
     /** Compare a stored runner value with a freshly-mapped one across type differences. */
     private isSameSyncValue(current: unknown, next: unknown): boolean {
         if (current === next) return true;
+        if (current && next && typeof current === 'object' && typeof next === 'object'
+            && !(current instanceof Date) && !(next instanceof Date)) {
+            const norm = (o: object) => JSON.stringify(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
+            return norm(current) === norm(next);
+        }
         if (current instanceof Date || next instanceof Date) {
             const a = current instanceof Date ? current.getTime() : new Date(String(current ?? '')).getTime();
             const b = next instanceof Date ? next.getTime() : new Date(String(next ?? '')).getTime();

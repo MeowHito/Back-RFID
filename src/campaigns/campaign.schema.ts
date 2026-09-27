@@ -41,6 +41,18 @@ export interface RankingMenuVisibility {
     ageGroup?: boolean;   // "Age Group Top [N]"
 }
 
+// Admin-built award definition (see /admin/award-builder)
+export interface CustomAward {
+    id: string;            // client-generated unique id
+    category: string;      // RaceCategory.name this award belongs to
+    name: string;          // e.g. "Overall Result"
+    type: 'overall' | 'gender' | 'ageGroup';
+    count: number;         // places per group
+    rankBy: 'gun' | 'net'; // time used to order the finishers
+    personalFields: string[]; // runner columns to display
+    splitFields: string[];    // per-checkpoint columns to display
+}
+
 @Schema({ timestamps: true })
 export class Campaign {
     @Prop({ required: true, unique: true })
@@ -186,6 +198,13 @@ export class Campaign {
      *  Array of column keys to display. Empty = show all. */
     @Prop({ type: [String], default: [] })
     displayColumnsLab: string[];
+
+    /** Admin-built award lists (/admin/award-builder). Each entry is one award for one
+     *  distance: what to rank by (gun/net), how it is grouped (overall / per gender /
+     *  per age group), how many places, and which runner + split columns to show.
+     *  Rankings are never stored — they are recomputed from live results on demand. */
+    @Prop({ type: [Object], default: [] })
+    customAwards: CustomAward[];
 
     /** Display mode for the live event page: 'marathon' or 'lab' */
     @Prop({ default: 'marathon' })
