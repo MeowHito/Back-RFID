@@ -41,6 +41,12 @@ export class RaceCategoryDto {
     @IsOptional()
     @IsString()
     utmbIndex?: string;
+
+    /** `false` = this distance has no age groups at all (admin/categories switch):
+     *  no age group, age-group rank or age-group award is shown for its runners. */
+    @IsOptional()
+    @IsBoolean()
+    ageGroupEnabled?: boolean;
 }
 
 // DTO for a single finish-time band (e.g. "sub 40")
@@ -286,6 +292,16 @@ export class CreateCampaignDto {
     @IsOptional()
     @IsBoolean()
     overallEnabled?: boolean;
+
+    @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    overallDisabledCategories?: string[];
+
+    @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    ageGroupDisabledCategories?: string[];
 
     @IsOptional()
     @IsArray()

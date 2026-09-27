@@ -259,6 +259,20 @@ export class Campaign {
     @Prop({ default: true })
     overallEnabled: boolean;
 
+    /** Distances (campaign.categories[].name) whose Overall award is switched off
+     *  while the rest of the event keeps it — e.g. a fun-run distance with age-group
+     *  awards only. `overallEnabled` above stays the whole-event kill switch; a
+     *  distance is off when either says so. */
+    @Prop({ type: [String], default: [] })
+    overallDisabledCategories: string[];
+
+    /** Distances (campaign.categories[].name) that give no age-group award —
+     *  e.g. a fun-run distance with an Overall award only. Their runners get no
+     *  "Age Group n" placing on the AWARD column / certificates / e-slips, the
+     *  public age-group board skips them and the ranking menu drops the entry. */
+    @Prop({ type: [String], default: [] })
+    ageGroupDisabledCategories: string[];
+
     /** Per-category override of `overallDisplayCount` — each race distance can award a
      *  different number of Overall ranks (e.g. 42K top 3, 21K top 5). `category` holds
      *  the campaign category name; categories with no entry fall back to
