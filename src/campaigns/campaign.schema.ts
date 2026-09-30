@@ -49,6 +49,8 @@ export interface CustomAward {
     type: 'overall' | 'gender' | 'ageGroup';
     count: number;         // places per group
     rankBy: 'gun' | 'net'; // time used to order the finishers
+    nationality?: 'all' | 'thai' | 'foreign'; // who may win (COUNTRYREGION)
+    excludeAwardIds?: string[]; // winners of these awards (same distance) are skipped
     personalFields: string[]; // runner columns to display
     splitFields: string[];    // per-checkpoint columns to display
 }
@@ -315,6 +317,12 @@ export class Campaign {
     @Prop({ type: [String], default: [] })
     topRunnersExcludeOverallCategories: string[];
 
+    /** Race categories (by name) whose Top Runners board is ordered by NET (chip)
+     *  time instead of the default GUN time. The "drop Overall winners" cut still
+     *  removes the gun-time Overall winners. */
+    @Prop({ type: [String], default: [] })
+    topRunnersNetCategories: string[];
+
     /** Master switch for the whole Top Runners feature on this campaign. Some
      *  events simply don't have a Top Runners board — turning this off hides the
      *  board, drops its entry from the ranking menu, and stops the "TOP n" label
@@ -415,6 +423,11 @@ export class Campaign {
      *  JSON: { version, stageColor, landscape: {...}, portrait: {...} } */
     @Prop({ type: Object })
     bibCheck2Layout: any;
+
+    /** Finish Time display (/finish-time/[slug]) — scan a bib, show BIB + Gun Time
+     *  on the finisher banner. Same layout JSON shape as bibCheck2Layout. */
+    @Prop({ type: Object })
+    finishTimeLayout: any;
 
     /** E-Slip scan display template: 'template3' (Default) | 'template2' (Photo) */
     @Prop({ default: 'template3' })

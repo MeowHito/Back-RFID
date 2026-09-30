@@ -273,6 +273,9 @@ export class CreateCampaignDto {
     bibCheck2Layout?: any;
 
     @IsOptional()
+    finishTimeLayout?: any;
+
+    @IsOptional()
     excludeOverallFromAgeGroup?: number;
 
     @IsOptional()
@@ -319,6 +322,11 @@ export class CreateCampaignDto {
     @IsArray()
     @IsString({ each: true })
     topRunnersExcludeOverallCategories?: string[];
+
+    @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    topRunnersNetCategories?: string[];
 
     @IsOptional()
     @IsBoolean()
