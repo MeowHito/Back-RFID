@@ -53,6 +53,7 @@ export interface CustomAward {
     excludeAwardIds?: string[]; // winners of these awards (same distance) are skipped
     personalFields: string[]; // runner columns to display
     splitFields: string[];    // per-checkpoint columns to display
+    showOnEvent?: boolean;    // trophy on /admin/award-builder: placings show in /event's "Award (demo)" column
 }
 
 @Schema({ timestamps: true })
