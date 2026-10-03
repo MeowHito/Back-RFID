@@ -830,6 +830,14 @@ export class SyncService {
             ?? this.findRowValueByNormalizedKeys(row, ['printingcode', 'printing_code', 'printcode', 'print_code']),
         );
         const teamName = this.toSafeString(row?.TeamName ?? row?.teamName);
+        // Start wave (WAVENAME in the athlete template) → the runner's "box" field.
+        // '默认批次' is RaceTiger's placeholder for "no wave set", so it's left blank.
+        const waveName = this.toSafeString(
+            row?.WaveName ?? row?.waveName ?? row?.WAVENAME ?? row?.Wave ?? row?.wave
+            ?? row?.BatchName ?? row?.batchName ?? row?.Batch ?? row?.batch
+            ?? this.findRowValueByNormalizedKeys(row, ['wavename', 'wave', 'batchname', 'batch']),
+        );
+        const box = waveName && waveName !== '默认批次' ? waveName : '';
         const athleteId = this.toSafeString(
             row?.AthleteId ?? row?.athleteId ?? row?.athleteid ?? row?.ATHLETEID,
         );
@@ -869,6 +877,7 @@ export class SyncService {
             ageGroup: ageGroup || undefined,
             team: teamName || undefined,
             teamName: teamName || undefined,
+            box: box || undefined,
             chipCode: chipCode || undefined,
             rfidTag: chipCode || undefined,
             printingCode: printingCode || undefined,

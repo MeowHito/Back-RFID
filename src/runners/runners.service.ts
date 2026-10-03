@@ -172,6 +172,7 @@ export class RunnersService {
                 if (r.ageGroup) bioFields.ageGroup = r.ageGroup;
                 if (r.team) bioFields.team = r.team;
                 if (r.teamName) bioFields.teamName = r.teamName;
+                if (r.box) bioFields.box = r.box;
                 if (r.chipCode) bioFields.chipCode = r.chipCode;
                 if (r.rfidTag) bioFields.rfidTag = r.rfidTag;
                 if (r.nationality) bioFields.nationality = r.nationality;
