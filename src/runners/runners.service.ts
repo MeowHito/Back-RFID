@@ -102,7 +102,7 @@ export interface RunnerFilter {
     search?: string;
     checkpoint?: string;
     chipStatus?: string;
-    runnerStatus?: string; // comma-separated: no_bib,dup_bib,no_chip,dup_chip,ready,no_name,no_gender,no_nat,no_age
+    runnerStatus?: string; // comma-separated: no_bib,dup_bib,no_chip,dup_chip,ready,no_name,no_gender,no_nat,no_age,no_wave
     nationality?: string; // 'thai' | 'foreign' — filter by nationality group
     sortBy?: string; // bib, firstName, ageGroup, chipCode
     sortOrder?: string; // asc, desc
@@ -490,6 +490,7 @@ export class RunnersService {
                     noGender: [{ $match: { $or: [{ gender: { $exists: false } }, { gender: '' }, { gender: null }] } }, { $count: 'c' }],
                     noNat: [{ $match: { $or: [{ nationality: { $exists: false } }, { nationality: '' }, { nationality: null }] } }, { $count: 'c' }],
                     noAge: [{ $match: { $or: [{ ageGroup: { $exists: false } }, { ageGroup: '' }, { ageGroup: null }] } }, { $count: 'c' }],
+                    noWave: [{ $match: { $or: [{ box: { $exists: false } }, { box: '' }, { box: null }] } }, { $count: 'c' }],
                 },
             },
         ]).exec();
@@ -511,6 +512,7 @@ export class RunnersService {
         const statusCounts: Record<string, number> = {
             no_bib: noBibCount, dup_bib: dupBibCount, no_chip: noChipCount, dup_chip: dupChipCount,
             no_name: fc(f.noName), no_gender: fc(f.noGender), no_nat: fc(f.noNat), no_age: fc(f.noAge),
+            no_wave: fc(f.noWave),
             ready: Math.max(0, readyCount),
         };
 
@@ -529,6 +531,7 @@ export class RunnersService {
                 if (s === 'no_gender') statusConditions.push({ $or: [{ gender: { $exists: false } }, { gender: '' }, { gender: null }] });
                 if (s === 'no_nat') statusConditions.push(emptyCond('nationality'));
                 if (s === 'no_age') statusConditions.push(emptyCond('ageGroup'));
+                if (s === 'no_wave') statusConditions.push(emptyCond('box'));
                 if (s === 'ready') {
                     statusConditions.push({
                         bib: { $exists: true, $nin: ['', null, ...dupBibs] },
