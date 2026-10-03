@@ -18,6 +18,7 @@ import { CctvBetaRecordingsService } from '../cctv-beta/cctv-beta-recordings.ser
 import { CreateUserDto, LoginStationDto, UpdatePasswordDto } from '../users/dto/user.dto';
 import { isThaiNationality, isNationalitySplitCategory } from '../common/nationality.util';
 import { buildCanonicalAgeGroupLookup, canonicalizeAgeGroup } from '../common/age-group.util';
+import { ageGroupGunCategories, isAgeGroupGunCategory } from '../common/age-group-rank-by.util';
 
 interface NormalizedResponse {
     status: {
@@ -82,13 +83,17 @@ export class PublicApiController {
     }
 
     /** Category names whose Overall ranking is split by nationality (from campaign settings). */
-    private async getNationalitySplitCategories(id: string): Promise<string[]> {
+    /** Campaign settings that shape the public rank maps (one campaign read). */
+    private async getRankMapConfig(id: string): Promise<{ natSplitCategories: string[]; ageGroupGunCategories: string[] }> {
         try {
             const campaign = await this.campaignsService.findById(id);
             const list = (campaign as any)?.separateOverallNationalityCategories;
-            return Array.isArray(list) ? list : [];
+            return {
+                natSplitCategories: Array.isArray(list) ? list : [],
+                ageGroupGunCategories: ageGroupGunCategories(campaign),
+            };
         } catch {
-            return [];
+            return { natSplitCategories: [], ageGroupGunCategories: [] };
         }
     }
 
@@ -198,7 +203,11 @@ export class PublicApiController {
         return this.comparePublicRankOrderBy((r) => this.getRunnerNetTimeMs(r), a, b);
     }
 
-    private buildScopedPublicRankMaps(records: any[], nationalitySplitCategories: string[] = []) {
+    /**
+     * @param ageGroupGunCats distances whose CAT rank follows GUN time because their
+     *        Award Builder age-group award says so (see age-group-rank-by.util.ts).
+     */
+    private buildScopedPublicRankMaps(records: any[], nationalitySplitCategories: string[] = [], ageGroupGunCats: string[] = []) {
         const overallRankMap = new Map<string, number>();
         const genderRankMap = new Map<string, number>();
         const catRankMap = new Map<string, number>();
@@ -238,7 +247,8 @@ export class PublicApiController {
             });
 
             // CAT rank is scoped to category (distance) + gender + ageGroup, decided by
-            // NET (chip) time. One Event can hold several distances (Event.categories),
+            // NET (chip) time — or GUN time on a distance whose Award Builder age-group
+            // award ranks by gun (ageGroupGunCats). One Event can hold several distances (Event.categories),
             // so category must be part of the key or runners from different distances
             // that happen to share an age-group label get ranked against each other —
             // see MEMORY: project_category_move_event. Only `finished` runners count
@@ -258,6 +268,8 @@ export class PublicApiController {
                 catScopeGroups.get(scopeKey)!.push(record);
             });
             catScopeGroups.forEach((scopeRecords) => {
+                const byGun = isAgeGroupGunCategory(ageGroupGunCats, scopeRecords[0]?.category);
+                const compareCat = (a: any, b: any) => byGun ? this.comparePublicRankOrder(a, b) : this.comparePublicNetRankOrder(a, b);
                 const canonicalLabelOf = buildCanonicalAgeGroupLookup(scopeRecords.map((r: any) => r?.ageGroup));
                 const catGroups = new Map<string, any[]>();
                 scopeRecords.forEach((record: any) => {
@@ -266,7 +278,7 @@ export class PublicApiController {
                     catGroups.get(ag)!.push(record);
                 });
                 catGroups.forEach((group) => {
-                    group.sort((a: any, b: any) => this.comparePublicNetRankOrder(a, b)).forEach((record, index) => {
+                    group.sort(compareCat).forEach((record, index) => {
                         catRankMap.set(String(record._id), index + 1);
                     });
                 });
@@ -605,8 +617,8 @@ export class PublicApiController {
 
         await this.applyDnfDetail(data as any[], data as any[]);
 
-        const natSplitCategories = await this.getNationalitySplitCategories(id);
-        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(data as any[], natSplitCategories);
+        const { natSplitCategories, ageGroupGunCategories: ageGroupGunCats } = await this.getRankMapConfig(id);
+        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(data as any[], natSplitCategories, ageGroupGunCats);
         for (const r of data as any[]) {
             const rid = String(r._id);
             if (overallRankMap.has(rid)) r.overallRank = overallRankMap.get(rid);
@@ -712,8 +724,8 @@ export class PublicApiController {
 
         await this.applyDnfDetail(merged as any[], allRunners as any[]);
 
-        const natSplitCategories = await this.getNationalitySplitCategories(id);
-        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(merged as any[], natSplitCategories);
+        const { natSplitCategories, ageGroupGunCategories: ageGroupGunCats } = await this.getRankMapConfig(id);
+        const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(merged as any[], natSplitCategories, ageGroupGunCats);
 
         // Apply computed ranks to merged data
         for (const r of merged) {
@@ -999,7 +1011,7 @@ export class PublicApiController {
                 // position (Thai + foreign together) to match the /event RANK column —
                 // the nationality split only changes the AWARD label, never the rank —
                 // so build the rank maps with no split categories.
-                const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(allRunners as any[], []);
+                const { overallRankMap, genderRankMap, catRankMap } = this.buildScopedPublicRankMaps(allRunners as any[], [], ageGroupGunCategories(campaign));
                 if (overallRankMap.has(runnerId)) runnerObj.overallRank = overallRankMap.get(runnerId);
                 if (genderRankMap.has(runnerId)) runnerObj.genderRank = genderRankMap.get(runnerId);
                 if (catRankMap.has(runnerId)) {
@@ -1086,6 +1098,16 @@ export class PublicApiController {
                     excludeOverallThaiFromAgeGroup: (campaign as any).excludeOverallThaiFromAgeGroup ?? null,
                     excludeOverallForeignFromAgeGroup: (campaign as any).excludeOverallForeignFromAgeGroup ?? null,
                     excludeAgeGroupTop: (campaign as any).excludeAgeGroupTop ?? null,
+                    // Award Builder — with the "awards" column on in /admin/display the
+                    // AWARD badge / e-slip / certificate show these awards instead of the
+                    // Overall/Age-group config above. Only the ranking fields travel; the
+                    // per-award column picks (personalFields/splitFields) stay behind.
+                    displayColumns: Array.isArray((campaign as any).displayColumns) ? (campaign as any).displayColumns : [],
+                    customAwards: (Array.isArray((campaign as any).customAwards) ? (campaign as any).customAwards : []).map((a: any) => ({
+                        id: a?.id, category: a?.category, name: a?.name, type: a?.type, count: a?.count,
+                        rankBy: a?.rankBy, nationality: a?.nationality, excludeAwardIds: a?.excludeAwardIds,
+                        showOnEvent: a?.showOnEvent === true,
+                    })),
                     // Best-of-Province award config — used by the AWARD badge on
                     // /runner/[id], the e-slip and the certificate. Without these the
                     // "Best of <province>" badge can never render.
