@@ -50,6 +50,7 @@ export class TimingController {
     async getCheckpointRecordsByCampaign(
         @Param('campaignId') campaignId: string,
         @Query('cp') checkpoint: string,
+        @Query('strict') strict?: string,
     ) {
         // Resolve slug/uuid to actual campaign _id
         let resolvedId = campaignId;
@@ -57,7 +58,9 @@ export class TimingController {
             const campaign = await this.campaignsService.findById(campaignId);
             if (campaign) resolvedId = String(campaign._id);
         } catch { /* use original if not found */ }
-        return this.timingService.getCheckpointRecordsByCampaign(resolvedId, checkpoint);
+        return this.timingService.getCheckpointRecordsByCampaign(resolvedId, checkpoint, {
+            strict: strict === '1' || strict === 'true',
+        });
     }
 
     /**

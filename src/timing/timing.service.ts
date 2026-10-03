@@ -851,9 +851,15 @@ export class TimingService implements OnModuleInit {
         return dedupeCheckpointRunnerRecords(records);
     }
 
-    async getCheckpointRecordsByCampaign(campaignId: string, checkpoint: string): Promise<any[]> {
+    /**
+     * `strict` (used by /share-live) drops reads a runner cannot really have made — see
+     * clearImpossibleCheckpointPasses. Off by default so the admin pages that read the
+     * same endpoint keep seeing every raw read.
+     */
+    async getCheckpointRecordsByCampaign(campaignId: string, checkpoint: string, opts: { strict?: boolean } = {}): Promise<any[]> {
+        const strict = opts.strict === true;
         // --- In-memory cache (5s TTL) ---
-        const cacheKey = `${campaignId}::${checkpoint}`;
+        const cacheKey = `${campaignId}::${checkpoint}${strict ? '::strict' : ''}`;
         const cached = this.checkpointByCampaignCache.get(cacheKey);
         if (cached && cached.expiry > Date.now()) {
             return cached.data;
@@ -947,8 +953,9 @@ export class TimingService implements OnModuleInit {
 
         // ── Build checkpoint ordering map (name → orderNum) for per-CP status logic ──
         const cpOrderMap = new Map<string, number>();
+        let campaignCheckpoints: any[] = [];
         try {
-            const campaignCheckpoints = await this.checkpointsService.findByCampaign(campaignId);
+            campaignCheckpoints = await this.checkpointsService.findByCampaign(campaignId);
             for (const cp of campaignCheckpoints) {
                 const cpObj = cp as any;
                 const cpName = (cpObj.name || '').toUpperCase();
@@ -1200,12 +1207,120 @@ export class TimingService implements OnModuleInit {
                     }
                 }
             }
+
+            if (strict) {
+                await this.clearImpossibleCheckpointPasses(deduped, {
+                    eventIds, checkpoint, checkpoints: campaignCheckpoints, events: events || [], runnerByBib,
+                });
+            }
         }
 
         // Store in cache
         this.checkpointByCampaignCache.set(cacheKey, { data: deduped, expiry: Date.now() + TimingService.CACHE_TTL_MS });
 
         return deduped;
+    }
+
+    // Faster than this (sec/km over the whole distance) is not a real finish — well below
+    // every world-record pace (10K ≈ 2:37/km).
+    private static readonly MIN_FINISH_SEC_PER_KM = 150;
+
+    /**
+     * Mats often sit side by side (e.g. START right after FINISH under one arch), so a
+     * runner walking to the corral gets read at FINISH before the race — RaceTiger then
+     * reports a "finish" a few minutes after the gun. Those reads are not passes:
+     *   1. a read before the runner's own (earliest) START read, or
+     *   2. at a finish mat, a gun time faster than MIN_FINISH_SEC_PER_KM for the distance.
+     * Staff-typed times (isManualTime) are always trusted. A runner whose first read is
+     * bogus but has a later real one keeps the real one; with none they become "not
+     * here yet" (scanTime null), which is how /share-live renders runners on their way.
+     * Mutates `records` in place.
+     */
+    private async clearImpossibleCheckpointPasses(records: any[], ctx: {
+        eventIds: Types.ObjectId[];
+        checkpoint: string;
+        checkpoints: any[];
+        events: any[];
+        runnerByBib: Map<string, any>;
+    }): Promise<void> {
+        const cpUpper = ctx.checkpoint.toUpperCase();
+        const startNames = ctx.checkpoints
+            .filter(c => String(c?.type || '').toLowerCase() === 'start' || String(c?.name || '').toUpperCase() === 'START')
+            .map(c => String(c.name));
+        if (startNames.length === 0 || startNames.some(n => n.toUpperCase() === cpUpper)) return;
+        const isFinishCp = cpUpper === 'FINISH' || ctx.checkpoints.some(c =>
+            String(c?.name || '').toUpperCase() === cpUpper && String(c?.type || '').toLowerCase() === 'finish');
+
+        const passed = records.filter(r => r?.scanTime && r?.bib);
+        if (passed.length === 0) return;
+        const bibs = passed.map(r => String(r.bib));
+
+        const [startRows, reads] = await Promise.all([
+            this.timingModel.aggregate([
+                { $match: { eventId: { $in: ctx.eventIds }, checkpoint: { $in: startNames }, bib: { $in: bibs }, scanTime: { $ne: null } } },
+                { $group: { _id: '$bib', scanTime: { $min: '$scanTime' } } },
+            ]).exec(),
+            this.timingModel.find({ eventId: { $in: ctx.eventIds }, checkpoint: ctx.checkpoint, bib: { $in: bibs } })
+                .select('bib scanTime elapsedTime splitTime netTime gunTime isManualTime')
+                .sort({ scanTime: 1 })
+                .lean()
+                .exec(),
+        ]);
+        const startByBib = new Map<string, number>();
+        for (const row of startRows) {
+            const t = new Date(row.scanTime).getTime();
+            if (Number.isFinite(t)) startByBib.set(String(row._id), t);
+        }
+        const readsByBib = new Map<string, any[]>();
+        for (const read of reads as any[]) {
+            const bib = String(read.bib);
+            const list = readsByBib.get(bib) || [];
+            list.push(read);
+            readsByBib.set(bib, list);
+        }
+        const kmByEvent = new Map<string, number>();
+        for (const e of ctx.events) {
+            const km = Number(e?.distance);
+            if (km > 0) kmByEvent.set(String(e._id), km);
+        }
+
+        const isRealPass = (read: any, bib: string): boolean => {
+            if (read.isManualTime === true) return true;
+            const scan = new Date(read.scanTime).getTime();
+            if (!Number.isFinite(scan)) return false;
+            const start = startByBib.get(bib);
+            if (start !== undefined && scan <= start) return false;
+            if (isFinishCp) {
+                const km = kmByEvent.get(String(ctx.runnerByBib.get(bib)?.eventId || ''));
+                const gunMs = Number(read.gunTime) || 0;
+                if (km && gunMs > 0 && gunMs / 1000 / km < TimingService.MIN_FINISH_SEC_PER_KM) return false;
+            }
+            return true;
+        };
+
+        for (const rec of passed) {
+            const bib = String(rec.bib);
+            const list = readsByBib.get(bib);
+            if (!list || list.length === 0) continue;
+            const real = list.find(read => read.scanTime && isRealPass(read, bib));
+            if (real) {
+                if (new Date(real.scanTime).getTime() === new Date(rec.scanTime).getTime()) continue;
+                rec.scanTime = real.scanTime;
+                rec.elapsedTime = real.elapsedTime ?? null;
+                rec.splitTime = real.splitTime ?? null;
+                rec.netTime = real.netTime ?? real.elapsedTime ?? null;
+                rec.gunTime = real.gunTime ?? null;
+                continue;
+            }
+            rec.scanTime = null;
+            rec.elapsedTime = null;
+            rec.splitTime = null;
+            rec.netTime = null;
+            rec.gunTime = null;
+            rec.netPace = '';
+            rec.gunPace = '';
+            if (isFinishCp && String(rec.status || '').toLowerCase() === 'finished') rec.status = 'in_progress';
+        }
     }
 
     async getRecentArrivals(campaignId: string, withinSeconds: number): Promise<any[]> {
