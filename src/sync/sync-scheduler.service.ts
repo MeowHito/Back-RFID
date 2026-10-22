@@ -30,9 +30,13 @@ export class SyncSchedulerService implements OnModuleInit, OnModuleDestroy {
     ) { }
 
     onModuleInit() {
-        // Only instance 0 runs the scheduler to avoid duplicate writes in cluster mode
-        if (process.env.NODE_APP_INSTANCE !== '0') {
-            this.logger.log(`Auto-sync scheduler skipped (instance ${process.env.NODE_APP_INSTANCE})`);
+        // Only instance 0 runs the scheduler to avoid duplicate writes in cluster mode.
+        // NODE_APP_INSTANCE is set by pm2 only — a plain `npm run start:dev` has none and is
+        // a single process, so it must run the scheduler (it used to skip it, so localhost
+        // never auto-synced).
+        const instance = process.env.NODE_APP_INSTANCE;
+        if (instance !== undefined && instance !== '0') {
+            this.logger.log(`Auto-sync scheduler skipped (instance ${instance})`);
             return;
         }
         // Start auto-sync interval (10 seconds)
