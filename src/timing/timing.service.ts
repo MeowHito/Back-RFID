@@ -923,8 +923,10 @@ export class TimingService implements OnModuleInit {
                     order: 1,
                     netTime: { $ifNull: ['$netTime', '$elapsedTime'] },
                     gunTime: 1,
-                    netPace: { $ifNull: ['$runner.netPace', '$netPace'] },
-                    gunPace: { $ifNull: ['$runner.gunPace', '$gunPace'] },
+                    // Pace as of THIS checkpoint — the runner doc's pace is their latest/finish
+                    // pace, which made every checkpoint show the finish pace.
+                    netPace: { $ifNull: ['$netPace', '$runner.netPace'] },
+                    gunPace: { $ifNull: ['$gunPace', '$runner.gunPace'] },
                     splitPace: 1,
                     splitNo: 1,
                     splitDesc: 1,
@@ -963,6 +965,19 @@ export class TimingService implements OnModuleInit {
             }
         } catch { /* checkpoints may not exist yet */ }
         const currentCpOrder = cpOrderMap.get(checkpoint.toUpperCase()) ?? -1;
+        // Distances whose course goes through this checkpoint. Without it a 5K runner was listed
+        // as "on the way" to a 21K-only CP (and DNS 5K runners as DNS there).
+        const currentCpDoc: any = campaignCheckpoints.find(
+            (cp: any) => String(cp?.name || '').toUpperCase() === checkpoint.toUpperCase(),
+        );
+        const currentCpDistances = new Set<string>(
+            (Array.isArray(currentCpDoc?.distanceMappings) ? currentCpDoc.distanceMappings : [])
+                .map((name: any) => String(name ?? '').trim().toLowerCase())
+                .filter(Boolean),
+        );
+        const categoryOf = (runner: any) => String(runner?.category ?? '').trim().toLowerCase();
+        let runsThisCheckpoint = (runner: any) =>
+            currentCpDistances.size === 0 || currentCpDistances.has(categoryOf(runner));
 
         // ── Merge DNF/DNS/DQ runners + fix statuses per-checkpoint ──
         const eventIdStrings = eventIds.map(id => id.toHexString());
@@ -977,6 +992,11 @@ export class TimingService implements OnModuleInit {
             this.allRunnersCache.set(runnersCacheKey, { data: allRunners, expiry: Date.now() + TimingService.RUNNERS_CACHE_TTL_MS });
         }
         if (allRunners && allRunners.length > 0) {
+            // Mapping names that match no runner's distance are stale (renamed distance) —
+            // filtering on them would hide everyone, so ignore them instead.
+            if (currentCpDistances.size > 0 && !allRunners.some((r: any) => currentCpDistances.has(categoryOf(r)))) {
+                runsThisCheckpoint = () => true;
+            }
             const runnerByBib = new Map<string, any>();
             for (const runner of allRunners) {
                 const r = runner as any;
@@ -1079,7 +1099,7 @@ export class TimingService implements OnModuleInit {
             }
 
             // 2) Add stopped runners NOT in results (no timing at this checkpoint)
-            //    - DNS: always add (never started → missing everywhere)
+            //    - DNS: add at every checkpoint on their distance's course
             //    - DNF/DQ with statusCheckpoint matching this CP: add (admin marked them here)
             //    - DNF/DQ otherwise: DON'T add (they never reached this checkpoint)
             for (const runner of allRunners) {
@@ -1087,6 +1107,7 @@ export class TimingService implements OnModuleInit {
                 const st = (r.status || '').toLowerCase();
                 if (!['dnf', 'dns', 'dq'].includes(st)) continue;
                 if (!r.bib || existingBibs.has(String(r.bib))) continue;
+                if (st === 'dns' && !runsThisCheckpoint(r)) continue;
 
                 if (['dnf', 'dq'].includes(st)) {
                     const sCp = (r.statusCheckpoint || '').toUpperCase();
@@ -1169,6 +1190,7 @@ export class TimingService implements OnModuleInit {
                         const bibStr = String(r.bib);
                         if (existingBibs.has(bibStr)) continue; // Already has timing at this CP
                         if (!bibsAtPrevCp.has(bibStr)) continue; // Never reached any previous CP
+                        if (!runsThisCheckpoint(r)) continue; // Their distance never comes through here
                         const st = (r.status || '').toLowerCase();
                         if (['dnf', 'dns', 'dq'].includes(st)) continue; // Stopped runners handled separately
                         const prevInfo = latestPrevScan.get(bibStr);
@@ -1261,7 +1283,7 @@ export class TimingService implements OnModuleInit {
                 { $group: { _id: '$bib', scanTime: { $min: '$scanTime' } } },
             ]).exec(),
             this.timingModel.find({ eventId: { $in: ctx.eventIds }, checkpoint: ctx.checkpoint, bib: { $in: bibs } })
-                .select('bib scanTime elapsedTime splitTime netTime gunTime isManualTime')
+                .select('bib scanTime elapsedTime splitTime netTime gunTime netPace gunPace isManualTime')
                 .sort({ scanTime: 1 })
                 .lean()
                 .exec(),
@@ -1310,6 +1332,8 @@ export class TimingService implements OnModuleInit {
                 rec.splitTime = real.splitTime ?? null;
                 rec.netTime = real.netTime ?? real.elapsedTime ?? null;
                 rec.gunTime = real.gunTime ?? null;
+                if (real.netPace) rec.netPace = real.netPace;
+                if (real.gunPace) rec.gunPace = real.gunPace;
                 continue;
             }
             rec.scanTime = null;

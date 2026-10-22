@@ -555,6 +555,18 @@ export class SyncService {
             orderNum: idx + 1,
         }));
     }
+    /**
+     * RaceTiger ignores `eid` and answers every distance's request with the whole race, so
+     * the per-distance loops in the auto-sync fetched (and bulk-wrote) everything once per
+     * distance — 3× for a 3-distance race, which stretched the live split cycle to 1–2 min.
+     * Skip a distance whose rows already came back in an earlier distance's answer. If
+     * RaceTiger ever does filter by `eid`, no other distance's rows show up and every
+     * distance is still fetched.
+     */
+    private alreadyFetchedForEid(eid: number | undefined, eventsSeen: Set<number>): boolean {
+        return eid !== undefined && eventsSeen.has(eid);
+    }
+
     private resolveRaceTigerEventIdFromBioRow(row: any): number | null {
         const direct = this.parseNumericValue(
             row?.EventId
@@ -2562,10 +2574,13 @@ export class SyncService {
                 gunMs: number | null; netMs: number | null;
                 gunStr: string; netStr: string;
             }>>();
+            const raceTigerEventsSeen = new Set<number>();
             for (const eid of eidsToFetch) {
+                if (this.alreadyFetchedForEid(eid, raceTigerEventsSeen)) continue;
                 try {
                     let totalExpected = Infinity;
                     let totalFetched = 0;
+                    const eventsInThisFetch = new Set<number>();
                     const maxPages = 200;
                     for (let page = 1; page <= maxPages; page++) {
                         const { response, parsedBody } = await this.requestRaceTiger(campaign, 'passedTime', page, eid);
@@ -2583,6 +2598,7 @@ export class SyncService {
                             if (!athleteId) continue;
                             // Resolve event from row's EventId
                             const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+                            if (rtEventId !== null) eventsInThisFetch.add(rtEventId);
                             let eventId: string | null = null;
                             if (rtEventId !== null) {
                                 eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
@@ -2699,6 +2715,11 @@ export class SyncService {
                             });
                         }
                         if (totalFetched >= totalExpected) break;
+                    }
+                    // Only a complete answer counts — after a partial one the next distance's
+                    // request still runs and fills the gap.
+                    if (totalFetched >= totalExpected || totalExpected === Infinity) {
+                        eventsInThisFetch.forEach(id => raceTigerEventsSeen.add(id));
                     }
                 } catch (err: any) {
                     result.errors.push(`Split EID ${eid ?? 'all'}: ${err?.message}`);
@@ -3065,10 +3086,13 @@ export class SyncService {
             const bulkOps: Array<{ updateOne: { filter: any; update: any } }> = [];
             // Track which runner IDs appeared in Score data (for DNF detection)
             const runnersInScore = new Set<string>();
+            const raceTigerEventsSeen = new Set<number>();
             for (const eid of eidsToFetch) {
+                if (this.alreadyFetchedForEid(eid, raceTigerEventsSeen)) continue;
                 try {
                     let totalExpected = Infinity;
                     let totalFetched = 0;
+                    const eventsInThisFetch = new Set<number>();
                     const maxScorePages = 200;
                     for (let page = 1; page <= maxScorePages; page++) {
                         const { response, parsedBody } = await this.requestRaceTiger(campaign, 'score', page, eid);
@@ -3086,6 +3110,7 @@ export class SyncService {
                             // Determine event ID — always prioritize the ROW's EventId
                             // because RaceTiger may return mixed-event data regardless of eid param
                             const rtEventId = this.resolveRaceTigerEventIdFromBioRow(row);
+                            if (rtEventId !== null) eventsInThisFetch.add(rtEventId);
                             let eventId: string | null = null;
                             if (rtEventId !== null) {
                                 eventId = eventResolver.eventIdByRaceTigerEventId.get(rtEventId) || null;
@@ -3257,6 +3282,11 @@ export class SyncService {
                             }
                         }
                         if (totalFetched >= totalExpected) break;
+                    }
+                    // Only a complete answer counts — after a partial one the next distance's
+                    // request still runs and fills the gap.
+                    if (totalFetched >= totalExpected || totalExpected === Infinity) {
+                        eventsInThisFetch.forEach(id => raceTigerEventsSeen.add(id));
                     }
                 } catch (err: any) {
                     result.errors.push(`EID ${eid ?? 'all'}: ${err?.message}`);

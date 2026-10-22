@@ -71,8 +71,8 @@ describe('TimingService strict checkpoint passes', () => {
     });
 
     it('falls back to the later real FINISH read', async () => {
-        const later = { bib: '11759', scanTime: t('05:01:00'), gunTime: 3366000, netTime: 3290000, elapsedTime: 3290000 };
-        const rec: any = { bib: '11759', scanTime: t('04:10:55'), gunTime: 361000, status: 'finished' };
+        const later = { bib: '11759', scanTime: t('05:01:00'), gunTime: 3366000, netTime: 3290000, elapsedTime: 3290000, netPace: '05:29' };
+        const rec: any = { bib: '11759', scanTime: t('04:10:55'), gunTime: 361000, netPace: '00:36', status: 'finished' };
         await run('FINISH', [rec],
             [{ bib: '11759', scanTime: t('04:12:11') }],
             [{ bib: '11759', scanTime: t('04:10:55'), gunTime: 361000 }, later],
@@ -80,6 +80,7 @@ describe('TimingService strict checkpoint passes', () => {
         expect(rec.scanTime).toEqual(later.scanTime);
         expect(rec.gunTime).toBe(3366000);
         expect(rec.netTime).toBe(3290000);
+        expect(rec.netPace).toBe('05:29');
         expect(rec.status).toBe('finished');
     });
 
