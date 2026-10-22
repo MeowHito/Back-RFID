@@ -121,6 +121,32 @@ function dedupeCheckpointRunnerRecords<T extends { _id?: any; scanTime?: string 
     return Array.from(deduped.values());
 }
 
+// What /share-live reads off a checkpoint list (`slim=1`). Everything else — the live race
+// ranks, split/lap fields, team, staff-only statusNote — was ~60% of a ~2 MB FINISH list
+// that every viewer downloads every 10 s.
+// Always sent (as '' when unknown); the rest only when they hold something.
+const SLIM_CHECKPOINT_REQUIRED = ['bib', 'firstName', 'lastName', 'gender', 'category', 'status'] as const;
+const SLIM_CHECKPOINT_OPTIONAL = [
+    'firstNameTh', 'lastNameTh', 'ageGroup', 'statusCheckpoint', 'scanTime', 'gunTime', 'netTime', 'netPace',
+] as const;
+
+export function slimCheckpointRows(rows: any[]): any[] {
+    const out: any[] = [];
+    for (const r of rows) {
+        // Finished elsewhere with no read here: share-live lists them nowhere.
+        if (!r?.scanTime && String(r?.status || '').toLowerCase() === 'finished') continue;
+        const row: Record<string, any> = {};
+        for (const f of SLIM_CHECKPOINT_REQUIRED) row[f] = r?.[f] ?? '';
+        for (const f of SLIM_CHECKPOINT_OPTIONAL) {
+            const v = r?.[f];
+            if (v !== null && v !== undefined && v !== '') row[f] = v;
+        }
+        if (!row.bib && r?._id) row._id = String(r._id);
+        out.push(row);
+    }
+    return out;
+}
+
 // Net-first time (used for Age-group / CAT ranking — matches /event/[id] liveRanks).
 function getCheckpointRankPrimaryTimeMs(record: any): number {
     const candidates = [
@@ -860,18 +886,21 @@ export class TimingService implements OnModuleInit {
      * clearImpossibleCheckpointPasses. Off by default so the admin pages that read the
      * same endpoint keep seeing every raw read.
      */
-    async getCheckpointRecordsByCampaign(campaignId: string, checkpoint: string, opts: { strict?: boolean } = {}): Promise<any[]> {
+    async getCheckpointRecordsByCampaign(campaignId: string, checkpoint: string, opts: { strict?: boolean; slim?: boolean } = {}): Promise<any[]> {
         const strict = opts.strict === true;
+        const slim = opts.slim === true;
         // --- In-memory cache (5s TTL) ---
-        const cacheKey = `${campaignId}::${checkpoint}${strict ? '::strict' : ''}`;
+        const cacheKey = `${campaignId}::${checkpoint}${strict ? '::strict' : ''}${slim ? '::slim' : ''}`;
         const cached = this.checkpointByCampaignCache.get(cacheKey);
         const now = Date.now();
         if (cached && cached.expiry > now) {
             return cached.data;
         }
+        const build = () => this.buildCheckpointRecordsByCampaign(campaignId, checkpoint, strict)
+            .then(rows => (slim ? slimCheckpointRows(rows) : rows));
         if (!strict) {
             // Admin pages re-read right after an edit and count on a fresh build past the TTL.
-            const data = await this.buildCheckpointRecordsByCampaign(campaignId, checkpoint, strict);
+            const data = await build();
             this.checkpointByCampaignCache.set(cacheKey, { data, expiry: Date.now() + TimingService.CACHE_TTL_MS });
             return data;
         }
@@ -881,7 +910,7 @@ export class TimingService implements OnModuleInit {
         // getting the previous list (a few seconds old) until it lands.
         let rebuild = this.checkpointByCampaignInFlight.get(cacheKey);
         if (!rebuild) {
-            rebuild = this.buildCheckpointRecordsByCampaign(campaignId, checkpoint, strict)
+            rebuild = build()
                 .then(data => {
                     this.checkpointByCampaignCache.set(cacheKey, { data, expiry: Date.now() + TimingService.CACHE_TTL_MS });
                     return data;

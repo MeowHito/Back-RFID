@@ -51,6 +51,7 @@ export class TimingController {
         @Param('campaignId') campaignId: string,
         @Query('cp') checkpoint: string,
         @Query('strict') strict?: string,
+        @Query('slim') slim?: string,
     ) {
         // Resolve slug/uuid to actual campaign _id
         let resolvedId = campaignId;
@@ -60,6 +61,7 @@ export class TimingController {
         } catch { /* use original if not found */ }
         return this.timingService.getCheckpointRecordsByCampaign(resolvedId, checkpoint, {
             strict: strict === '1' || strict === 'true',
+            slim: slim === '1' || slim === 'true',
         });
     }
 
