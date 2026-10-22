@@ -218,6 +218,8 @@ export class TimingService implements OnModuleInit {
     private latestPerRunnerCache = new Map<string, { data: any[]; expiry: number }>();
     // In-memory cache for getCheckpointRecordsByCampaign (TTL 5s)
     private checkpointByCampaignCache = new Map<string, { data: any[]; expiry: number }>();
+    // Rebuilds of that cache currently running, so concurrent misses share one.
+    private checkpointByCampaignInFlight = new Map<string, Promise<any[]>>();
     // In-memory cache for allRunners by eventIds (TTL 10s)
     private allRunnersCache = new Map<string, { data: any[]; expiry: number }>();
     // In-memory cache of a campaign's checkpoints, for the per-scan cut-off check (TTL 15s)
@@ -225,6 +227,8 @@ export class TimingService implements OnModuleInit {
     // eventId -> campaignId (an event never moves campaign)
     private campaignIdByEvent = new Map<string, string>();
     private static readonly CACHE_TTL_MS = 5000;
+    // /share-live keeps answering from a list this much past its TTL while it rebuilds.
+    private static readonly SHARE_LIVE_STALE_MS = 60000;
     private static readonly RUNNERS_CACHE_TTL_MS = 10000;
     private static readonly CUTOFF_CACHE_TTL_MS = 15000;
     // Debounce timers for updateRankings — prevents race condition when many runners finish simultaneously
@@ -861,10 +865,38 @@ export class TimingService implements OnModuleInit {
         // --- In-memory cache (5s TTL) ---
         const cacheKey = `${campaignId}::${checkpoint}${strict ? '::strict' : ''}`;
         const cached = this.checkpointByCampaignCache.get(cacheKey);
-        if (cached && cached.expiry > Date.now()) {
+        const now = Date.now();
+        if (cached && cached.expiry > now) {
             return cached.data;
         }
+        if (!strict) {
+            // Admin pages re-read right after an edit and count on a fresh build past the TTL.
+            const data = await this.buildCheckpointRecordsByCampaign(campaignId, checkpoint, strict);
+            this.checkpointByCampaignCache.set(cacheKey, { data, expiry: Date.now() + TimingService.CACHE_TTL_MS });
+            return data;
+        }
+        // /share-live: a FINISH list takes seconds to build on the live server, and every
+        // viewer polls. Without this, each poll landing during a rebuild started its own
+        // rebuild and everyone waited. Now one rebuild runs at a time, and viewers keep
+        // getting the previous list (a few seconds old) until it lands.
+        let rebuild = this.checkpointByCampaignInFlight.get(cacheKey);
+        if (!rebuild) {
+            rebuild = this.buildCheckpointRecordsByCampaign(campaignId, checkpoint, strict)
+                .then(data => {
+                    this.checkpointByCampaignCache.set(cacheKey, { data, expiry: Date.now() + TimingService.CACHE_TTL_MS });
+                    return data;
+                })
+                .finally(() => this.checkpointByCampaignInFlight.delete(cacheKey));
+            this.checkpointByCampaignInFlight.set(cacheKey, rebuild);
+        }
+        if (cached && now - cached.expiry < TimingService.SHARE_LIVE_STALE_MS) {
+            rebuild.catch(() => { /* the next request retries */ });
+            return cached.data;
+        }
+        return rebuild;
+    }
 
+    private async buildCheckpointRecordsByCampaign(campaignId: string, checkpoint: string, strict: boolean): Promise<any[]> {
         const events = await this.eventsService.findByCampaign(campaignId);
         // Include campaignId itself in the event IDs set (runners/timing records may use campaignId as eventId)
         const eventIdSet = new Set<string>([campaignId]);
@@ -1236,9 +1268,6 @@ export class TimingService implements OnModuleInit {
                 });
             }
         }
-
-        // Store in cache
-        this.checkpointByCampaignCache.set(cacheKey, { data: deduped, expiry: Date.now() + TimingService.CACHE_TTL_MS });
 
         return deduped;
     }
