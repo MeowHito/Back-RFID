@@ -310,8 +310,9 @@ export class RunnersService {
         return byCategory;
     }
 
-    /** List runners by event – capped at 2000 to avoid slow responses. Use findByEventWithPaging for large lists. */
-    async findByEvent(filter: RunnerFilter, limitCap: number = 2000): Promise<RunnerDocument[]> {
+    /** List runners by event. Callers expect the full list (shared links, update-event moves),
+     *  so the cap is a runaway guard only — a 2000 cap silently dropped runners in big distances. */
+    async findByEvent(filter: RunnerFilter, limitCap: number = 100000): Promise<RunnerDocument[]> {
         const query: any = { eventId: new Types.ObjectId(filter.eventId) };
 
         if (filter.category) query.category = filter.category;
@@ -342,7 +343,9 @@ export class RunnersService {
     async findByEventIds(
         eventIds: string[],
         filter?: Pick<RunnerFilter, 'category' | 'gender' | 'ageGroup' | 'status' | 'checkpoint' | 'search'>,
-        limitCap: number = 5000,
+        // Callers treat this as "every runner in the campaign" (/event, /admin/results,
+        // rank maps) — a low cap silently drops the tail (SAUCONY BKK10K: 5663 → 5000).
+        limitCap: number = 100000,
     ): Promise<RunnerDocument[]> {
         const objectIds = eventIds
             .filter((id): id is string => Boolean(id) && Types.ObjectId.isValid(id))
