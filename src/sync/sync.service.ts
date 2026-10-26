@@ -55,6 +55,18 @@ export class SyncService {
         'cutoff-scheduler', 'cutoff-extension', 'timing-scan', 'auto-dq-no-start',
     ]);
 
+    /**
+     * The "AthleteId doubles as BIB" fallback, made safe: accept the runner found under
+     * BIB = athleteId only when that runner has no AthleteId of its own, or the same one.
+     * SAUCONY BKK10K: BIB 2146 carries AthleteId 1145, so its result row was also written
+     * onto BIB 1145 (AthleteId 145) — 52 non-starters got someone else's gun/net/rank.
+     */
+    private static bibFallbackForAthlete<T>(candidate: T | undefined, athleteId: string): T | undefined {
+        if (!candidate) return undefined;
+        const own = String((candidate as any).athleteId ?? '').trim();
+        return own === '' || own === athleteId ? candidate : undefined;
+    }
+
     /** True when a human (not an automated rule) last set this runner's status. */
     private static isAdminSetStatus(snap: any): boolean {
         const by = String(snap?.statusChangedBy || '').trim().toLowerCase();
@@ -2610,7 +2622,7 @@ export class SyncService {
                             if (!eventId) continue;
                             // Find runner
                             let runner = runnerByEventAthleteId.get(`${eventId}:${athleteId}`);
-                            if (!runner) runner = runnerByEventBib.get(`${eventId}:${athleteId}`);
+                            if (!runner) runner = SyncService.bibFallbackForAthlete(runnerByEventBib.get(`${eventId}:${athleteId}`), athleteId);
                             if (!runner) continue;
                             const tpName = this.toSafeString(row?.TpName ?? row?.tpName ?? row?.CheckpointName ?? row?.checkpointName);
                             if (!tpName) continue;
@@ -3125,7 +3137,7 @@ export class SyncService {
                             let existingRunner: any = null;
                             if (bib) existingRunner = runnerByEventBib.get(`${eventId}:${bib}`);
                             if (!existingRunner && athleteId) existingRunner = runnerByEventAthleteId.get(`${eventId}:${athleteId}`);
-                            if (!existingRunner && athleteId && athleteId !== bib) existingRunner = runnerByEventBib.get(`${eventId}:${athleteId}`);
+                            if (!existingRunner && athleteId && athleteId !== bib) existingRunner = SyncService.bibFallbackForAthlete(runnerByEventBib.get(`${eventId}:${athleteId}`), athleteId);
                             if (!existingRunner) continue;
                             // Skip manually-stopped runners (DNS/DNF/DQ with isManualStatus=true).
                             // RaceTiger may still return score rows for them (e.g. residual data from
@@ -3202,6 +3214,15 @@ export class SyncService {
                                 if (updateData.netTime && updateData.netTime > 0 && currentStatus !== 'finished') {
                                     // Has NetTime → runner crossed the finish line
                                     updateData.status = 'finished'; updateData.isStarted = true; result.statusChanges++;
+                                    // Lifting an automatic DQ/DNF/DNS: drop its "Auto …:" note too, or
+                                    // the finisher keeps reading "Auto DQ: finished without a START record".
+                                    if (!SyncService.isAdminSetStatus(existingRunner)
+                                        && /^auto\s+(dnf|dns|dq)\s*:/i.test(String((existingRunner as any).statusNote || ''))) {
+                                        updateData.statusNote = '';
+                                        updateData.statusCheckpoint = '';
+                                        updateData.statusChangedAt = new Date();
+                                        updateData.statusChangedBy = 'timing-scan';
+                                    }
                                 } else if ((updateData.gunTime && updateData.gunTime > 0) && currentStatus === 'not_started') {
                                     // Has GunTime only → started but not necessarily finished
                                     updateData.status = 'in_progress'; updateData.isStarted = true; result.statusChanges++;
