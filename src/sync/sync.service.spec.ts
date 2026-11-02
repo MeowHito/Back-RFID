@@ -42,4 +42,17 @@ describe('SyncService age-group vocabulary', () => {
         const rows = [row(1, '0'), row(1, '250'), row(1, '60+')];
         expect(rows.map(r => ageGroupOf(rows, r))).toEqual(['', '', '60+']);
     });
+
+    it('reads Thai age-group labels', () => {
+        // Technic Phitsanulok Run 2026, 10k: "ไม่เกิน 17 ปี" and "60 ปีขึ้นไป"
+        // used to fall into "ไม่ระบุกลุ่มอายุ".
+        const labels = ['ไม่เกิน 17 ปี', '18-29 ปี', '50-59ปี', '60 ปีขึ้นไป', 'ต่ำกว่า 18 ปี', 'มากกว่า 60 ปี', '17 ปีลงมา', 'อายุ 18-29 ปี'];
+        const rows = labels.map(l => row(1, l));
+        expect(rows.map(r => ageGroupOf(rows, r))).toEqual(labels);
+    });
+
+    it('does not mistake Thai distance names for age groups', () => {
+        const rows = [row(1, 'มินิมาราธอน 10 กม.'), row(1, 'ฮาล์ฟมาราธอน')];
+        expect(rows.map(r => ageGroupOf(rows, r))).toEqual(['', '']);
+    });
 });

@@ -722,7 +722,8 @@ export class SyncService {
     /**
      * Detect if a RaceTiger "Category" value is actually an age group rather than a
      * race distance. Age group patterns: "XX-XX", "M XX-XX", "F XX-XX", "U18", "U19",
-     * "M U18", "70+", "Under 18", "60&Over", "60 & Up", "Over 60", "60 ขึ้นไป".
+     * "M U18", "70+", "Under 18", "60&Over", "60 & Up", "Over 60", "60 ขึ้นไป",
+     * and Thai labels "ไม่เกิน 17 ปี", "60 ปีขึ้นไป", "ต่ำกว่า 18 ปี".
      * Races that bracket by weight instead of age put the same kind of value here
      * with a unit attached — DOX RACE (dog trail) sends "1-4KG", "4-13KG", "13KG+" —
      * so a bound may carry a kg suffix and a decimal ("4.01-13 kg").
@@ -734,7 +735,12 @@ export class SyncService {
             || /^[MF]?\s*U\s*\d{1,2}\b/i.test(value)
             || /^[MF]?\s*under\s*\d{1,3}\b/i.test(value)
             || /^[MF]?\s*\d{1,3}(?:\.\d+)?\s*(?:kgs?|กก\.?|กิโลกรัม|กิโล)?\s*(?:&|and\b)?\s*(?:over|up|ขึ้นไป)/i.test(value)
-            || /^[MF]?\s*(?:over|above)\s*\d{1,3}\b/i.test(value);
+            || /^[MF]?\s*(?:over|above)\s*\d{1,3}\b/i.test(value)
+            // Thai brackets: "ไม่เกิน 17 ปี", "ต่ำกว่า 18", "มากกว่า 60",
+            // "60 ปีขึ้นไป", "17 ปีลงมา", "อายุ 18-29 ปี"
+            || /^[MF]?\s*(?:อายุ\s*)?(?:ไม่เกิน|ต่ำกว่า|น้อยกว่า|มากกว่า)\s*\d{1,3}/.test(value)
+            || /^[MF]?\s*(?:อายุ\s*)?\d{1,3}\s*(?:ปี)?\s*(?:ขึ้นไป|ลงมา)/.test(value)
+            || /^[MF]?\s*อายุ\s*\d{1,3}\s*[-+]/.test(value);
     }
     /** Which RaceTiger event a BIO row belongs to, as an age-group vocabulary key. */
     private ageGroupVocabularyKey(row: any): string {

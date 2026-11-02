@@ -25,6 +25,7 @@ export interface AgeGroupBucket {
 export function normalizeAgeGroupLabel(value?: string | null): string {
     return String(value || '')
         .replace(/^[MF]\s*/i, '')
+        .replace(/^อายุ\s*/, '')
         .replace(/\s*ปี$/i, '')
         .trim();
 }
@@ -41,7 +42,15 @@ const UNIT = String.raw`(?:\s*(?:kgs?|กก\.?|กิโลกรัม|กิ�
 
 const RANGE_RE = new RegExp(`(${BOUND})${UNIT}\\s*-\\s*(${BOUND})${UNIT}`, 'i');
 const PLUS_RE = new RegExp(`(${BOUND})${UNIT}\\s*\\+`, 'i');
-const OVER_RE = new RegExp(`(${BOUND})${UNIT}\\s*(?:&|and\\b)?\\s*(?:over|up|ขึ้นไป)`, 'i');
+// "ปี" (years) may sit between the number and the Thai word: "60 ปีขึ้นไป".
+const YEAR = String.raw`(?:\s*ปี)?`;
+const OVER_RE = new RegExp(`(${BOUND})${UNIT}${YEAR}\\s*(?:&|and\\b)?\\s*(?:over|up|ขึ้นไป)`, 'i');
+// Thai upper-bound labels. "ไม่เกิน 17" (not over 17) and "17 ปีลงมา" include
+// the number itself; "ต่ำกว่า 18" / "น้อยกว่า 18" (below 18) stop one short.
+const TH_MAX_INCLUSIVE_RE = new RegExp(`(?:ไม่เกิน\\s*(${BOUND})|(${BOUND})${YEAR}\\s*ลงมา)`);
+const TH_MAX_EXCLUSIVE_RE = new RegExp(`(?:ต่ำกว่า|น้อยกว่า)\\s*(${BOUND})`);
+// "มากกว่า 60" (more than 60) starts one above the number.
+const TH_MIN_EXCLUSIVE_RE = new RegExp(`มากกว่า\\s*(${BOUND})`);
 
 export function parseAgeGroupBucket(value?: string | null): AgeGroupBucket | null {
     const label = normalizeAgeGroupLabel(value);
@@ -50,6 +59,21 @@ export function parseAgeGroupBucket(value?: string | null): AgeGroupBucket | nul
     const rangeMatch = label.match(RANGE_RE);
     if (rangeMatch) {
         return { label, min: parseFloat(rangeMatch[1]), max: parseFloat(rangeMatch[2]) };
+    }
+
+    // Thai brackets: "ไม่เกิน 17 ปี", "ต่ำกว่า 18 ปี", "มากกว่า 60 ปี"
+    const thMaxIncl = label.match(TH_MAX_INCLUSIVE_RE);
+    if (thMaxIncl) {
+        return { label, min: 0, max: parseFloat(thMaxIncl[1] ?? thMaxIncl[2]) };
+    }
+    const thMaxExcl = label.match(TH_MAX_EXCLUSIVE_RE);
+    if (thMaxExcl) {
+        const max = parseFloat(thMaxExcl[1]) - 1;
+        return { label, min: 0, max: max >= 0 ? max : 0 };
+    }
+    const thMinExcl = label.match(TH_MIN_EXCLUSIVE_RE);
+    if (thMinExcl) {
+        return { label, min: parseFloat(thMinExcl[1]) + 1, max: 999 };
     }
 
     const underMatch = label.match(/(?:u|under)\s*(\d+)/i);
@@ -64,7 +88,7 @@ export function parseAgeGroupBucket(value?: string | null): AgeGroupBucket | nul
         return { label, min: parseFloat(plusMatch[1]), max: 999 };
     }
 
-    // "60&Over", "60 & Up", "60 and over", "60 ขึ้นไป", "13.01 kg ขึ้นไป", "Over 60"
+    // "60&Over", "60 & Up", "60 and over", "60 ขึ้นไป", "60 ปีขึ้นไป", "13.01 kg ขึ้นไป", "Over 60"
     const overMatch = label.match(OVER_RE)
         || label.match(/\b(?:over|above)\s*(\d+)/i);
     if (overMatch) {
